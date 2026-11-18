@@ -1,3 +1,8 @@
 /target/
 *.part
 *.rs.bk
+
+# Agentic skills & harness tooling
+.agents/
+.codex/
+skills-lock.json
