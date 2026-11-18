@@ -20,6 +20,10 @@ Documentation is a first-class part of Posthaze Download Manager.
 - [Ticket 02 — `HEAD`-Blocked Range Probe Fallback & Chunked Handling](ticket-02-range-probe-fallback.md)
 - [Ticket 03 — Multi-`Segment` Concurrent `Download`](ticket-03-multi-segment-download.md)
 
+## Benchmarks
+
+- [Ticket 03 Baseline — Static Multi-`Segment` Scaling (`c=2..32`)](benchmarks/ticket-03-baseline.md)
+
 ## Agent Workflow Configuration
 
 - [Agent Guidelines](../AGENTS.md)
