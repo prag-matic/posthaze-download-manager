@@ -15,20 +15,35 @@ cargo run --release -p posthaze-cli -- bench --sizes 100M,1G -c 1,4,8,16 --per-c
 
 # Chaos/retry stress benchmark (5% mid-stream drops + 5% HTTP 503s)
 cargo run --release -p posthaze-cli -- bench --sizes 100M -c 8 --drop-pct 5 --error-503-pct 5
+
+# Multi-scenario + A/B sync comparison against aria2c only
+cargo run --release -p posthaze-cli -- bench --sizes 64M -c 1,8 --tools posthaze,aria2c --compare-sync --scenarios clean,head-blocked,flaky
+
+# Benchmark an external URL with custom aria2c args
+cargo run --release -p posthaze-cli -- bench --url "https://example.com/file.bin" -c 1,8 --tools posthaze,aria2c --aria2-args "--min-split-size=1M -k 1M"
 ```
 
 ### `bench` Flags
 
 | Flag | Default | Description |
 |---|---|---|
+| `--url <URL>` | none | Benchmark an external URL instead of spawning the local server |
 | `--sizes <LIST>` | `100M` | Comma-separated virtual file sizes (e.g. `100M,1G`) |
 | `-c, --connections <LIST>` | `1,2,4,8,16,32` | Comma-separated `Worker` counts to sweep |
 | `--runs <N>` | `3` | Iterations per `(size, connections)` cell (reports median, min, max) |
+| `--tools <LIST>` | `auto` | Comma-separated tools (`auto`, `posthaze`, `posthaze-sync`, `aria2c`, `curl`) |
+| `--aria2-args <STR>` | `--min-split-size=2M` | Extra CLI flags passed to `aria2c` |
+| `--curl-args <STR>` | `""` | Extra CLI flags passed to `curl` |
+| `--scenarios <LIST>` | custom | Comma-separated server presets (`clean`, `throttled`, `head-blocked`, `flaky`) |
 | `--per-conn-mbps <FLOAT>` | unlimited | Per-connection bandwidth cap in Mbps |
 | `--latency-ms <U64>` | `0` | Artificial first-byte latency in ms |
 | `--drop-pct <FLOAT>` | `0.0` | Mid-stream connection drop probability (`0..100`) |
 | `--error-503-pct <FLOAT>` | `0.0` | HTTP `503` injection probability on `GET` (`0..100`) |
-| `--no-external` | `false` | Skip automatic comparison against `curl` / `aria2c` |
+| `--block-head` | `false` | Return `405 Method Not Allowed` on `HEAD` in custom scenario |
+| `--sync-on-complete` | `false` | Enable `File::sync_all()` durability on `posthaze` runs |
+| `--compare-sync` | `false` | Include a `posthaze (sync)` A/B row alongside `posthaze` |
+| `--alternate <BOOL>` | `true` | Alternate tool execution order across odd/even runs |
+| `--no-external` | `false` | Shorthand for `--tools posthaze` |
 | `--report <PATH>` | none | Save report as Markdown (or JSON when ending in `.json`) |
 
 ### Local Smoke Baseline (`32M`, `40 Mbps`/conn, `runs=2`)

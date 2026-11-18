@@ -36,6 +36,9 @@ enum Commands {
         /// Maximum concurrent workers (used in multi-segment mode).
         #[arg(short = 'c', long = "connections", default_value_t = 8)]
         connections: usize,
+        /// Call `File::sync_all()` before renaming `.part` to the final file.
+        #[arg(long)]
+        sync_on_complete: bool,
         /// Save detailed JSON download statistics and throughput samples (`<file>.stats.json`).
         #[arg(long)]
         debug: bool,
@@ -70,8 +73,11 @@ enum Commands {
         #[arg(long)]
         no_range: bool,
     },
-    /// Run an automated benchmark matrix against an in-process local server.
+    /// Run a customizable benchmark matrix against an in-process server or external URL.
     Bench {
+        /// Optional external URL to benchmark instead of spawning the local server.
+        #[arg(long)]
+        url: Option<String>,
         /// Comma-separated virtual file sizes (e.g. 100M or 100M,1G).
         #[arg(long, value_delimiter = ',', default_value = "100M")]
         sizes: Vec<String>,
@@ -81,6 +87,15 @@ enum Commands {
         /// Number of iterations per configuration.
         #[arg(long, default_value_t = 3)]
         runs: usize,
+        /// Comma-separated tools to compare (`auto`, `posthaze`, `posthaze-sync`, `aria2c`, `curl`).
+        #[arg(long, value_delimiter = ',', default_value = "auto")]
+        tools: Vec<String>,
+        /// Extra CLI flags passed to `aria2c`.
+        #[arg(long, default_value = "--min-split-size=2M", allow_hyphen_values = true)]
+        aria2_args: String,
+        /// Extra CLI flags passed to `curl`.
+        #[arg(long, default_value = "", allow_hyphen_values = true)]
+        curl_args: String,
         /// Per-connection bandwidth cap in Mbps.
         #[arg(long)]
         per_conn_mbps: Option<f64>,
@@ -93,7 +108,22 @@ enum Commands {
         /// HTTP 503 injection probability on GET (0..100).
         #[arg(long, default_value_t = 0.0)]
         error_503_pct: f64,
-        /// Skip automatic comparison with curl / aria2c on PATH.
+        /// Return 405 Method Not Allowed on HEAD requests in custom scenario.
+        #[arg(long)]
+        block_head: bool,
+        /// Enable `sync_all()` durability on `posthaze` runs.
+        #[arg(long)]
+        sync_on_complete: bool,
+        /// Include an extra `posthaze (sync)` A/B row alongside `posthaze`.
+        #[arg(long)]
+        compare_sync: bool,
+        /// Alternate tool execution order on odd/even runs (enabled by default).
+        #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+        alternate: bool,
+        /// Comma-separated server scenarios (`clean`, `throttled`, `head-blocked`, `flaky`).
+        #[arg(long, value_delimiter = ',')]
+        scenarios: Vec<String>,
+        /// Skip external tools (shorthand for `--tools posthaze`).
         #[arg(long)]
         no_external: bool,
         /// Optional path to save the Markdown or JSON (.json) benchmark report.
@@ -152,9 +182,20 @@ async fn main() -> ExitCode {
             url,
             output,
             connections,
+            sync_on_complete,
             debug,
             stats_out,
-        } => run_download(url, output, connections, debug || stats_out.is_some(), stats_out).await,
+        } => {
+            run_download(
+                url,
+                output,
+                connections,
+                sync_on_complete,
+                debug || stats_out.is_some(),
+                stats_out,
+            )
+            .await
+        }
         Commands::Serve {
             size,
             port,
@@ -197,25 +238,47 @@ async fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Commands::Bench {
+            url,
             sizes,
             connections,
             runs,
+            tools,
+            aria2_args,
+            curl_args,
             per_conn_mbps,
             latency_ms,
             drop_pct,
             error_503_pct,
+            block_head,
+            sync_on_complete,
+            compare_sync,
+            alternate,
+            scenarios,
             no_external,
             report,
         } => {
+            let effective_tools = if no_external {
+                vec!["posthaze".to_string()]
+            } else {
+                tools
+            };
             run_bench(BenchOptions {
+                url,
                 sizes,
                 connections,
                 runs: runs.max(1),
+                tools: effective_tools,
+                aria2_args,
+                curl_args,
                 per_conn_mbps,
                 latency_ms,
                 drop_pct,
                 error_503_pct,
-                include_external: !no_external,
+                block_head,
+                sync_on_complete,
+                compare_sync,
+                alternate,
+                scenarios,
                 report_path: report,
             })
             .await
@@ -227,6 +290,7 @@ async fn run_download(
     url: String,
     output: Option<PathBuf>,
     connections: usize,
+    sync_on_complete: bool,
     record_samples: bool,
     stats_out: Option<PathBuf>,
 ) -> ExitCode {
@@ -234,6 +298,7 @@ async fn run_download(
     let mut request = DownloadRequest::new(url.clone(), output_dir.clone());
     request.output_path = output.clone();
     request.max_workers = connections.max(1);
+    request.sync_on_complete = sync_on_complete;
 
     let (tx, mut rx) = watch::channel(ProgressSnapshot {
         state: DownloadState::Queued,
@@ -542,5 +607,85 @@ fn format_bytes(bytes: u64) -> String {
         format!("{:.1} KiB", b / KIB)
     } else {
         format!("{bytes} B")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bench_runner::{render_markdown_table, split_cli_args, summarize_row};
+
+    #[test]
+    fn parses_byte_sizes() {
+        assert_eq!(parse_byte_size("100M").unwrap(), 100 * 1024 * 1024);
+        assert_eq!(parse_byte_size("1G").unwrap(), 1024 * 1024 * 1024);
+        assert_eq!(parse_byte_size("512KiB").unwrap(), 512 * 1024);
+        assert_eq!(parse_byte_size("4096").unwrap(), 4096);
+        assert!(parse_byte_size("").is_err());
+    }
+
+    #[test]
+    fn parses_custom_bench_cli_flags() {
+        let cli = Cli::try_parse_from([
+            "posthaze",
+            "bench",
+            "--url",
+            "https://example.com/file.bin",
+            "--tools",
+            "posthaze,aria2c",
+            "--aria2-args",
+            "--min-split-size=1M -k 1M",
+            "--compare-sync",
+            "--scenarios",
+            "clean,flaky",
+            "-c",
+            "1,8",
+            "--runs",
+            "2",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Commands::Bench {
+                url,
+                tools,
+                aria2_args,
+                compare_sync,
+                scenarios,
+                connections,
+                runs,
+                ..
+            } => {
+                assert_eq!(url.as_deref(), Some("https://example.com/file.bin"));
+                assert_eq!(tools, vec!["posthaze", "aria2c"]);
+                assert_eq!(aria2_args, "--min-split-size=1M -k 1M");
+                assert!(compare_sync);
+                assert_eq!(scenarios, vec!["clean", "flaky"]);
+                assert_eq!(connections, vec![1, 8]);
+                assert_eq!(runs, 2);
+            }
+            _ => panic!("expected Bench subcommand"),
+        }
+    }
+
+    #[test]
+    fn summarizes_and_renders_markdown_row() {
+        let mut samples = crate::bench_runner::RunSamples {
+            secs: vec![2.2, 2.0, 2.4],
+            mbps: vec![240.0, 260.0, 220.0],
+            splits: vec![0, 2, 1],
+            retries: vec![0, 0, 1],
+            sizes: vec![],
+        };
+        let row = summarize_row("clean", "posthaze", 64 * 1024 * 1024, 8, &mut samples);
+        assert_eq!(row.median_transfer_s, 2.2);
+        assert_eq!(row.median_mbps, 240.0);
+        assert_eq!(row.min_mbps, 220.0);
+        assert_eq!(row.max_mbps, 260.0);
+        assert_eq!(row.median_splits, 1);
+        assert_eq!(split_cli_args("--min-split-size=2M -k 1M").len(), 3);
+
+        let table = render_markdown_table(&[row]);
+        assert!(table.contains("| clean | posthaze | 64.0 | 8 | 3 | 2.200 | 240.0 | 220.0–260.0 | 1 | 0 |"));
     }
 }
