@@ -1,84 +1,11 @@
+mod common;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tempfile::TempDir;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::TcpListener;
 
+use common::{MockResponse, parse_byte_range, spawn_mock_server};
 use posthaze_engine::{DownloadEngine, DownloadRequest};
-
-struct MockResponse {
-    status: &'static str,
-    headers: Vec<(String, String)>,
-    body: Vec<u8>,
-}
-
-async fn spawn_range_server<F>(handler: F) -> String
-where
-    F: Fn(&str, &str, Option<&str>) -> MockResponse + Send + Sync + 'static,
-{
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handler = Arc::new(handler);
-
-    tokio::spawn(async move {
-        while let Ok((stream, _)) = listener.accept().await {
-            let handler = Arc::clone(&handler);
-            tokio::spawn(async move {
-                let (read_half, mut write_half) = stream.into_split();
-                let mut reader = BufReader::new(read_half);
-                let mut request_line = String::new();
-                if reader.read_line(&mut request_line).await.unwrap_or(0) == 0 {
-                    return;
-                }
-
-                let mut range_header = None;
-                let mut line = String::new();
-                loop {
-                    line.clear();
-                    if reader.read_line(&mut line).await.unwrap_or(0) == 0 || line == "\r\n" {
-                        break;
-                    }
-                    if let Some((name, value)) = line.split_once(':')
-                        && name.trim().eq_ignore_ascii_case("range")
-                    {
-                        range_header = Some(value.trim().to_string());
-                    }
-                }
-
-                let mut parts = request_line.split_whitespace();
-                let method = parts.next().unwrap_or("");
-                let path = parts.next().unwrap_or("/");
-                let resp = handler(method, path, range_header.as_deref());
-
-                let mut raw = format!("HTTP/1.1 {}\r\n", resp.status);
-                for (k, v) in &resp.headers {
-                    raw.push_str(&format!("{k}: {v}\r\n"));
-                }
-                raw.push_str("Connection: close\r\n\r\n");
-
-                let _ = write_half.write_all(raw.as_bytes()).await;
-                if method != "HEAD" {
-                    let _ = write_half.write_all(&resp.body).await;
-                }
-                let _ = write_half.shutdown().await;
-            });
-        }
-    });
-
-    format!("http://{addr}")
-}
-
-fn parse_byte_range(header: &str, total_len: usize) -> (usize, usize) {
-    let spec = header.trim().strip_prefix("bytes=").unwrap();
-    let (s, e) = spec.split_once('-').unwrap();
-    let start: usize = s.parse().unwrap();
-    let end: usize = if e.is_empty() {
-        total_len - 1
-    } else {
-        e.parse::<usize>().unwrap().min(total_len - 1)
-    };
-    (start, end)
-}
 
 #[tokio::test]
 async fn downloads_multi_segment_payload_and_verifies_blake3() {
@@ -89,7 +16,7 @@ async fn downloads_multi_segment_payload_and_verifies_blake3() {
     let range_requests = Arc::new(AtomicUsize::new(0));
     let range_requests_clone = Arc::clone(&range_requests);
 
-    let base_url = spawn_range_server(move |method, path, range| match (method, path, range) {
+    let base_url = spawn_mock_server(move |method, path, range| match (method, path, range) {
         ("HEAD", "/big.bin", _) => MockResponse {
             status: "200 OK",
             headers: vec![
@@ -127,7 +54,10 @@ async fn downloads_multi_segment_payload_and_verifies_blake3() {
     req.max_workers = 4;
 
     let engine = DownloadEngine::new();
-    let outcome = engine.download(req, None).await.expect("multi-segment download should succeed");
+    let outcome = engine
+        .download(req, None)
+        .await
+        .expect("multi-segment download should succeed");
 
     assert!(outcome.supports_ranges);
     assert_eq!(outcome.workers_used, 4);
@@ -146,7 +76,7 @@ async fn downloads_multi_segment_after_head_blocked_range_probe_fallback() {
     let expected_hash = blake3::hash(&payload);
     let payload_arc = Arc::new(payload);
 
-    let base_url = spawn_range_server(move |method, path, range| match (method, path, range) {
+    let base_url = spawn_mock_server(move |method, path, range| match (method, path, range) {
         ("HEAD", "/cdn.bin", _) => MockResponse {
             status: "405 Method Not Allowed",
             headers: vec![("Content-Length".into(), "0".into())],
@@ -180,7 +110,10 @@ async fn downloads_multi_segment_after_head_blocked_range_probe_fallback() {
     req.max_workers = 4;
 
     let engine = DownloadEngine::new();
-    let outcome = engine.download(req, None).await.expect("download should succeed");
+    let outcome = engine
+        .download(req, None)
+        .await
+        .expect("download should succeed");
 
     assert!(outcome.supports_ranges);
     assert_eq!(outcome.workers_used, 4);
@@ -196,7 +129,7 @@ async fn clamps_workers_to_one_when_below_min_segment_floor() {
     let expected_hash = blake3::hash(&payload);
     let payload_arc = Arc::new(payload);
 
-    let base_url = spawn_range_server(move |method, path, range| match (method, path, range) {
+    let base_url = spawn_mock_server(move |method, path, range| match (method, path, range) {
         ("HEAD", "/small.bin", _) => MockResponse {
             status: "200 OK",
             headers: vec![
@@ -233,7 +166,10 @@ async fn clamps_workers_to_one_when_below_min_segment_floor() {
     req.max_workers = 8;
 
     let engine = DownloadEngine::new();
-    let outcome = engine.download(req, None).await.expect("download should succeed");
+    let outcome = engine
+        .download(req, None)
+        .await
+        .expect("download should succeed");
 
     assert_eq!(outcome.workers_used, 1);
     let disk_bytes = std::fs::read(&outcome.final_path).unwrap();

@@ -1,6 +1,8 @@
 /target/
 *.part
 *.rs.bk
+*.stats.json
+/bench-out/
 
 # Agentic skills & harness tooling
 .agents/
