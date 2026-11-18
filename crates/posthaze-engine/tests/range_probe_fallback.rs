@@ -67,6 +67,18 @@ where
     format!("http://{addr}")
 }
 
+fn parse_byte_range(header: &str, total_len: usize) -> (usize, usize) {
+    let spec = header.trim().strip_prefix("bytes=").unwrap();
+    let (s, e) = spec.split_once('-').unwrap();
+    let start: usize = s.parse().unwrap();
+    let end: usize = if e.is_empty() {
+        total_len - 1
+    } else {
+        e.parse::<usize>().unwrap().min(total_len - 1)
+    };
+    (start, end)
+}
+
 #[tokio::test]
 async fn falls_back_to_range_get_when_head_is_blocked() {
     let payload: Vec<u8> = (0..128 * 1024).map(|i| (i % 241) as u8).collect();
@@ -79,18 +91,36 @@ async fn falls_back_to_range_get_when_head_is_blocked() {
             headers: vec![("Content-Length".into(), "0".into())],
             body: Vec::new(),
         },
-        ("GET", "/blocked.bin", Some("bytes=0-0")) => MockResponse {
-            status: "206 Partial Content",
-            headers: vec![
-                ("Content-Length".into(), "1".into()),
-                (
-                    "Content-Range".into(),
-                    format!("bytes 0-0/{}", payload_clone.len()),
-                ),
-                ("ETag".into(), "\"range-fallback\"".into()),
-            ],
-            body: vec![payload_clone[0]],
-        },
+        ("GET", "/blocked.bin", Some(range_val)) => {
+            if range_val == "bytes=0-0" {
+                MockResponse {
+                    status: "206 Partial Content",
+                    headers: vec![
+                        ("Content-Length".into(), "1".into()),
+                        (
+                            "Content-Range".into(),
+                            format!("bytes 0-0/{}", payload_clone.len()),
+                        ),
+                        ("ETag".into(), "\"range-fallback\"".into()),
+                    ],
+                    body: vec![payload_clone[0]],
+                }
+            } else {
+                let (s, e) = parse_byte_range(range_val, payload_clone.len());
+                let slice = payload_clone[s..=e].to_vec();
+                MockResponse {
+                    status: "206 Partial Content",
+                    headers: vec![
+                        ("Content-Length".into(), slice.len().to_string()),
+                        (
+                            "Content-Range".into(),
+                            format!("bytes {s}-{e}/{}", payload_clone.len()),
+                        ),
+                    ],
+                    body: slice,
+                }
+            }
+        }
         ("GET", "/blocked.bin", None) => MockResponse {
             status: "200 OK",
             headers: vec![("Content-Length".into(), payload_clone.len().to_string())],
@@ -135,17 +165,21 @@ async fn falls_back_to_range_get_when_head_omits_range_and_length() {
             headers: Vec::new(),
             body: Vec::new(),
         },
-        ("GET", "/minimal-head.bin", Some("bytes=0-0")) => MockResponse {
-            status: "206 Partial Content",
-            headers: vec![
-                ("Content-Length".into(), "1".into()),
-                (
-                    "Content-Range".into(),
-                    format!("bytes 0-0/{}", payload_clone.len()),
-                ),
-            ],
-            body: vec![payload_clone[0]],
-        },
+        ("GET", "/minimal-head.bin", Some(range_val)) => {
+            let (s, e) = parse_byte_range(range_val, payload_clone.len());
+            let slice = payload_clone[s..=e].to_vec();
+            MockResponse {
+                status: "206 Partial Content",
+                headers: vec![
+                    ("Content-Length".into(), slice.len().to_string()),
+                    (
+                        "Content-Range".into(),
+                        format!("bytes {s}-{e}/{}", payload_clone.len()),
+                    ),
+                ],
+                body: slice,
+            }
+        }
         ("GET", "/minimal-head.bin", None) => MockResponse {
             status: "200 OK",
             headers: vec![("Content-Length".into(), payload_clone.len().to_string())],

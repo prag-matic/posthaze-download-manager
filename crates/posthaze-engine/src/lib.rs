@@ -3,21 +3,22 @@
 #![deny(missing_docs)]
 
 mod probe;
+mod transfer;
 mod writer;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use bytes::BytesMut;
-use futures_util::StreamExt;
 use thiserror::Error;
 use tokio::sync::watch;
 
 use crate::probe::probe_url;
+use crate::transfer::{execute_multi_segment, execute_single_stream};
 use crate::writer::PartFileWriter;
 
-const CHUNK_BUFFER_SIZE: usize = 128 * 1024;
 const PROGRESS_EMIT_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Lifecycle state of a `Download`.
@@ -197,7 +198,9 @@ impl DownloadEngine {
         let part_path = make_part_path(&final_path);
 
         let transfer_start = Instant::now();
-        let writer = PartFileWriter::spawn(part_path, probe.content_length)?;
+        let writer = Arc::new(PartFileWriter::spawn(part_path, probe.content_length)?);
+        let downloaded = Arc::new(AtomicU64::new(0));
+        let active_workers = Arc::new(AtomicUsize::new(0));
 
         emit_progress(
             &progress_tx,
@@ -205,70 +208,62 @@ impl DownloadEngine {
                 state: DownloadState::Active,
                 bytes_downloaded: 0,
                 total_bytes: probe.content_length,
-                active_workers: 1,
+                active_workers: 0,
             },
         );
 
-        let resp = match self.client.get(&probe.final_url).send().await {
-            Ok(resp) => resp,
+        let reporter = spawn_progress_reporter(
+            progress_tx.clone(),
+            Arc::clone(&downloaded),
+            Arc::clone(&active_workers),
+            probe.content_length,
+        );
+
+        let transfer_result = match (probe.supports_ranges, probe.content_length) {
+            (true, Some(total_bytes)) => {
+                execute_multi_segment(
+                    &self.client,
+                    &probe.final_url,
+                    total_bytes,
+                    request.max_workers,
+                    &writer,
+                    &downloaded,
+                    &active_workers,
+                )
+                .await
+            }
+            _ => execute_single_stream(
+                &self.client,
+                &probe.final_url,
+                &writer,
+                &downloaded,
+                &active_workers,
+            )
+            .await
+            .map(|bytes| (bytes, 1)),
+        };
+
+        if let Some(handle) = reporter {
+            handle.abort();
+        }
+
+        let (bytes_downloaded, workers_used) = match transfer_result {
+            Ok(res) => res,
             Err(err) => {
-                emit_failed(&progress_tx, 0, probe.content_length);
-                return Err(err.into());
+                emit_failed(
+                    &progress_tx,
+                    downloaded.load(Ordering::Relaxed),
+                    probe.content_length,
+                );
+                return Err(err);
             }
         };
-        let status = resp.status();
-        if !status.is_success() {
-            emit_failed(&progress_tx, 0, probe.content_length);
-            return Err(EngineError::HttpStatus {
-                status: status.as_u16(),
-                url: probe.final_url,
-            });
-        }
 
-        let mut downloaded = 0u64;
-        let mut write_offset = 0u64;
-        let mut buffer = BytesMut::with_capacity(CHUNK_BUFFER_SIZE);
-        let mut last_emit = Instant::now();
-        let mut stream = resp.bytes_stream();
-
-        while let Some(item) = stream.next().await {
-            let chunk = match item {
-                Ok(chunk) => chunk,
-                Err(err) => {
-                    emit_failed(&progress_tx, downloaded, probe.content_length);
-                    return Err(err.into());
-                }
-            };
-            downloaded += chunk.len() as u64;
-            buffer.extend_from_slice(&chunk);
-
-            if buffer.len() >= CHUNK_BUFFER_SIZE {
-                let block = buffer.split().freeze();
-                let block_len = block.len() as u64;
-                writer.write_at(write_offset, block).await?;
-                write_offset += block_len;
-            }
-
-            if last_emit.elapsed() >= PROGRESS_EMIT_INTERVAL {
-                emit_progress(
-                    &progress_tx,
-                    ProgressSnapshot {
-                        state: DownloadState::Active,
-                        bytes_downloaded: downloaded,
-                        total_bytes: probe.content_length,
-                        active_workers: 1,
-                    },
-                );
-                last_emit = Instant::now();
-            }
-        }
-
-        if !buffer.is_empty() {
-            let tail = buffer.freeze();
-            writer.write_at(write_offset, tail).await?;
-        }
-
+        let writer = Arc::try_unwrap(writer).map_err(|_| {
+            EngineError::Writer("writer handle still referenced after workers exited".to_string())
+        })?;
         writer.finish(&final_path).await?;
+
         let transfer_duration = transfer_start.elapsed();
         let total_duration = total_start.elapsed();
 
@@ -276,18 +271,18 @@ impl DownloadEngine {
             &progress_tx,
             ProgressSnapshot {
                 state: DownloadState::Completed,
-                bytes_downloaded: downloaded,
-                total_bytes: probe.content_length.or(Some(downloaded)),
+                bytes_downloaded,
+                total_bytes: probe.content_length.or(Some(bytes_downloaded)),
                 active_workers: 0,
             },
         );
 
         Ok(DownloadOutcome {
             final_path,
-            bytes_downloaded: downloaded,
+            bytes_downloaded,
             content_length: probe.content_length,
             supports_ranges: probe.supports_ranges,
-            workers_used: 1,
+            workers_used,
             probe_duration,
             transfer_duration,
             total_duration,
@@ -296,6 +291,27 @@ impl DownloadEngine {
             final_url: probe.final_url,
         })
     }
+}
+
+fn spawn_progress_reporter(
+    progress_tx: Option<watch::Sender<ProgressSnapshot>>,
+    downloaded: Arc<AtomicU64>,
+    active_workers: Arc<AtomicUsize>,
+    total_bytes: Option<u64>,
+) -> Option<tokio::task::JoinHandle<()>> {
+    let tx = progress_tx?;
+    Some(tokio::spawn(async move {
+        let mut interval = tokio::time::interval(PROGRESS_EMIT_INTERVAL);
+        loop {
+            interval.tick().await;
+            let _ = tx.send(ProgressSnapshot {
+                state: DownloadState::Active,
+                bytes_downloaded: downloaded.load(Ordering::Relaxed),
+                total_bytes,
+                active_workers: active_workers.load(Ordering::Relaxed),
+            });
+        }
+    }))
 }
 
 fn make_part_path(final_path: &Path) -> PathBuf {
