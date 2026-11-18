@@ -1,7 +1,10 @@
 use std::path::Path;
 
 use percent_encoding::percent_decode_str;
-use reqwest::header::{ACCEPT_RANGES, CONTENT_DISPOSITION, CONTENT_LENGTH, ETAG, LAST_MODIFIED};
+use reqwest::StatusCode;
+use reqwest::header::{
+    ACCEPT_RANGES, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_RANGE, ETAG, LAST_MODIFIED, RANGE,
+};
 
 use crate::EngineError;
 
@@ -16,9 +19,71 @@ pub struct ProbeResult {
     pub suggested_filename: String,
 }
 
-/// Probes `url` with a `HEAD` request to resolve redirects, metadata, and filename.
+/// Probes `url` with `HEAD` and falls back to `GET` (`Range: bytes=0-0`) when `HEAD` is blocked
+/// (`403`/`405`/`501`) or omits range/length metadata.
 pub async fn probe_url(client: &reqwest::Client, url: &str) -> Result<ProbeResult, EngineError> {
-    let resp = client.head(url).send().await?;
+    let head_resp = client.head(url).send().await?;
+    let head_status = head_resp.status();
+    let head_final_url = head_resp.url().to_string();
+
+    if head_status.is_success() {
+        let head_probe = extract_probe_from_head(&head_resp);
+        if head_probe.supports_ranges && head_probe.content_length.is_some() {
+            return Ok(head_probe);
+        }
+
+        // HEAD succeeded but omitted range or length metadata; verify via Range GET.
+        let mut range_probe = probe_range_get(client, &head_final_url).await?;
+        if range_probe.etag.is_none() {
+            range_probe.etag = head_probe.etag;
+        }
+        if range_probe.last_modified.is_none() {
+            range_probe.last_modified = head_probe.last_modified;
+        }
+        if range_probe.content_length.is_none() {
+            range_probe.content_length = head_probe.content_length;
+        }
+        if range_probe.suggested_filename == "download.bin" {
+            range_probe.suggested_filename = head_probe.suggested_filename;
+        }
+        return Ok(range_probe);
+    }
+
+    if matches!(
+        head_status,
+        StatusCode::FORBIDDEN | StatusCode::METHOD_NOT_ALLOWED | StatusCode::NOT_IMPLEMENTED
+    ) {
+        return probe_range_get(client, &head_final_url).await;
+    }
+
+    Err(EngineError::HttpStatus {
+        status: head_status.as_u16(),
+        url: head_final_url,
+    })
+}
+
+fn extract_probe_from_head(resp: &reqwest::Response) -> ProbeResult {
+    let headers = resp.headers();
+    let content_length = parse_content_length(headers);
+    let accept_ranges_bytes = headers
+        .get(ACCEPT_RANGES)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|s| s.trim().eq_ignore_ascii_case("bytes"));
+
+    let supports_ranges = accept_ranges_bytes && content_length.is_some();
+
+    ProbeResult {
+        final_url: resp.url().to_string(),
+        content_length,
+        supports_ranges,
+        etag: header_string(headers, ETAG),
+        last_modified: header_string(headers, LAST_MODIFIED),
+        suggested_filename: resolve_filename(headers, resp.url()),
+    }
+}
+
+async fn probe_range_get(client: &reqwest::Client, url: &str) -> Result<ProbeResult, EngineError> {
+    let resp = client.get(url).header(RANGE, "bytes=0-0").send().await?;
     let status = resp.status();
     let final_url = resp.url().to_string();
 
@@ -30,36 +95,49 @@ pub async fn probe_url(client: &reqwest::Client, url: &str) -> Result<ProbeResul
     }
 
     let headers = resp.headers();
-    let content_length = headers
-        .get(CONTENT_LENGTH)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.trim().parse::<u64>().ok());
-
-    let supports_ranges = headers
-        .get(ACCEPT_RANGES)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|s| s.trim().eq_ignore_ascii_case("bytes"));
-
-    let etag = header_string(headers, ETAG);
-    let last_modified = header_string(headers, LAST_MODIFIED);
-
-    let cd_filename = headers
-        .get(CONTENT_DISPOSITION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(parse_content_disposition_filename);
-
-    let suggested_filename = cd_filename
-        .or_else(|| filename_from_url(resp.url()))
-        .unwrap_or_else(|| "download.bin".to_string());
+    let (content_length, supports_ranges) = if status == StatusCode::PARTIAL_CONTENT {
+        let total = headers
+            .get(CONTENT_RANGE)
+            .and_then(|v| v.to_str().ok())
+            .and_then(parse_content_range_total);
+        (total, total.is_some())
+    } else {
+        (parse_content_length(headers), false)
+    };
 
     Ok(ProbeResult {
         final_url,
         content_length,
         supports_ranges,
-        etag,
-        last_modified,
-        suggested_filename,
+        etag: header_string(headers, ETAG),
+        last_modified: header_string(headers, LAST_MODIFIED),
+        suggested_filename: resolve_filename(headers, resp.url()),
     })
+}
+
+fn parse_content_length(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+    headers
+        .get(CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.trim().parse::<u64>().ok())
+}
+
+fn parse_content_range_total(header: &str) -> Option<u64> {
+    let (_, total_part) = header.trim().split_once('/')?;
+    let total_str = total_part.trim();
+    if total_str == "*" {
+        return None;
+    }
+    total_str.parse::<u64>().ok()
+}
+
+fn resolve_filename(headers: &reqwest::header::HeaderMap, url: &reqwest::Url) -> String {
+    headers
+        .get(CONTENT_DISPOSITION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(parse_content_disposition_filename)
+        .or_else(|| filename_from_url(url))
+        .unwrap_or_else(|| "download.bin".to_string())
 }
 
 fn header_string(
