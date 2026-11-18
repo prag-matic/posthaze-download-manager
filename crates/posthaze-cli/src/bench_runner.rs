@@ -266,6 +266,7 @@ fn run_aria2(url: &str, dir: &Path, filename: &str, connections: usize) -> Optio
         .args([
             "--quiet=true",
             "--allow-overwrite=true",
+            "--min-split-size=2M",
             "-x",
             &c_str,
             "-s",
