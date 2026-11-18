@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bytes::BytesMut;
 use futures_util::StreamExt;
@@ -12,6 +13,9 @@ use crate::writer::PartFileWriter;
 
 pub const MIN_SEGMENT_SIZE: u64 = 2 * 1024 * 1024;
 pub const CHUNK_BUFFER_SIZE: usize = 128 * 1024;
+const MAX_SEGMENT_RETRIES: u32 = 5;
+const BASE_BACKOFF_MS: u64 = 100;
+const MAX_BACKOFF_MS: u64 = 5_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SegmentSpec {
@@ -245,12 +249,61 @@ async fn run_segment_worker(
     writer: &PartFileWriter,
     downloaded: &AtomicU64,
 ) -> Result<u64, EngineError> {
-    let initial_end = seg.end.load(Ordering::Acquire);
-    if seg.start >= initial_end {
-        return Ok(0);
-    }
+    let mut retries = 0u32;
 
-    let range_header = format!("bytes={}-{}", seg.start, initial_end - 1);
+    loop {
+        let attempt_start = seg.cursor.load(Ordering::Acquire);
+        let end_snapshot = seg.end.load(Ordering::Acquire);
+        if attempt_start >= end_snapshot {
+            return Ok(attempt_start.saturating_sub(seg.start));
+        }
+
+        match run_segment_attempt(
+            client,
+            url,
+            seg,
+            attempt_start,
+            end_snapshot,
+            allow_full_200,
+            writer,
+            downloaded,
+        )
+        .await
+        {
+            Ok(()) => {
+                let final_cur = seg.cursor.load(Ordering::Acquire);
+                return Ok(final_cur.saturating_sub(seg.start));
+            }
+            Err(err) => {
+                let made_progress = seg.cursor.load(Ordering::Acquire) > attempt_start;
+                if made_progress {
+                    retries = 0;
+                } else {
+                    retries += 1;
+                }
+
+                if !is_transient_error(&err) || retries > MAX_SEGMENT_RETRIES {
+                    return Err(err);
+                }
+
+                tokio::time::sleep(backoff_with_jitter(retries.saturating_sub(1))).await;
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_segment_attempt(
+    client: &reqwest::Client,
+    url: &str,
+    seg: &ActiveSegment,
+    attempt_start: u64,
+    end_snapshot: u64,
+    allow_full_200: bool,
+    writer: &PartFileWriter,
+    downloaded: &AtomicU64,
+) -> Result<(), EngineError> {
+    let range_header = format!("bytes={attempt_start}-{}", end_snapshot - 1);
     let resp = client.get(url).header(RANGE, range_header).send().await?;
     let status = resp.status();
 
@@ -261,13 +314,21 @@ async fn run_segment_worker(
         });
     }
 
-    let mut cur = seg.start;
-    let mut write_offset = seg.start;
+    let mut cur = attempt_start;
+    let mut write_offset = attempt_start;
     let mut buffer = BytesMut::with_capacity(CHUNK_BUFFER_SIZE);
     let mut stream = resp.bytes_stream();
+    let mut stream_err: Option<EngineError> = None;
 
     while let Some(item) = stream.next().await {
-        let chunk = item?;
+        let chunk = match item {
+            Ok(chunk) => chunk,
+            Err(err) => {
+                stream_err = Some(err.into());
+                break;
+            }
+        };
+
         let limit = seg.end.load(Ordering::Acquire);
         let remaining = limit.saturating_sub(cur) as usize;
         if remaining == 0 {
@@ -303,6 +364,10 @@ async fn run_segment_worker(
         writer.write_at(write_offset, tail).await?;
     }
 
+    if let Some(err) = stream_err {
+        return Err(err);
+    }
+
     let final_end = seg.end.load(Ordering::Acquire);
     if cur < final_end {
         return Err(EngineError::Io(std::io::Error::new(
@@ -314,7 +379,27 @@ async fn run_segment_worker(
         )));
     }
 
-    Ok(cur - seg.start)
+    Ok(())
+}
+
+fn is_transient_error(err: &EngineError) -> bool {
+    match err {
+        EngineError::Http(_) => true,
+        EngineError::HttpStatus { status, .. } => matches!(*status, 408 | 429 | 500..=599),
+        EngineError::Io(io_err) => io_err.kind() == std::io::ErrorKind::UnexpectedEof,
+        EngineError::Writer(_) => false,
+    }
+}
+
+fn backoff_with_jitter(retry_index: u32) -> Duration {
+    let exp_ms = BASE_BACKOFF_MS
+        .saturating_mul(1u64 << retry_index.min(10))
+        .min(MAX_BACKOFF_MS);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos() as u64);
+    let jitter_ms = nanos % (exp_ms / 2).max(1);
+    Duration::from_millis(exp_ms + jitter_ms)
 }
 
 async fn stream_unbounded_to_writer(
