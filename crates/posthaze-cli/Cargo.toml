@@ -1,0 +1,10 @@
+[package]
+name = "posthaze-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+posthaze-engine = { path = "../posthaze-engine" }
+tokio.workspace = true
