@@ -1,0 +1,35 @@
+# Documentation Index
+
+Documentation is a first-class part of Posthaze Download Manager.
+
+## Architecture & Decisions
+
+- [Architecture Proposal — Windows Download Manager](Architecture%20Proposal%20-%20Windows%20Download%20Manager.md)
+- [Domain Glossary](../GLOSSARY.md)
+- [Product Context](../PRODUCT.md)
+- Architecture Decision Records (`docs/adr/`):
+  - [0001 — Multi-crate Cargo workspace from day one](adr/0001-multi-crate-cargo-workspace.md)
+  - [0002 — Single pre-allocated `.part` file with positional writes](adr/0002-preallocated-single-part-file.md)
+  - [0003 — Dynamic segment splitting (work stealing)](adr/0003-dynamic-segment-splitting.md)
+  - [0004 — HTTP capability probing with HEAD and Range GET fallback](adr/0004-range-capability-probing.md)
+  - [0005 — Dedicated blocking writer task over a bounded channel](adr/0005-dedicated-writer-channel.md)
+
+## Implemented Milestones & Tickets
+
+- [Ticket 01 — Single-Stream HTTP Download Engine & CLI](ticket-01-single-stream-engine.md)
+
+## Agent Workflow Configuration
+
+- [Agent Guidelines](../AGENTS.md)
+- [Issue Tracker Conventions](agents/issue-tracker.md)
+- [Triage Labels](agents/triage-labels.md)
+- [Domain Docs Rules](agents/domain.md)
+
+## Building API Docs
+
+`posthaze-engine` enforces `#![deny(missing_docs)]`. Verify all rustdocs and intra-doc links build cleanly:
+
+```powershell
+$env:RUSTDOCFLAGS="-D warnings"
+cargo doc --workspace --no-deps --open
+```

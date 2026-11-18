@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use percent_encoding::percent_decode_str;
 use reqwest::header::{ACCEPT_RANGES, CONTENT_DISPOSITION, CONTENT_LENGTH, ETAG, LAST_MODIFIED};
 
 use crate::EngineError;
@@ -73,30 +74,63 @@ fn header_string(
 }
 
 fn parse_content_disposition_filename(header: &str) -> Option<String> {
+    let mut fallback_filename = None;
+
     for part in header.split(';').map(str::trim) {
-        if let Some(rest) = part.strip_prefix("filename=") {
-            let trimmed = rest.trim().trim_matches('"');
-            if let Some(sanitized) = sanitize_filename(trimmed) {
-                return Some(sanitized);
+        if let Some((key, value)) = part.split_once('=') {
+            let key = key.trim();
+            let value = value.trim();
+
+            // RFC 5987 `filename*=UTF-8''...` takes precedence over `filename=`.
+            if key.eq_ignore_ascii_case("filename*") {
+                let encoded = value
+                    .split("''")
+                    .nth(1)
+                    .unwrap_or(value)
+                    .trim_matches('"');
+                let decoded = percent_decode_str(encoded).decode_utf8_lossy();
+                if let Some(sanitized) = sanitize_filename(&decoded) {
+                    return Some(sanitized);
+                }
+            } else if key.eq_ignore_ascii_case("filename") && fallback_filename.is_none() {
+                let unquoted = value.trim_matches('"');
+                fallback_filename = sanitize_filename(unquoted);
             }
         }
     }
-    None
+
+    fallback_filename
 }
 
 fn filename_from_url(url: &reqwest::Url) -> Option<String> {
-    url.path_segments()?
-        .rfind(|seg| !seg.is_empty())
-        .and_then(sanitize_filename)
+    let raw = url.path_segments()?.rfind(|seg| !seg.is_empty())?;
+    let decoded = percent_decode_str(raw).decode_utf8_lossy();
+    sanitize_filename(&decoded)
 }
 
 fn sanitize_filename(raw: &str) -> Option<String> {
-    let name = Path::new(raw)
-        .file_name()?
-        .to_str()?
-        .trim();
-    if name.is_empty() || name == "." || name == ".." {
+    // Take only the terminal path component to prevent directory traversal.
+    let base = Path::new(raw).file_name()?.to_str()?.trim();
+    if base.is_empty() || base == "." || base == ".." {
         return None;
     }
-    Some(name.to_string())
+
+    // Replace Windows-illegal and control characters, then strip trailing dots/spaces.
+    let cleaned: String = base
+        .chars()
+        .map(|c| {
+            if c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+
+    let trimmed = cleaned.trim_end_matches(['.', ' ']);
+    if trimmed.is_empty() || trimmed == "." || trimmed == ".." {
+        return None;
+    }
+
+    Some(trimmed.to_string())
 }
