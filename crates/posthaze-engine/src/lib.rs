@@ -77,6 +77,8 @@ pub struct DownloadRequest {
     pub output_dir: PathBuf,
     /// Maximum concurrent `Worker`s allowed for multi-`Segment` transfers.
     pub max_workers: usize,
+    /// Whether to call `File::sync_all()` (`FlushFileBuffers`) before renaming `.part`.
+    pub sync_on_complete: bool,
 }
 
 impl DownloadRequest {
@@ -87,6 +89,7 @@ impl DownloadRequest {
             output_path: None,
             output_dir: output_dir.into(),
             max_workers: 8,
+            sync_on_complete: false,
         }
     }
 }
@@ -165,6 +168,7 @@ impl DownloadEngine {
         let client = reqwest::Client::builder()
             .user_agent(concat!("posthaze/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(15))
+            .tcp_nodelay(true)
             .build()
             .unwrap_or_default();
         Self { client }
@@ -203,7 +207,11 @@ impl DownloadEngine {
         let part_path = make_part_path(&final_path);
 
         let transfer_start = Instant::now();
-        let writer = Arc::new(PartFileWriter::spawn(part_path, probe.content_length)?);
+        let writer = Arc::new(PartFileWriter::spawn_with_sync(
+            part_path,
+            probe.content_length,
+            request.sync_on_complete,
+        )?);
         let downloaded = Arc::new(AtomicU64::new(0));
         let active_workers = Arc::new(AtomicUsize::new(0));
 

@@ -12,7 +12,7 @@ use crate::EngineError;
 use crate::writer::PartFileWriter;
 
 pub const MIN_SEGMENT_SIZE: u64 = 2 * 1024 * 1024;
-pub const CHUNK_BUFFER_SIZE: usize = 128 * 1024;
+pub const CHUNK_BUFFER_SIZE: usize = 512 * 1024;
 const MAX_SEGMENT_RETRIES: u32 = 5;
 const BASE_BACKOFF_MS: u64 = 100;
 const MAX_BACKOFF_MS: u64 = 5_000;
@@ -355,7 +355,7 @@ async fn run_segment_attempt(
 
     let mut cur = attempt_start;
     let mut write_offset = attempt_start;
-    let mut buffer = BytesMut::with_capacity(CHUNK_BUFFER_SIZE);
+    let mut buffer = BytesMut::with_capacity(CHUNK_BUFFER_SIZE * 2);
     let mut stream = resp.bytes_stream();
     let mut stream_err: Option<EngineError> = None;
 
@@ -388,6 +388,7 @@ async fn run_segment_attempt(
 
         if buffer.len() >= CHUNK_BUFFER_SIZE {
             let block = buffer.split().freeze();
+            buffer.reserve(CHUNK_BUFFER_SIZE);
             let block_len = block.len() as u64;
             writer.write_at(write_offset, block).await?;
             write_offset += block_len;
@@ -448,7 +449,7 @@ async fn stream_unbounded_to_writer(
 ) -> Result<u64, EngineError> {
     let mut written = 0u64;
     let mut write_offset = 0u64;
-    let mut buffer = BytesMut::with_capacity(CHUNK_BUFFER_SIZE);
+    let mut buffer = BytesMut::with_capacity(CHUNK_BUFFER_SIZE * 2);
     let mut stream = resp.bytes_stream();
 
     while let Some(item) = stream.next().await {
@@ -460,6 +461,7 @@ async fn stream_unbounded_to_writer(
 
         if buffer.len() >= CHUNK_BUFFER_SIZE {
             let block = buffer.split().freeze();
+            buffer.reserve(CHUNK_BUFFER_SIZE);
             let block_len = block.len() as u64;
             writer.write_at(write_offset, block).await?;
             write_offset += block_len;

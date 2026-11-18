@@ -8,7 +8,7 @@ use tokio::task::JoinHandle;
 
 use crate::EngineError;
 
-const WRITER_CHANNEL_CAPACITY: usize = 64;
+const WRITER_CHANNEL_CAPACITY: usize = 128;
 
 #[derive(Debug)]
 struct WriteChunk {
@@ -24,8 +24,19 @@ pub struct PartFileWriter {
 }
 
 impl PartFileWriter {
-    /// Opens/creates `part_path`, optionally pre-allocates `total_bytes`, and spawns the writer task.
+    /// Opens/creates `part_path`, optionally pre-allocates `total_bytes`, and spawns the writer task
+    /// (defaulting to `flush()` on completion).
     pub fn spawn(part_path: PathBuf, total_bytes: Option<u64>) -> Result<Self, EngineError> {
+        Self::spawn_with_sync(part_path, total_bytes, false)
+    }
+
+    /// Opens/creates `part_path`, optionally pre-allocates `total_bytes`, and spawns the writer task
+    /// with configurable `sync_all()` durability on completion.
+    pub fn spawn_with_sync(
+        part_path: PathBuf,
+        total_bytes: Option<u64>,
+        sync_on_complete: bool,
+    ) -> Result<Self, EngineError> {
         if let Some(parent) = part_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -42,11 +53,19 @@ impl PartFileWriter {
 
         let (tx, mut rx) = mpsc::channel::<WriteChunk>(WRITER_CHANNEL_CAPACITY);
         let handle = tokio::task::spawn_blocking(move || {
+            let mut cursor = 0u64;
             while let Some(chunk) = rx.blocking_recv() {
-                file.seek(SeekFrom::Start(chunk.offset))?;
+                if chunk.offset != cursor {
+                    file.seek(SeekFrom::Start(chunk.offset))?;
+                    cursor = chunk.offset;
+                }
                 file.write_all(&chunk.data)?;
+                cursor += chunk.data.len() as u64;
             }
-            file.sync_all()?;
+            file.flush()?;
+            if sync_on_complete {
+                file.sync_all()?;
+            }
             Ok(())
         });
 
