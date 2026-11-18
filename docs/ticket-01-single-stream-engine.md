@@ -15,8 +15,8 @@ flowchart LR
     CLI["posthaze-cli"] -->|"DownloadRequest + watch::Sender"| ENG["DownloadEngine::download"]
     ENG -->|"HEAD"| PROBE["probe::probe_url"]
     PROBE -->|"ProbeResult (final URL, size, filename, ETag)"| ENG
-    ENG -->|"128 KiB Chunks over bounded mpsc (cap 64)"| WRITER["PartFileWriter (blocking task)"]
-    WRITER -->|"seek + write_all -> sync_all -> rename"| DISK["<final_path>.part -> <final_path>"]
+    ENG -->|"512 KiB Chunks over bounded mpsc (cap 128)"| WRITER["PartFileWriter (blocking task)"]
+    WRITER -->|"write_all (seek if non-seq) -> flush -> rename"| DISK["<final_path>.part -> <final_path>"]
 ```
 
 ### 1. Capability `Probing` (`probe.rs`)
@@ -33,26 +33,26 @@ flowchart LR
   3. Percent-decoded terminal URL path segment
   4. `"download.bin"` fallback
 
-All derived filenames are sanitized to strip directory components and replace Windows-illegal/control characters (`< > : " / \ | ? *`) with `_`, plus trailing dots and spaces.
+All derived filenames are sanitized to strip directory components, replace Windows-illegal/control characters (`< > : " / \ | ? *`) with `_`, strip trailing dots and spaces, and prefix Windows reserved device names (`CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`, e.g., `CON.txt` → `_CON.txt`).
 
 ### 2. Buffered `.part` File Writer (`writer.rs`)
 
-`PartFileWriter::spawn` creates `<final_path>.part`, pre-allocates `Content-Length` bytes via `File::set_len` when known, and runs a dedicated blocking task receiving `WriteChunk { offset, data }` over a bounded `mpsc::channel(64)` for natural memory backpressure.
+`PartFileWriter::spawn_with_sync` creates `<final_path>.part`, pre-allocates `Content-Length` bytes via `File::set_len` when known, and runs a dedicated blocking task receiving `WriteChunk { offset, data }` over a bounded `mpsc::channel(128)` for natural memory backpressure. Sequential `Chunk`s skip `seek` calls via a tracked cursor.
 
-During streaming in `DownloadEngine::download`, incoming network frames are coalesced into 128 KiB `BytesMut` buffers (`CHUNK_BUFFER_SIZE`) before sending to the writer. On completion, `PartFileWriter::finish` closes the channel, calls `file.sync_all()`, and atomically renames `.part` to `final_path`.
+During streaming, incoming network frames are coalesced into 512 KiB `BytesMut` buffers (`CHUNK_BUFFER_SIZE`) with pre-reserved capacity before sending to the writer. On completion, `PartFileWriter::finish` closes the channel, calls `file.flush()` (and `file.sync_all()` when `sync_on_complete` is enabled), and atomically renames `.part` to `final_path`.
 
 ### 3. Public Engine API (`lib.rs`)
 
-- **`DownloadEngine::new()`** — Builds the shared `reqwest::Client`.
+- **`DownloadEngine::new()`** — Builds the shared `reqwest::Client` (`tcp_nodelay(true)`, `15s` connect timeout).
 - **`DownloadEngine::download(request, progress_tx)`** — Runs `Probing` → `Active` → `Completed` (or `Failed`), throttling `Active` `ProgressSnapshot` updates to every 50 ms.
-- **`DownloadRequest`** — `url`, `output_path`, `output_dir`, `max_workers` (default `8`).
-- **`DownloadOutcome`** — `final_path`, `bytes_downloaded`, `content_length`, `supports_ranges`, `workers_used`, `probe_duration`, `transfer_duration`, `total_duration`, `etag`, `last_modified`, `final_url`, plus `average_bytes_per_sec()`.
+- **`DownloadRequest`** — `url`, `output_path`, `output_dir`, `max_workers` (default `8`), `sync_on_complete` (default `false`).
+- **`DownloadOutcome`** — `final_path`, `bytes_downloaded`, `content_length`, `supports_ranges`, `workers_used`, `splits_performed`, `retries_performed`, `probe_duration`, `transfer_duration`, `total_duration`, `etag`, `last_modified`, `final_url`, plus `average_bytes_per_sec()`.
 - **`EngineError`** — Typed errors (`Http`, `HttpStatus`, `Io`, `Writer`).
 
 ## CLI Usage (`posthaze-cli`)
 
 ```powershell
-cargo run --release -p posthaze-cli -- download "<URL>" [-o <PATH>] [-c <CONNECTIONS>] [--debug] [--stats-out <PATH>]
+cargo run --release -p posthaze-cli -- download "<URL>" [-o <PATH>] [-c <CONNECTIONS>] [--sync-on-complete] [--debug] [--stats-out <PATH>]
 ```
 
 > **Windows `cmd.exe` note:** Always wrap URLs containing `&` query parameters in double quotes (`"..."`) so `cmd.exe` does not split the command at `&`.
@@ -64,6 +64,7 @@ cargo run --release -p posthaze-cli -- download "<URL>" [-o <PATH>] [-c <CONNECT
 | `<URL>` | required | HTTP/HTTPS URL to download |
 | `-o, --output <PATH>` | auto-resolved | Explicit output file path |
 | `-c, --connections <N>` | `8` | Max concurrent `Worker`s (used by multi-`Segment` mode in Ticket 03) |
+| `--sync-on-complete` | `false` | Call `File::sync_all()` before renaming `.part` to the final file |
 | `--debug` | `false` | Write JSON stats & 200 ms throughput samples to `<file>.stats.json` (or `posthaze-failed.stats.json` on failure) |
 | `--stats-out <PATH>` | `<file>.stats.json` | Custom output path for the JSON stats report (implies `--debug`) |
 

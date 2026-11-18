@@ -7,4 +7,4 @@ Each active `Download` spawns a single dedicated blocking file-writer task that 
 ## Considered Options
 
 - **Per-`Worker` `spawn_blocking` writes on a shared `File`:** Parallelizes OS write syscalls, but saturates Tokio's blocking thread pool under high concurrency and offers no natural memory backpressure when disk I/O lags behind network throughput.
-- **Dedicated writer task + bounded `mpsc` channel:** Serializes disk writes in one place with zero lock contention, applies automatic backpressure to fast `Worker`s when the channel fills, and provides a single owner responsible for flushing and syncing before the `.part` → final rename.
+- **Dedicated writer task + bounded `mpsc` channel:** Serializes disk writes in one place with zero lock contention, applies automatic backpressure to fast `Worker`s when the channel fills, and provides a single owner responsible for flushing (and optionally `sync_all` when `sync_on_complete` is enabled) before the `.part` → final rename.

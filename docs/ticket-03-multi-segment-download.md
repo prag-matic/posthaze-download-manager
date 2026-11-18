@@ -12,7 +12,7 @@ Ticket 03 adds concurrent multi-`Segment` HTTP `Range` downloading in [`crates/p
    - Partitions `[0, total_bytes)` into `worker_count` contiguous `[start, end)` `Segment`s, distributing remainder bytes evenly.
 4. **Concurrent `Worker`s:**
    - Spawns one async `Worker` task per `Segment` in a `tokio::task::JoinSet`.
-   - Each `Worker` sends `GET` with `Range: bytes={start}-{end - 1}`, verifies `206 Partial Content`, coalesces incoming bytes into 128 KiB `Chunk`s, and writes at positional offsets via the shared bounded `PartFileWriter` channel.
+   - Each `Worker` sends `GET` with `Range: bytes={start}-{end - 1}`, verifies `206 Partial Content`, coalesces incoming bytes into 512 KiB `Chunk`s, and writes at positional offsets via the shared bounded `PartFileWriter` channel.
    - Shared `AtomicU64` (`downloaded`) and `AtomicUsize` (`active_workers`) counters feed a 50 ms progress reporter task emitting `ProgressSnapshot`s.
 5. **Finalization:** Once all `Worker`s complete and flush, `PartFileWriter::finish` calls `sync_all()` and atomically renames `.part` to the final path.
 
