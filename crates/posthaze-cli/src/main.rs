@@ -1,3 +1,6 @@
+mod bench_runner;
+mod bench_server;
+
 use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -10,6 +13,9 @@ use posthaze_engine::{
 };
 use serde::Serialize;
 use tokio::sync::watch;
+
+use crate::bench_runner::{BenchOptions, run_bench};
+use crate::bench_server::{BenchServerConfig, parse_byte_size, start_bench_server};
 
 #[derive(Parser)]
 #[command(name = "posthaze", about = "Posthaze Download Manager CLI")]
@@ -36,6 +42,63 @@ enum Commands {
         /// Custom path for the debug stats JSON file (implies --debug).
         #[arg(long, value_name = "PATH")]
         stats_out: Option<PathBuf>,
+    },
+    /// Run a controlled local HTTP/1.1 range server for repeatable benchmarking.
+    Serve {
+        /// Virtual file size (e.g. 100M, 1G, 5G).
+        #[arg(long, default_value = "100M")]
+        size: String,
+        /// TCP port to bind (0 for ephemeral).
+        #[arg(long, default_value_t = 0)]
+        port: u16,
+        /// Per-connection bandwidth cap in Mbps.
+        #[arg(long)]
+        per_conn_mbps: Option<f64>,
+        /// Artificial first-byte latency in milliseconds.
+        #[arg(long, default_value_t = 0)]
+        latency_ms: u64,
+        /// Mid-stream connection drop probability (0..100).
+        #[arg(long, default_value_t = 0.0)]
+        drop_pct: f64,
+        /// HTTP 503 injection probability on GET (0..100).
+        #[arg(long, default_value_t = 0.0)]
+        error_503_pct: f64,
+        /// Return 405 Method Not Allowed on HEAD requests.
+        #[arg(long)]
+        block_head: bool,
+        /// Disable HTTP Range support.
+        #[arg(long)]
+        no_range: bool,
+    },
+    /// Run an automated benchmark matrix against an in-process local server.
+    Bench {
+        /// Comma-separated virtual file sizes (e.g. 100M or 100M,1G).
+        #[arg(long, value_delimiter = ',', default_value = "100M")]
+        sizes: Vec<String>,
+        /// Comma-separated worker counts to sweep.
+        #[arg(short = 'c', long, value_delimiter = ',', default_value = "1,2,4,8,16,32")]
+        connections: Vec<usize>,
+        /// Number of iterations per configuration.
+        #[arg(long, default_value_t = 3)]
+        runs: usize,
+        /// Per-connection bandwidth cap in Mbps.
+        #[arg(long)]
+        per_conn_mbps: Option<f64>,
+        /// Artificial first-byte latency in milliseconds.
+        #[arg(long, default_value_t = 0)]
+        latency_ms: u64,
+        /// Mid-stream connection drop probability (0..100).
+        #[arg(long, default_value_t = 0.0)]
+        drop_pct: f64,
+        /// HTTP 503 injection probability on GET (0..100).
+        #[arg(long, default_value_t = 0.0)]
+        error_503_pct: f64,
+        /// Skip automatic comparison with curl / aria2c on PATH.
+        #[arg(long)]
+        no_external: bool,
+        /// Optional path to save the Markdown or JSON (.json) benchmark report.
+        #[arg(long, value_name = "PATH")]
+        report: Option<PathBuf>,
     },
 }
 
@@ -64,6 +127,8 @@ struct DebugStatsReport {
     content_length: Option<u64>,
     supports_ranges: bool,
     workers_used: usize,
+    splits_performed: usize,
+    retries_performed: usize,
     probe_ms: Option<f64>,
     transfer_ms: Option<f64>,
     total_ms: f64,
@@ -90,6 +155,71 @@ async fn main() -> ExitCode {
             debug,
             stats_out,
         } => run_download(url, output, connections, debug || stats_out.is_some(), stats_out).await,
+        Commands::Serve {
+            size,
+            port,
+            per_conn_mbps,
+            latency_ms,
+            drop_pct,
+            error_503_pct,
+            block_head,
+            no_range,
+        } => {
+            let size_bytes = match parse_byte_size(&size) {
+                Ok(b) => b,
+                Err(err) => {
+                    eprintln!("Invalid --size: {err}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let server = match start_bench_server(BenchServerConfig {
+                size: size_bytes,
+                port,
+                per_conn_mbps,
+                latency_ms,
+                drop_pct,
+                error_503_pct,
+                block_head,
+                no_range,
+            })
+            .await
+            {
+                Ok(s) => s,
+                Err(err) => {
+                    eprintln!("Failed to start server: {err}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            println!("Serving {size_bytes} bytes at {}", server.url());
+            println!("Press Ctrl+C to stop.");
+            let _ = tokio::signal::ctrl_c().await;
+            server.handle.abort();
+            ExitCode::SUCCESS
+        }
+        Commands::Bench {
+            sizes,
+            connections,
+            runs,
+            per_conn_mbps,
+            latency_ms,
+            drop_pct,
+            error_503_pct,
+            no_external,
+            report,
+        } => {
+            run_bench(BenchOptions {
+                sizes,
+                connections,
+                runs: runs.max(1),
+                per_conn_mbps,
+                latency_ms,
+                drop_pct,
+                error_503_pct,
+                include_external: !no_external,
+                report_path: report,
+            })
+            .await
+        }
     }
 }
 
@@ -248,6 +378,8 @@ fn write_success_stats(
         content_length: outcome.content_length,
         supports_ranges: outcome.supports_ranges,
         workers_used: outcome.workers_used,
+        splits_performed: outcome.splits_performed,
+        retries_performed: outcome.retries_performed,
         probe_ms: Some(outcome.probe_duration.as_secs_f64() * 1000.0),
         transfer_ms: Some(outcome.transfer_duration.as_secs_f64() * 1000.0),
         total_ms: outcome.total_duration.as_secs_f64() * 1000.0,
@@ -294,6 +426,8 @@ fn write_failure_stats(
         content_length,
         supports_ranges: false,
         workers_used: 0,
+        splits_performed: 0,
+        retries_performed: 0,
         probe_ms: None,
         transfer_ms: None,
         total_ms: secs * 1000.0,
@@ -381,7 +515,10 @@ fn print_summary(outcome: &DownloadOutcome, peak_bps: f64) {
     );
     println!("  Avg speed:      {avg_mib:.2} MiB/s ({avg_mbps:.2} Mbps)");
     println!("  Peak speed:     {peak_mib:.2} MiB/s ({peak_mbps:.2} Mbps)");
-    println!("  Workers used:   {}", outcome.workers_used);
+    println!(
+        "  Workers used:   {} (splits: {}, retries: {})",
+        outcome.workers_used, outcome.splits_performed, outcome.retries_performed
+    );
     println!("  Range support:  {}", outcome.supports_ranges);
     if let Some(etag) = &outcome.etag {
         println!("  ETag:           {etag}");

@@ -91,6 +91,15 @@ pub async fn execute_single_stream(
     result
 }
 
+/// Summary metrics returned by a multi-`Segment` transfer.
+pub struct MultiSegmentResult {
+    pub bytes_written: u64,
+    pub workers_used: usize,
+    pub splits_performed: usize,
+    pub retries_performed: usize,
+}
+
+#[allow(clippy::too_many_arguments)]
 pub async fn execute_multi_segment(
     client: &reqwest::Client,
     url: &str,
@@ -99,14 +108,21 @@ pub async fn execute_multi_segment(
     writer: &Arc<PartFileWriter>,
     downloaded: &Arc<AtomicU64>,
     active_workers: &Arc<AtomicUsize>,
-) -> Result<(u64, usize), EngineError> {
+) -> Result<MultiSegmentResult, EngineError> {
     let initial_specs = plan_segments(total_bytes, max_workers);
     if initial_specs.is_empty() {
-        return Ok((0, 0));
+        return Ok(MultiSegmentResult {
+            bytes_written: 0,
+            workers_used: 0,
+            splits_performed: 0,
+            retries_performed: 0,
+        });
     }
 
     let worker_count = initial_specs.len();
     let next_id = Arc::new(AtomicUsize::new(worker_count));
+    let splits_performed = Arc::new(AtomicUsize::new(0));
+    let retries_performed = Arc::new(AtomicUsize::new(0));
     let active_segments: Arc<Mutex<Vec<Arc<ActiveSegment>>>> = Arc::new(Mutex::new(
         initial_specs
             .iter()
@@ -129,6 +145,8 @@ pub async fn execute_multi_segment(
         let active_workers = Arc::clone(active_workers);
         let active_segments = Arc::clone(&active_segments);
         let next_id = Arc::clone(&next_id);
+        let splits_performed = Arc::clone(&splits_performed);
+        let retries_performed = Arc::clone(&retries_performed);
 
         join_set.spawn(async move {
             active_workers.fetch_add(1, Ordering::Relaxed);
@@ -141,6 +159,8 @@ pub async fn execute_multi_segment(
                 &downloaded,
                 &active_segments,
                 &next_id,
+                &splits_performed,
+                &retries_performed,
             )
             .await;
             active_workers.fetch_sub(1, Ordering::Relaxed);
@@ -165,7 +185,12 @@ pub async fn execute_multi_segment(
         }
     }
 
-    Ok((total_written, worker_count))
+    Ok(MultiSegmentResult {
+        bytes_written: total_written,
+        workers_used: worker_count,
+        splits_performed: splits_performed.load(Ordering::Relaxed),
+        retries_performed: retries_performed.load(Ordering::Relaxed),
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -178,18 +203,30 @@ async fn run_worker_loop(
     downloaded: &AtomicU64,
     active_segments: &Mutex<Vec<Arc<ActiveSegment>>>,
     next_id: &AtomicUsize,
+    splits_performed: &AtomicUsize,
+    retries_performed: &AtomicUsize,
 ) -> Result<u64, EngineError> {
     let mut worker_total = 0u64;
 
     loop {
-        let seg_bytes =
-            run_segment_worker(client, url, &current_seg, allow_full_200, writer, downloaded)
-                .await?;
+        let seg_bytes = run_segment_worker(
+            client,
+            url,
+            &current_seg,
+            allow_full_200,
+            writer,
+            downloaded,
+            retries_performed,
+        )
+        .await?;
         worker_total += seg_bytes;
 
         remove_active_segment(active_segments, current_seg.id);
         match steal_largest_segment(active_segments, next_id) {
-            Some(stolen) => current_seg = stolen,
+            Some(stolen) => {
+                splits_performed.fetch_add(1, Ordering::Relaxed);
+                current_seg = stolen;
+            }
             None => break,
         }
     }
@@ -248,6 +285,7 @@ async fn run_segment_worker(
     allow_full_200: bool,
     writer: &PartFileWriter,
     downloaded: &AtomicU64,
+    retries_performed: &AtomicUsize,
 ) -> Result<u64, EngineError> {
     let mut retries = 0u32;
 
@@ -286,6 +324,7 @@ async fn run_segment_worker(
                     return Err(err);
                 }
 
+                retries_performed.fetch_add(1, Ordering::Relaxed);
                 tokio::time::sleep(backoff_with_jitter(retries.saturating_sub(1))).await;
             }
         }

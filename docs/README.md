@@ -24,6 +24,7 @@ Documentation is a first-class part of Posthaze Download Manager.
 
 ## Benchmarks
 
+- [Benchmarking & Stress-Testing Guide](benchmarking.md)
 - [Ticket 03 Baseline — Static Multi-`Segment` Scaling (`c=2..32`)](benchmarks/ticket-03-baseline.md)
 - [Ticket 04 Benchmark — Dynamic `Segment` Splitting (`c=2..32`)](benchmarks/ticket-04-work-stealing.md)
 

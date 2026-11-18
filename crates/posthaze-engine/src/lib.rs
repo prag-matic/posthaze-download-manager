@@ -4,7 +4,8 @@
 
 mod probe;
 mod transfer;
-mod writer;
+/// Dedicated blocking `.part` file writer used by `DownloadEngine` and benchmarks.
+pub mod writer;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -116,6 +117,10 @@ pub struct DownloadOutcome {
     pub supports_ranges: bool,
     /// Number of `Worker`s used during the transfer.
     pub workers_used: usize,
+    /// Number of dynamic `Segment` splits (work steals) performed.
+    pub splits_performed: usize,
+    /// Number of transient `Worker` retries performed.
+    pub retries_performed: usize,
     /// Time spent in `Probing`.
     pub probe_duration: Duration,
     /// Time spent transferring `Chunk`s and finalizing the `.part` file.
@@ -240,14 +245,19 @@ impl DownloadEngine {
                 &active_workers,
             )
             .await
-            .map(|bytes| (bytes, 1)),
+            .map(|bytes| crate::transfer::MultiSegmentResult {
+                bytes_written: bytes,
+                workers_used: 1,
+                splits_performed: 0,
+                retries_performed: 0,
+            }),
         };
 
         if let Some(handle) = reporter {
             handle.abort();
         }
 
-        let (bytes_downloaded, workers_used) = match transfer_result {
+        let res = match transfer_result {
             Ok(res) => res,
             Err(err) => {
                 emit_failed(
@@ -271,18 +281,20 @@ impl DownloadEngine {
             &progress_tx,
             ProgressSnapshot {
                 state: DownloadState::Completed,
-                bytes_downloaded,
-                total_bytes: probe.content_length.or(Some(bytes_downloaded)),
+                bytes_downloaded: res.bytes_written,
+                total_bytes: probe.content_length.or(Some(res.bytes_written)),
                 active_workers: 0,
             },
         );
 
         Ok(DownloadOutcome {
             final_path,
-            bytes_downloaded,
+            bytes_downloaded: res.bytes_written,
             content_length: probe.content_length,
             supports_ranges: probe.supports_ranges,
-            workers_used,
+            workers_used: res.workers_used,
+            splits_performed: res.splits_performed,
+            retries_performed: res.retries_performed,
             probe_duration,
             transfer_duration,
             total_duration,
