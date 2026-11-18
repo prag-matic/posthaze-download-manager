@@ -5,4 +5,5 @@
 # Agentic skills & harness tooling
 .agents/
 .codex/
+.scratch/
 skills-lock.json
