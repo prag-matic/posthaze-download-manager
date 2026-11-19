@@ -23,7 +23,7 @@ use tokio::sync::{Mutex, mpsc, watch};
 use crate::probe::{ProbeResult, probe_url};
 use crate::store::DownloadStore;
 use crate::transfer::{
-    ControlSignal, MultiSegmentResult, SegmentCheckpoint, TransferFailure, execute_multi_segment,
+    ControlSignal, MultiSegmentResult, SegmentCheckpoint, execute_multi_segment,
     execute_multi_segment_from_checkpoints, execute_single_stream,
 };
 use crate::writer::PartFileWriter;
@@ -301,8 +301,11 @@ impl DownloadHandle {
     }
 
     /// Awaits completion of this `Download` and returns its [`DownloadOutcome`].
-    pub async fn wait(self) -> Result<DownloadOutcome, EngineError> {
-        self.join_handle
+    ///
+    /// This method is cancellation-safe until it resolves once, allowing callers to invoke
+    /// [`DownloadHandle::pause`] or [`DownloadHandle::cancel`] if a `tokio::select!` branch wins.
+    pub async fn wait(&mut self) -> Result<DownloadOutcome, EngineError> {
+        (&mut self.join_handle)
             .await
             .map_err(|e| EngineError::TaskJoin(e.to_string()))?
     }
@@ -428,8 +431,7 @@ impl DownloadEngine {
             .ok_or_else(|| EngineError::NotFound(id.to_string()))?;
 
         match record.state {
-            DownloadState::Paused => {}
-            DownloadState::Failed if record.supports_ranges || record.part_path.is_none() => {}
+            DownloadState::Paused | DownloadState::Failed => {}
             other => {
                 return Err(EngineError::InvalidState(format!(
                     "cannot resume download in {} state",
@@ -438,9 +440,18 @@ impl DownloadEngine {
             }
         }
 
-        if let Some(part_path) = &record.part_path
-            && !part_path.exists()
-        {
+        if !record.supports_ranges {
+            return Err(EngineError::InvalidState(
+                "cannot resume download without server byte-range support".to_string(),
+            ));
+        }
+
+        let Some(part_path) = &record.part_path else {
+            return Err(EngineError::InvalidState(
+                "cannot resume download without a recorded .part file".to_string(),
+            ));
+        };
+        if !part_path.exists() {
             return Err(EngineError::InvalidState(format!(
                 "missing .part file for resume: {}",
                 part_path.display()
@@ -448,6 +459,11 @@ impl DownloadEngine {
         }
 
         let segments = store.get_segments(id).await?;
+        if segments.is_empty() {
+            return Err(EngineError::InvalidState(
+                "cannot resume download with no persisted segments".to_string(),
+            ));
+        }
 
         let (progress_tx, progress_rx) = watch::channel(ProgressSnapshot {
             state: DownloadState::Queued,
@@ -496,20 +512,6 @@ impl DownloadEngine {
             progress_rx,
             join_handle,
         })
-    }
-
-    /// Signals an active `Download` to pause gracefully, flushing buffered `Chunk`s and saving a `Checkpoint`.
-    pub async fn pause(&self, id: &DownloadId) -> Result<(), EngineError> {
-        let live = {
-            let active = self.active.lock().await;
-            active.get(id).cloned()
-        };
-
-        let Some(ctrl) = live else {
-            return Err(EngineError::NotFound(id.to_string()));
-        };
-        let _ = ctrl.control_tx.send(ControlSignal::Pause);
-        Ok(())
     }
 
     /// Cancels an active or persisted (`Paused`/`Failed`/`Queued`) `Download`, deleting its `.part` file.
@@ -627,6 +629,7 @@ async fn fail_download(
     err
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn probe_with_control(
     client: &reqwest::Client,
     store: &Option<DownloadStore>,
@@ -635,6 +638,7 @@ async fn probe_with_control(
     id: &DownloadId,
     url: &str,
     (initial_bytes, initial_total): (u64, Option<u64>),
+    resume_prev_state: Option<DownloadState>,
 ) -> Result<ProbeResult, EngineError> {
     if let Some(store) = store
         && let Err(err) = store.set_state(id, DownloadState::Probing).await
@@ -688,19 +692,33 @@ async fn probe_with_control(
                     Err(EngineError::Cancelled)
                 }
                 ControlSignal::Pause => {
-                    if let Some(store) = store {
-                        let _ = store.save_paused(id, initial_bytes, &[]).await;
+                    if let Some(prev) = resume_prev_state {
+                        if let Some(store) = store {
+                            let _ = store.set_state(id, prev).await;
+                        }
+                        emit_progress(
+                            progress_tx,
+                            ProgressSnapshot {
+                                state: prev,
+                                bytes_downloaded: initial_bytes,
+                                total_bytes: initial_total,
+                                active_workers: 0,
+                            },
+                        );
+                        Err(EngineError::Paused)
+                    } else {
+                        Err(fail_download(
+                            store,
+                            progress_tx,
+                            id,
+                            initial_bytes,
+                            initial_total,
+                            EngineError::InvalidState(
+                                "cannot pause non-range download".to_string(),
+                            ),
+                        )
+                        .await)
                     }
-                    emit_progress(
-                        progress_tx,
-                        ProgressSnapshot {
-                            state: DownloadState::Paused,
-                            bytes_downloaded: initial_bytes,
-                            total_bytes: initial_total,
-                            active_workers: 0,
-                        },
-                    );
-                    Err(EngineError::Paused)
                 }
                 ControlSignal::Run => unreachable!("Run does not wake select as interruption"),
             }
@@ -794,20 +812,37 @@ async fn finalize_transfer(
     part_path: &Path,
     writer: Arc<PartFileWriter>,
     downloaded: &AtomicU64,
-    transfer_result: Result<MultiSegmentResult, TransferFailure>,
+    transfer_result: Result<MultiSegmentResult, EngineError>,
     probe_duration: Duration,
     transfer_start: Instant,
     total_start: Instant,
 ) -> Result<DownloadOutcome, EngineError> {
     let res = match transfer_result {
         Ok(res) => res,
-        Err(failure) => {
+        Err(failure_err) => {
             let bytes = downloaded.load(Ordering::Relaxed);
-            match failure.error {
+            match failure_err {
                 EngineError::Paused => {
-                    match Arc::try_unwrap(writer) {
-                        Ok(w) => {
-                            if let Err(flush_err) = w.flush_and_close().await {
+                    if !probe.supports_ranges {
+                        if let Ok(w) = Arc::try_unwrap(writer) {
+                            w.abort().await;
+                        }
+                        return Err(fail_download(
+                            store,
+                            progress_tx,
+                            id,
+                            bytes,
+                            probe.content_length,
+                            EngineError::InvalidState(
+                                "cannot pause non-range download".to_string(),
+                            ),
+                        )
+                        .await);
+                    }
+                    let writer_cursors = match Arc::try_unwrap(writer) {
+                        Ok(w) => match w.flush_and_close().await {
+                            Ok(cursors) => cursors,
+                            Err(flush_err) => {
                                 return Err(fail_download(
                                     store,
                                     progress_tx,
@@ -818,7 +853,7 @@ async fn finalize_transfer(
                                 )
                                 .await);
                             }
-                        }
+                        },
                         Err(_) => {
                             return Err(fail_download(
                                 store,
@@ -832,15 +867,24 @@ async fn finalize_transfer(
                             )
                             .await);
                         }
-                    }
-                    if let Some(store) = store {
-                        store.save_paused(id, bytes, &failure.segments).await?;
-                    }
+                    };
+                    let persisted_bytes = if let Some(store) = store {
+                        store
+                            .finalize_writer_checkpoint(
+                                id,
+                                DownloadState::Paused,
+                                None,
+                                &writer_cursors,
+                            )
+                            .await?
+                    } else {
+                        bytes
+                    };
                     emit_progress(
                         progress_tx,
                         ProgressSnapshot {
                             state: DownloadState::Paused,
-                            bytes_downloaded: bytes,
+                            bytes_downloaded: persisted_bytes,
                             total_bytes: probe.content_length,
                             active_workers: 0,
                         },
@@ -867,25 +911,28 @@ async fn finalize_transfer(
                     return Err(EngineError::Cancelled);
                 }
                 err => {
-                    let mut segments_to_save = failure.segments;
-                    if probe.supports_ranges {
-                        if let Ok(w) = Arc::try_unwrap(writer) {
-                            if w.flush_and_close().await.is_err() {
-                                segments_to_save.clear();
-                            }
-                        } else {
-                            segments_to_save.clear();
+                    let mut acked_bytes = bytes;
+                    if probe.supports_ranges
+                        && let Ok(w) = Arc::try_unwrap(writer)
+                        && let Ok(writer_cursors) = w.flush_and_close().await
+                    {
+                        if let Some(store) = store
+                            && let Ok(persisted) = store
+                                .finalize_writer_checkpoint(
+                                    id,
+                                    DownloadState::Failed,
+                                    Some(&err.to_string()),
+                                    &writer_cursors,
+                                )
+                                .await
+                        {
+                            acked_bytes = persisted;
                         }
+                        emit_failed(progress_tx, acked_bytes, probe.content_length);
+                        return Err(err);
                     }
                     if let Some(store) = store {
-                        let _ = store
-                            .save_failed_with_segments(
-                                id,
-                                bytes,
-                                &err.to_string(),
-                                &segments_to_save,
-                            )
-                            .await;
+                        let _ = store.mark_failed(id, bytes, &err.to_string()).await;
                     }
                     emit_failed(progress_tx, bytes, probe.content_length);
                     return Err(err);
@@ -966,22 +1013,12 @@ async fn run_resumed_download(
     progress_tx: Option<watch::Sender<ProgressSnapshot>>,
     mut control_rx: watch::Receiver<ControlSignal>,
 ) -> Result<DownloadOutcome, EngineError> {
-    let (Some(final_path), Some(part_path)) = (record.output_path.clone(), record.part_path.clone())
-    else {
-        let mut req = DownloadRequest::new(record.url, PathBuf::from("."));
-        req.output_path = record.output_path;
-        req.max_workers = record.max_workers;
-        req.sync_on_complete = record.sync_on_complete;
-        return run_download(client, Some(store), id, req, progress_tx, control_rx).await;
-    };
-
-    if segments.is_empty() {
-        let mut req = DownloadRequest::new(record.url, PathBuf::from("."));
-        req.output_path = Some(final_path);
-        req.max_workers = record.max_workers;
-        req.sync_on_complete = record.sync_on_complete;
-        return run_download(client, Some(store), id, req, progress_tx, control_rx).await;
-    }
+    let final_path = record.output_path.clone().ok_or_else(|| {
+        EngineError::InvalidState("missing output_path for resumed download".to_string())
+    })?;
+    let part_path = record.part_path.clone().ok_or_else(|| {
+        EngineError::InvalidState("missing part_path for resumed download".to_string())
+    })?;
 
     let total_start = Instant::now();
     let store_opt = Some(store.clone());
@@ -994,14 +1031,14 @@ async fn run_resumed_download(
         &id,
         &record.url,
         (record.bytes_downloaded, record.content_length),
+        Some(record.state),
     )
     .await?;
     let probe_duration = probe_start.elapsed();
 
     if let Err(err) = validate_resume_probe(&id, &record, &probe) {
-        let _ = store.set_state(&id, record.state).await;
         return Err(fail_download(
-            &None,
+            &store_opt,
             &progress_tx,
             &id,
             record.bytes_downloaded,
@@ -1130,6 +1167,7 @@ async fn run_download(
         &id,
         &request.url,
         (0, None),
+        None,
     )
     .await?;
     let probe_duration = probe_start.elapsed();
@@ -1219,10 +1257,6 @@ async fn run_download(
             workers_used: 1,
             splits_performed: 0,
             retries_performed: 0,
-        })
-        .map_err(|error| TransferFailure {
-            error,
-            segments: Vec::new(),
         }),
     };
 

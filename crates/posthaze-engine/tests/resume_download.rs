@@ -142,7 +142,7 @@ async fn resumes_paused_download_across_engine_restart_and_verifies_blake3() {
     let mut req = DownloadRequest::new(format!("{base_url}/asset.bin"), dir.path());
     req.max_workers = 2;
 
-    let handle = engine.start(req).await.unwrap();
+    let mut handle = engine.start(req).await.unwrap();
     let id = handle.id().clone();
     let mut rx = handle.subscribe();
     wait_until_active_with_bytes(&mut rx).await;
@@ -157,7 +157,7 @@ async fn resumes_paused_download_across_engine_restart_and_verifies_blake3() {
     throttle.store(false, Ordering::Relaxed);
 
     let reopened = DownloadEngine::open(&db_path).await.unwrap();
-    let resumed_handle = reopened.resume(&id).await.unwrap();
+    let mut resumed_handle = reopened.resume(&id).await.unwrap();
     let outcome = resumed_handle.wait().await.unwrap();
 
     let disk_bytes = std::fs::read(&outcome.final_path).unwrap();
@@ -193,7 +193,7 @@ async fn fails_with_resource_changed_when_etag_changes_and_keeps_part() {
     let db_path = dir.path().join("state.db");
     let engine = DownloadEngine::open(&db_path).await.unwrap();
 
-    let handle = engine
+    let mut handle = engine
         .start(DownloadRequest::new(format!("{base_url}/v.bin"), dir.path()))
         .await
         .unwrap();
@@ -216,7 +216,7 @@ async fn fails_with_resource_changed_when_etag_changes_and_keeps_part() {
     // Remote file ETag changes.
     *etag.lock().unwrap() = Some("\"v2\"".into());
 
-    let resumed = engine.resume(&id).await.unwrap();
+    let mut resumed = engine.resume(&id).await.unwrap();
     let err = resumed.wait().await.unwrap_err();
     assert!(
         matches!(err, EngineError::ResourceChanged(_)),
@@ -228,8 +228,113 @@ async fn fails_with_resource_changed_when_etag_changes_and_keeps_part() {
     );
     assert_eq!(
         engine.get_download(&id).await.unwrap().unwrap().state,
-        DownloadState::Paused
+        DownloadState::Failed
     );
+}
+
+#[tokio::test]
+async fn fails_with_resource_changed_when_last_modified_or_length_changes() {
+    let payload: Vec<u8> = (0..4 * 1024 * 1024).map(|i| (i % 241) as u8).collect();
+    let payload_arc = Arc::new(Mutex::new(payload));
+    let last_modified = Arc::new(Mutex::new(Some(
+        "Wed, 21 Oct 2015 07:28:00 GMT".to_string(),
+    )));
+    let throttle = Arc::new(AtomicBool::new(true));
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let p_srv = Arc::clone(&payload_arc);
+    let lm_srv = Arc::clone(&last_modified);
+    let th_srv = Arc::clone(&throttle);
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            let p_srv = Arc::clone(&p_srv);
+            let lm_srv = Arc::clone(&lm_srv);
+            let th_srv = Arc::clone(&th_srv);
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 4096];
+                let Ok(n) = stream.read(&mut buf).await else {
+                    return;
+                };
+                if n == 0 {
+                    return;
+                }
+                let req_str = String::from_utf8_lossy(&buf[..n]);
+                let method = req_str
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("");
+                let data = p_srv.lock().unwrap().clone();
+                let lm = lm_srv.lock().unwrap().clone().unwrap();
+                if method == "HEAD" {
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nAccept-Ranges: bytes\r\nLast-Modified: {lm}\r\nConnection: close\r\n\r\n",
+                        data.len()
+                    );
+                    let _ = stream.write_all(resp.as_bytes()).await;
+                } else if method == "GET" {
+                    let header = format!(
+                        "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes 0-{}/{}\r\nLast-Modified: {lm}\r\nConnection: close\r\n\r\n",
+                        data.len(),
+                        data.len() - 1,
+                        data.len()
+                    );
+                    if stream.write_all(header.as_bytes()).await.is_err() {
+                        return;
+                    }
+                    let slow = th_srv.load(Ordering::Relaxed);
+                    for chunk in data.chunks(64 * 1024) {
+                        if stream.write_all(chunk).await.is_err() {
+                            return;
+                        }
+                        if slow {
+                            tokio::time::sleep(Duration::from_millis(35)).await;
+                        }
+                    }
+                }
+            });
+        }
+    });
+    let base_url = format!("http://{addr}");
+
+    let dir = TempDir::new().unwrap();
+    let db_path = dir.path().join("state.db");
+    let engine = DownloadEngine::open(&db_path).await.unwrap();
+
+    let mut handle = engine
+        .start(DownloadRequest::new(format!("{base_url}/lm.bin"), dir.path()))
+        .await
+        .unwrap();
+    let id = handle.id().clone();
+    let mut rx = handle.subscribe();
+    wait_until_active_with_bytes(&mut rx).await;
+    handle.pause();
+    let _ = handle.wait().await;
+    let part_path = engine
+        .get_download(&id)
+        .await
+        .unwrap()
+        .unwrap()
+        .part_path
+        .unwrap();
+
+    // 1. Last-Modified changes.
+    *last_modified.lock().unwrap() = Some("Thu, 22 Oct 2015 08:00:00 GMT".into());
+    let mut resumed_lm = engine.resume(&id).await.unwrap();
+    let err_lm = resumed_lm.wait().await.unwrap_err();
+    assert!(matches!(err_lm, EngineError::ResourceChanged(_)));
+    assert!(part_path.exists());
+
+    // 2. Restore Last-Modified, change Content-Length.
+    *last_modified.lock().unwrap() = Some("Wed, 21 Oct 2015 07:28:00 GMT".into());
+    payload_arc.lock().unwrap().push(42);
+    let mut resumed_len = engine.resume(&id).await.unwrap();
+    let err_len = resumed_len.wait().await.unwrap_err();
+    assert!(matches!(err_len, EngineError::ResourceChanged(_)));
+    assert!(part_path.exists());
 }
 
 #[tokio::test]
@@ -251,7 +356,7 @@ async fn resumes_without_etag_or_last_modified_when_content_length_matches() {
     let db_path = dir.path().join("state.db");
     let engine = DownloadEngine::open(&db_path).await.unwrap();
 
-    let handle = engine
+    let mut handle = engine
         .start(DownloadRequest::new(
             format!("{base_url}/noval.bin"),
             dir.path(),
@@ -266,7 +371,7 @@ async fn resumes_without_etag_or_last_modified_when_content_length_matches() {
     let _ = handle.wait().await;
 
     throttle.store(false, Ordering::Relaxed);
-    let resumed = engine.resume(&id).await.unwrap();
+    let mut resumed = engine.resume(&id).await.unwrap();
     let outcome = resumed.wait().await.unwrap();
 
     let disk_bytes = std::fs::read(&outcome.final_path).unwrap();
@@ -305,7 +410,7 @@ async fn rejects_resume_for_invalid_states_missing_id_or_missing_part() {
     assert!(matches!(missing_err, EngineError::NotFound(_)));
 
     // Completed download.
-    let handle = engine
+    let mut handle = engine
         .start(DownloadRequest::new(
             format!("{base_url}/done.bin"),
             dir.path(),

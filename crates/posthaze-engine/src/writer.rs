@@ -30,7 +30,7 @@ pub struct PartFileWriter {
     part_path: PathBuf,
     tx: mpsc::Sender<WriteChunk>,
     aborted: Arc<AtomicBool>,
-    handle: JoinHandle<Result<(), std::io::Error>>,
+    handle: JoinHandle<Result<HashMap<usize, u64>, std::io::Error>>,
 }
 
 impl PartFileWriter {
@@ -112,7 +112,7 @@ impl PartFileWriter {
 
             while let Some(chunk) = rx.blocking_recv() {
                 if aborted_flag.load(Ordering::Acquire) {
-                    return Ok(());
+                    return Ok(seg_cursors);
                 }
                 if chunk.offset != cursor {
                     file.seek(SeekFrom::Start(chunk.offset))?;
@@ -122,12 +122,13 @@ impl PartFileWriter {
                 let chunk_len = chunk.data.len() as u64;
                 cursor += chunk_len;
 
+                let end = chunk.offset + chunk_len;
+                seg_cursors
+                    .entry(chunk.segment_index)
+                    .and_modify(|cur| *cur = (*cur).max(end))
+                    .or_insert(end);
+
                 if checkpoint_tx.is_some() {
-                    let end = chunk.offset + chunk_len;
-                    seg_cursors
-                        .entry(chunk.segment_index)
-                        .and_modify(|cur| *cur = (*cur).max(end))
-                        .or_insert(end);
                     bytes_since_checkpoint += chunk_len;
 
                     if bytes_since_checkpoint >= CHECKPOINT_BYTES
@@ -145,13 +146,13 @@ impl PartFileWriter {
                 }
             }
             if aborted_flag.load(Ordering::Acquire) {
-                return Ok(());
+                return Ok(seg_cursors);
             }
             file.flush()?;
             if sync_on_complete {
                 file.sync_all()?;
             }
-            Ok(())
+            Ok(seg_cursors)
         });
 
         Self {
@@ -187,20 +188,20 @@ impl PartFileWriter {
     /// Closes the writer channel, waits for flush/sync, and atomically renames `.part` to `final_path`.
     pub async fn finish(self, final_path: &Path) -> Result<(), EngineError> {
         let part_path = self.part_path.clone();
-        self.flush_and_close().await?;
+        let _ = self.flush_and_close().await?;
         tokio::fs::rename(&part_path, final_path).await?;
         Ok(())
     }
 
-    /// Drains and flushes all buffered `Chunk`s to `.part` without renaming it.
-    pub(crate) async fn flush_and_close(self) -> Result<(), EngineError> {
+    /// Drains and flushes all buffered `Chunk`s to `.part` without renaming it, returning
+    /// the highest writer-acknowledged byte offset per `Segment` index.
+    pub(crate) async fn flush_and_close(self) -> Result<HashMap<usize, u64>, EngineError> {
         drop(self.tx);
         let write_result = self
             .handle
             .await
             .map_err(|err| EngineError::Writer(format!("writer task panicked: {err}")))?;
-        write_result?;
-        Ok(())
+        Ok(write_result?)
     }
 
     /// Aborts the writer task immediately without draining buffered `Chunk`s.

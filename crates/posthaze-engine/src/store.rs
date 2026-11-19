@@ -1,5 +1,6 @@
 //! SQLite persistence store for `Download`s and `Segment`s.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -257,57 +258,13 @@ impl DownloadStore {
         Ok(())
     }
 
-    /// Marks a `Download` as `Failed` with an error message, optionally persisting `Segment` `Checkpoint`s.
+    /// Marks a `Download` as `Failed` with an error message without advancing `Segment` cursors.
     pub(crate) async fn mark_failed(
         &self,
         id: &DownloadId,
         bytes_downloaded: u64,
         error_message: &str,
     ) -> Result<(), EngineError> {
-        self.save_failed_with_segments(id, bytes_downloaded, error_message, &[])
-            .await
-    }
-
-    /// Marks a `Download` as `Failed` and replaces `Segment` `Checkpoint`s if `segments` is non-empty.
-    pub(crate) async fn save_failed_with_segments(
-        &self,
-        id: &DownloadId,
-        bytes_downloaded: u64,
-        error_message: &str,
-        segments: &[SegmentCheckpoint],
-    ) -> Result<(), EngineError> {
-        self.save_state_with_segments(
-            id,
-            DownloadState::Failed,
-            bytes_downloaded,
-            Some(error_message),
-            segments,
-        )
-        .await
-    }
-
-    /// Transitions a `Download` to `Paused` and persists exact `Segment` `Checkpoint`s.
-    pub(crate) async fn save_paused(
-        &self,
-        id: &DownloadId,
-        bytes_downloaded: u64,
-        segments: &[SegmentCheckpoint],
-    ) -> Result<(), EngineError> {
-        self.save_state_with_segments(id, DownloadState::Paused, bytes_downloaded, None, segments)
-            .await
-    }
-
-    async fn save_state_with_segments(
-        &self,
-        id: &DownloadId,
-        state: DownloadState,
-        bytes_downloaded: u64,
-        error_message: Option<&str>,
-        segments: &[SegmentCheckpoint],
-    ) -> Result<(), EngineError> {
-        let mut tx = self.pool.begin().await?;
-        let now = unix_now();
-
         sqlx::query(
             "UPDATE downloads SET
                 state = ?,
@@ -316,20 +273,75 @@ impl DownloadStore {
                 updated_at = ?
              WHERE id = ?",
         )
-        .bind(state.as_str())
+        .bind(DownloadState::Failed.as_str())
         .bind(bytes_downloaded as i64)
         .bind(error_message)
+        .bind(unix_now())
+        .bind(id.as_str())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Persists writer-acknowledged `Segment` cursors and updates the `Download` state and byte count.
+    ///
+    /// Returns the total `bytes_downloaded` summed from persisted `Segment` rows.
+    pub(crate) async fn finalize_writer_checkpoint(
+        &self,
+        id: &DownloadId,
+        state: DownloadState,
+        error_message: Option<&str>,
+        writer_cursors: &HashMap<usize, u64>,
+    ) -> Result<u64, EngineError> {
+        let mut tx = self.pool.begin().await?;
+        let now = unix_now();
+
+        for (&segment_index, &cursor) in writer_cursors {
+            sqlx::query(
+                "UPDATE segments
+                 SET cursor_offset = MAX(cursor_offset, ?),
+                     completed = CASE
+                         WHEN end_offset IS NOT NULL AND MAX(cursor_offset, ?) >= end_offset THEN 1
+                         ELSE completed
+                     END
+                 WHERE download_id = ? AND segment_index = ?",
+            )
+            .bind(cursor as i64)
+            .bind(cursor as i64)
+            .bind(id.as_str())
+            .bind(segment_index as i64)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        sqlx::query(
+            "UPDATE downloads
+             SET state = ?,
+                 error_message = ?,
+                 bytes_downloaded = (
+                     SELECT COALESCE(SUM(MAX(0, cursor_offset - start_offset)), 0)
+                     FROM segments
+                     WHERE download_id = ?
+                 ),
+                 updated_at = ?
+             WHERE id = ?",
+        )
+        .bind(state.as_str())
+        .bind(error_message)
+        .bind(id.as_str())
         .bind(now)
         .bind(id.as_str())
         .execute(&mut *tx)
         .await?;
 
-        if !segments.is_empty() {
-            replace_segments_tx(&mut tx, id, segments).await?;
-        }
+        let total_row = sqlx::query("SELECT bytes_downloaded FROM downloads WHERE id = ?")
+            .bind(id.as_str())
+            .fetch_one(&mut *tx)
+            .await?;
+        let total = u64::try_from(total_row.try_get::<i64, _>("bytes_downloaded")?).unwrap_or(0);
 
         tx.commit().await?;
-        Ok(())
+        Ok(total)
     }
 
     /// Marks a `Download` as `Cancelled` in SQLite.
@@ -448,9 +460,14 @@ impl DownloadStore {
         for &(segment_index, cursor) in segment_cursors {
             sqlx::query(
                 "UPDATE segments
-                 SET cursor_offset = MAX(cursor_offset, ?)
+                 SET cursor_offset = MAX(cursor_offset, ?),
+                     completed = CASE
+                         WHEN end_offset IS NOT NULL AND MAX(cursor_offset, ?) >= end_offset THEN 1
+                         ELSE completed
+                     END
                  WHERE download_id = ? AND segment_index = ?",
             )
+            .bind(cursor as i64)
             .bind(cursor as i64)
             .bind(id.as_str())
             .bind(segment_index as i64)
@@ -571,33 +588,4 @@ fn unix_now() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
-}
-
-async fn replace_segments_tx(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    id: &DownloadId,
-    segments: &[SegmentCheckpoint],
-) -> Result<(), EngineError> {
-    sqlx::query("DELETE FROM segments WHERE download_id = ?")
-        .bind(id.as_str())
-        .execute(&mut **tx)
-        .await?;
-
-    for seg in segments {
-        sqlx::query(
-            "INSERT INTO segments (
-                download_id, segment_index, start_offset, cursor_offset, end_offset, completed
-             ) VALUES (?, ?, ?, ?, ?, ?)",
-        )
-        .bind(id.as_str())
-        .bind(seg.segment_index as i64)
-        .bind(seg.start as i64)
-        .bind(seg.cursor as i64)
-        .bind(seg.end.map(|v| v as i64))
-        .bind(i64::from(seg.completed))
-        .execute(&mut **tx)
-        .await?;
-    }
-
-    Ok(())
 }

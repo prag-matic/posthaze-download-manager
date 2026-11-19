@@ -434,7 +434,7 @@ async fn run_resume(
     };
 
     let output_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    drive_handle(&engine, handle, None, output_dir, record_samples, stats_out).await
+    drive_handle(handle, None, output_dir, record_samples, stats_out).await
 }
 
 async fn run_download(
@@ -470,7 +470,6 @@ async fn run_download(
 
     println!("Download ID: {}", handle.id());
     drive_handle(
-        &engine,
         handle,
         Some((url, output)),
         output_dir,
@@ -481,8 +480,7 @@ async fn run_download(
 }
 
 async fn drive_handle(
-    engine: &DownloadEngine,
-    handle: DownloadHandle,
+    mut handle: DownloadHandle,
     debug_context: Option<(String, Option<PathBuf>)>,
     output_dir: PathBuf,
     record_samples: bool,
@@ -563,18 +561,19 @@ async fn drive_handle(
         }
     });
 
-    let wait_fut = handle.wait();
-    tokio::pin!(wait_fut);
-
-    let result = tokio::select! {
-        res = &mut wait_fut => res,
+    let selected = tokio::select! {
+        res = handle.wait() => Some(res),
         sig = tokio::signal::ctrl_c() => {
             if sig.is_ok() {
                 eprintln!("\nPausing download {id}...");
-                let _ = engine.pause(&id).await;
+                handle.pause();
             }
-            wait_fut.await
+            None
         }
+    };
+    let result = match selected {
+        Some(res) => res,
+        None => handle.wait().await,
     };
     let total_elapsed = start.elapsed();
     let stats = progress_task.await.unwrap_or_default();

@@ -114,7 +114,7 @@ async fn pause_live_download_preserves_part_and_persists_paused_state() {
     let mut req = DownloadRequest::new(format!("{base_url}/slow.bin"), dir.path());
     req.max_workers = 2;
 
-    let handle = engine.start(req).await.unwrap();
+    let mut handle = engine.start(req).await.unwrap();
     let id = handle.id().clone();
     let mut rx = handle.subscribe();
 
@@ -142,7 +142,7 @@ async fn cancel_live_download_deletes_part_and_marks_cancelled() {
     let db_path = dir.path().join("state.db");
     let engine = DownloadEngine::open(&db_path).await.unwrap();
 
-    let handle = engine
+    let mut handle = engine
         .start(DownloadRequest::new(
             format!("{base_url}/cancel_live.bin"),
             dir.path(),
@@ -182,7 +182,7 @@ async fn cancel_persisted_paused_download_deletes_part_and_marks_cancelled() {
     let db_path = dir.path().join("state.db");
     let engine = DownloadEngine::open(&db_path).await.unwrap();
 
-    let handle = engine
+    let mut handle = engine
         .start(DownloadRequest::new(
             format!("{base_url}/cancel_persisted.bin"),
             dir.path(),
@@ -248,7 +248,7 @@ async fn resumable_failed_download_retains_part_file() {
     let db_path = dir.path().join("state.db");
     let engine = DownloadEngine::open(&db_path).await.unwrap();
 
-    let handle = engine
+    let mut handle = engine
         .start(DownloadRequest::new(
             format!("{base_url}/flaky.bin"),
             dir.path(),

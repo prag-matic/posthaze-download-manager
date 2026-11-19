@@ -35,12 +35,6 @@ pub(crate) struct SegmentCheckpoint {
     pub completed: bool,
 }
 
-#[derive(Debug)]
-pub(crate) struct TransferFailure {
-    pub error: EngineError,
-    pub segments: Vec<SegmentCheckpoint>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SegmentSpec {
     pub start: u64,
@@ -154,7 +148,7 @@ pub(crate) async fn execute_multi_segment(
     active_workers: &Arc<AtomicUsize>,
     control_rx: watch::Receiver<ControlSignal>,
     persist: Option<(DownloadId, DownloadStore)>,
-) -> Result<MultiSegmentResult, TransferFailure> {
+) -> Result<MultiSegmentResult, EngineError> {
     let initial_specs = plan_segments(total_bytes, max_workers);
     let checkpoints: Vec<SegmentCheckpoint> = initial_specs
         .into_iter()
@@ -193,7 +187,7 @@ pub(crate) async fn execute_multi_segment_from_checkpoints(
     active_workers: &Arc<AtomicUsize>,
     control_rx: watch::Receiver<ControlSignal>,
     persist: Option<(DownloadId, DownloadStore)>,
-) -> Result<MultiSegmentResult, TransferFailure> {
+) -> Result<MultiSegmentResult, EngineError> {
     if checkpoints.is_empty() {
         return Ok(MultiSegmentResult {
             bytes_written: 0,
@@ -261,7 +255,7 @@ pub(crate) async fn execute_multi_segment_from_checkpoints(
         };
         if let Some((download_id, store)) = &persist {
             let stolen_end = stolen.end.load(Ordering::Acquire);
-            if let Err(err) = store
+            store
                 .split_segment(
                     download_id,
                     target_idx,
@@ -270,13 +264,7 @@ pub(crate) async fn execute_multi_segment_from_checkpoints(
                     stolen.start,
                     stolen_end,
                 )
-                .await
-            {
-                return Err(TransferFailure {
-                    error: err,
-                    segments: snapshot_segments(&active_segments),
-                });
-            }
+                .await?;
         }
         stolen.claimed.store(true, Ordering::Release);
         splits_performed.fetch_add(1, Ordering::Relaxed);
@@ -330,18 +318,12 @@ pub(crate) async fn execute_multi_segment_from_checkpoints(
                     join_set.abort_all();
                     while join_set.join_next().await.is_some() {}
                 }
-                return Err(TransferFailure {
-                    error: err,
-                    segments: snapshot_segments(&active_segments),
-                });
+                return Err(err);
             }
             Err(join_err) => {
                 join_set.abort_all();
                 while join_set.join_next().await.is_some() {}
-                return Err(TransferFailure {
-                    error: EngineError::Writer(format!("worker task failed: {join_err}")),
-                    segments: snapshot_segments(&active_segments),
-                });
+                return Err(EngineError::Writer(format!("worker task failed: {join_err}")));
             }
         }
     }
@@ -360,27 +342,6 @@ fn sum_segment_bytes(active_segments: &Mutex<Vec<Arc<ActiveSegment>>>) -> u64 {
         .iter()
         .map(|s| s.cursor.load(Ordering::Acquire).saturating_sub(s.start))
         .sum()
-}
-
-fn snapshot_segments(active_segments: &Mutex<Vec<Arc<ActiveSegment>>>) -> Vec<SegmentCheckpoint> {
-    let guard = active_segments.lock().expect("active_segments poisoned");
-    let mut out: Vec<SegmentCheckpoint> = guard
-        .iter()
-        .map(|seg| {
-            let cursor = seg.cursor.load(Ordering::Acquire);
-            let end = seg.end.load(Ordering::Acquire);
-            let completed = seg.completed.load(Ordering::Acquire) || cursor >= end;
-            SegmentCheckpoint {
-                segment_index: seg.id,
-                start: seg.start,
-                cursor,
-                end: Some(end),
-                completed,
-            }
-        })
-        .collect();
-    out.sort_by_key(|s| s.segment_index);
-    out
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -493,7 +454,7 @@ fn steal_largest_segment(
     let id = next_id.fetch_add(1, Ordering::Relaxed);
     let new_seg = ActiveSegment::new(id, steal_start, old_end);
     guard.push(Arc::clone(&new_seg));
-    Some((target.id, mid, new_seg))
+    Some((target.id, steal_start, new_seg))
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -54,7 +54,7 @@ async fn persists_completed_download_across_engine_reopen() {
     let mut req = DownloadRequest::new(url.clone(), dir.path());
     req.max_workers = 2;
 
-    let handle = engine.start(req).await.unwrap();
+    let mut handle = engine.start(req).await.unwrap();
     let id = handle.id().clone();
     let rx = handle.subscribe();
     let outcome = handle.wait().await.unwrap();
@@ -119,7 +119,7 @@ async fn in_memory_engine_starts_and_lists_download() {
 
     let dir = TempDir::new().unwrap();
     let engine = DownloadEngine::in_memory().await.unwrap();
-    let handle = engine
+    let mut handle = engine
         .start(DownloadRequest::new(
             format!("{base_url}/hello.txt"),
             dir.path(),
@@ -149,7 +149,7 @@ async fn persists_failed_state_on_http_error() {
     let db_path = dir.path().join("state.db");
     let engine = DownloadEngine::open(&db_path).await.unwrap();
 
-    let handle = engine
+    let mut handle = engine
         .start(DownloadRequest::new(
             format!("{base_url}/missing.bin"),
             dir.path(),

@@ -135,7 +135,7 @@ async fn periodic_checkpoint_and_startup_crash_reconciliation_recovers_download(
     assert!(reconciled.bytes_downloaded >= 8 * 1024 * 1024);
 
     // Resume from the reconciled checkpoint and verify BLAKE3.
-    let resumed = reopened.resume(&id).await.unwrap();
+    let mut resumed = reopened.resume(&id).await.unwrap();
     let outcome = resumed.wait().await.unwrap();
     let disk_bytes = std::fs::read(&outcome.final_path).unwrap();
     assert_eq!(blake3::hash(&disk_bytes), expected_hash);
