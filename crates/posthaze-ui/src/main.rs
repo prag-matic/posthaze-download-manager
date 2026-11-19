@@ -52,14 +52,36 @@ fn main() {
             Theme::change(ThemeMode::Dark, None, cx);
             {
                 let theme = Theme::global_mut(cx);
+                theme.radius = px(4.0);
+                theme.radius_lg = px(6.0);
+                theme.background = graphite_bg();
+                theme.foreground = silver_text();
+                theme.border = paper_border();
+                theme.input = graphite_bg();
+                theme.muted = graphite_elevated();
+                theme.muted_foreground = silver_muted();
+                theme.secondary = graphite_elevated();
+                theme.secondary_hover = paper_hover();
+                theme.secondary_active = paper_selected();
+                theme.secondary_foreground = silver_text();
                 theme.primary = selenium_amber();
                 theme.primary_hover = rgb(0xD97724).into();
                 theme.primary_active = rgb(0xC2661B).into();
                 theme.primary_foreground = graphite_bg();
-                theme.ring = selenium_amber();
+                theme.button_primary = selenium_amber();
+                theme.button_primary_hover = rgb(0xD97724).into();
+                theme.button_primary_active = rgb(0xC2661B).into();
+                theme.button_primary_foreground = graphite_bg();
+                theme.button_secondary = graphite_elevated();
+                theme.button_secondary_hover = paper_hover();
+                theme.button_secondary_active = paper_selected();
+                theme.button_secondary_foreground = silver_text();
+                theme.button_hover = paper_hover();
+                theme.button_active = paper_selected();
+                theme.button_foreground = silver_text();
+                theme.ring = rgb(0x524E48).into();
                 theme.title_bar = graphite_bg();
                 theme.title_bar_border = graphite_border();
-                theme.background = graphite_bg();
             }
 
             let window_options = WindowOptions {
@@ -762,9 +784,8 @@ impl Render for PosthazeApp {
                             .flex_shrink_0()
                             .flex()
                             .justify_center()
-                            .bg(graphite_bg())
                             .cursor_col_resize()
-                            .hover(|s| s.bg(graphite_elevated()))
+                            .hover(|s| s.bg(rgba(0x2A282555)))
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|app, ev: &MouseDownEvent, _, cx| {
@@ -827,9 +848,8 @@ impl Render for PosthazeApp {
                                         .flex_shrink_0()
                                         .flex()
                                         .items_center()
-                                        .bg(graphite_bg())
                                         .cursor_row_resize()
-                                        .hover(|s| s.bg(graphite_elevated()))
+                                        .hover(|s| s.bg(rgba(0x2A282555)))
                                         .on_mouse_down(
                                             MouseButton::Left,
                                             cx.listener(|app, ev: &MouseDownEvent, _, cx| {
@@ -1289,7 +1309,7 @@ impl PosthazeApp {
 
     fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
-            .h(px(56.0))
+            .h(px(54.0))
             .w_full()
             .flex()
             .items_center()
@@ -1299,25 +1319,6 @@ impl PosthazeApp {
             .border_b_1()
             .border_color(paper_border())
             .child(
-                Button::new("toggle-sidebar")
-                    .small()
-                    .ghost()
-                    .icon(if self.sidebar_collapsed {
-                        IconName::PanelLeftOpen
-                    } else {
-                        IconName::PanelLeftClose
-                    })
-                    .tooltip(if self.sidebar_collapsed {
-                        "Expand Sidebar"
-                    } else {
-                        "Collapse Sidebar"
-                    })
-                    .on_click(cx.listener(|app, _, _, cx| {
-                        app.sidebar_collapsed = !app.sidebar_collapsed;
-                        cx.notify();
-                    })),
-            )
-            .child(
                 div()
                     .flex_1()
                     .font_family(MONO_FONT)
@@ -1326,6 +1327,7 @@ impl PosthazeApp {
             )
             .child(
                 Button::new("paste-probe")
+                    .small()
                     .primary()
                     .icon(IconName::ClipboardPaste)
                     .label("Paste & Probe")
@@ -1335,6 +1337,8 @@ impl PosthazeApp {
             )
             .child(
                 Button::new("resume-all")
+                    .small()
+                    .ghost()
                     .icon(IconName::Play)
                     .label("Resume All")
                     .on_click(cx.listener(|app, _, _, cx| {
@@ -1343,6 +1347,8 @@ impl PosthazeApp {
             )
             .child(
                 Button::new("pause-all")
+                    .small()
+                    .ghost()
                     .icon(IconName::Pause)
                     .label("Pause All")
                     .on_click(cx.listener(|app, _, _, cx| {
@@ -1351,6 +1357,8 @@ impl PosthazeApp {
             )
             .child(
                 Button::new("clear-completed")
+                    .small()
+                    .ghost()
                     .icon(IconName::Trash)
                     .label("Clear Completed")
                     .on_click(cx.listener(|app, _, _, cx| {
