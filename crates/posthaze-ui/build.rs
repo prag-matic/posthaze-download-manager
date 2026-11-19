@@ -1,6 +1,13 @@
-//! Build script for `posthaze-ui` to embed the Windows application icon and PE metadata.
+//! Build script for `posthaze-ui` to configure the Windows stack size and embed
+//! the application icon and PE metadata.
 
 fn main() {
+    if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+        // Windows MSVC defaults to a 1 MiB main-thread stack, which debug GPUI
+        // element trees can exceed; raise it to 8 MiB to match Unix defaults.
+        println!("cargo:rustc-link-arg=/STACK:8388608");
+    }
+
     #[cfg(target_os = "windows")]
     {
         let icon_path = "../../assets/posthaze.ico";
