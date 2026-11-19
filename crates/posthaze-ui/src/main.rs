@@ -12,7 +12,6 @@ use std::path::PathBuf;
 use gpui_kit::assets::{AllAssets, IconName};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::resizable::{HandleEdge, resize_handle};
 use gpui_kit::component::{
     Icon, InteractiveElementExt as _, Sizable, Theme, ThemeMode, TitleBar,
 };
@@ -81,28 +80,10 @@ fn main() {
     });
 }
 
-#[derive(Clone)]
-struct ResizeSidebar {
-    start_x: Pixels,
-    start_width: f32,
-}
-
-impl Render for ResizeSidebar {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div()
-    }
-}
-
-#[derive(Clone)]
-struct ResizeInspector {
-    start_y: Pixels,
-    start_height: f32,
-}
-
-impl Render for ResizeInspector {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div()
-    }
+#[derive(Clone, Copy)]
+enum ActiveResize {
+    Sidebar { start_x: Pixels, start_width: f32 },
+    Inspector { start_y: Pixels, start_height: f32 },
 }
 
 struct PosthazeApp {
@@ -123,6 +104,7 @@ struct PosthazeApp {
     sidebar_collapsed: bool,
     inspector_height: f32,
     inspector_collapsed: bool,
+    active_resize: Option<ActiveResize>,
 }
 
 impl PosthazeApp {
@@ -159,6 +141,7 @@ impl PosthazeApp {
             sidebar_collapsed: false,
             inspector_height: DEFAULT_INSPECTOR_HEIGHT,
             inspector_collapsed: false,
+            active_resize: None,
         };
 
         app.refresh_from_engine(cx);
@@ -711,7 +694,9 @@ impl Render for PosthazeApp {
             )
         });
 
-        let inspector_height = self.inspector_height;
+        let active_resize = self.active_resize;
+        let resizing_sidebar = matches!(active_resize, Some(ActiveResize::Sidebar { .. }));
+        let resizing_inspector = matches!(active_resize, Some(ActiveResize::Inspector { .. }));
 
         div()
             .relative()
@@ -720,18 +705,43 @@ impl Render for PosthazeApp {
             .size_full()
             .bg(paper_bg())
             .text_color(carbon_text())
-            .on_drag_move(cx.listener(|app, event: &DragMoveEvent<ResizeSidebar>, _, cx| {
-                let drag = event.drag(cx);
-                let delta = f32::from(event.event.position.x - drag.start_x);
-                app.sidebar_width = clamp_sidebar_width(drag.start_width + delta);
+            .when(resizing_sidebar, |el| el.cursor_col_resize())
+            .when(resizing_inspector, |el| el.cursor_row_resize())
+            .on_mouse_move(cx.listener(|app, event: &MouseMoveEvent, _, cx| {
+                let Some(resize) = app.active_resize else {
+                    return;
+                };
+                if event.pressed_button != Some(MouseButton::Left) {
+                    app.active_resize = None;
+                    cx.notify();
+                    return;
+                }
+                match resize {
+                    ActiveResize::Sidebar {
+                        start_x,
+                        start_width,
+                    } => {
+                        let delta = f32::from(event.position.x - start_x);
+                        app.sidebar_width = clamp_sidebar_width(start_width + delta);
+                    }
+                    ActiveResize::Inspector {
+                        start_y,
+                        start_height,
+                    } => {
+                        let delta = f32::from(start_y - event.position.y);
+                        app.inspector_height = clamp_inspector_height(start_height + delta);
+                    }
+                }
                 cx.notify();
             }))
-            .on_drag_move(cx.listener(|app, event: &DragMoveEvent<ResizeInspector>, _, cx| {
-                let drag = event.drag(cx);
-                let delta = f32::from(drag.start_y - event.event.position.y);
-                app.inspector_height = clamp_inspector_height(drag.start_height + delta);
-                cx.notify();
-            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|app, _, _, cx| {
+                    if app.active_resize.take().is_some() {
+                        cx.notify();
+                    }
+                }),
+            )
             .child(self.render_titlebar())
             .child(
                 div()
@@ -742,6 +752,40 @@ impl Render for PosthazeApp {
                     // Collapsible & resizable Left Navigation & Filter Rail (#141311)
                     .when(!self.sidebar_collapsed, |el| {
                         el.child(self.render_sidebar(&all_rows, total_speed, active_slots, cx))
+                            .child(
+                                div()
+                                    .id("sidebar-resize")
+                                    .w(px(7.0))
+                                    .h_full()
+                                    .flex_shrink_0()
+                                    .flex()
+                                    .justify_center()
+                                    .bg(graphite_bg())
+                                    .cursor_col_resize()
+                                    .hover(|s| s.bg(graphite_elevated()))
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|app, ev: &MouseDownEvent, _, cx| {
+                                            cx.stop_propagation();
+                                            app.active_resize = Some(ActiveResize::Sidebar {
+                                                start_x: ev.position.x,
+                                                start_width: app.sidebar_width,
+                                            });
+                                            cx.notify();
+                                        }),
+                                    )
+                                    .on_double_click(cx.listener(|app, _, _, cx| {
+                                        app.sidebar_width = DEFAULT_SIDEBAR_WIDTH;
+                                        cx.notify();
+                                    }))
+                                    .child(div().w(px(if resizing_sidebar { 2.0 } else { 1.0 })).h_full().bg(
+                                        if resizing_sidebar {
+                                            selenium_amber()
+                                        } else {
+                                            graphite_border()
+                                        },
+                                    )),
+                            )
                     })
                     // Main Right Column: Top Toolbar + Center Table + Collapsible & Resizable Bottom Inspector
                     .child(
@@ -764,40 +808,46 @@ impl Render for PosthazeApp {
                                 )
                             })
                             .child(self.render_table(&visible_rows, is_empty_queue, cx))
-                            .child(
-                                div()
-                                    .relative()
-                                    .w_full()
-                                    .flex_shrink_0()
-                                    .child(inspector)
-                                    .when(!self.inspector_collapsed, |el| {
-                                        el.child(
-                                            resize_handle::<ResizeInspector, ResizeInspector>(
-                                                "inspector-resize",
-                                                Axis::Vertical,
-                                            )
-                                            .inside(HandleEdge::Leading)
-                                            .on_drag(
-                                                ResizeInspector {
-                                                    start_y: px(0.0),
-                                                    start_height: inspector_height,
-                                                },
-                                                |drag, point, _, cx| {
-                                                    let start_y = point.y;
-                                                    let start_height = drag.start_height;
-                                                    cx.new(|_| ResizeInspector {
-                                                        start_y,
-                                                        start_height,
-                                                    })
-                                                },
-                                            )
-                                            .on_double_click(cx.listener(|app, _, _, cx| {
-                                                app.inspector_height = DEFAULT_INSPECTOR_HEIGHT;
+                            .when(!self.inspector_collapsed, |el| {
+                                el.child(
+                                    div()
+                                        .id("inspector-resize")
+                                        .h(px(7.0))
+                                        .w_full()
+                                        .flex_shrink_0()
+                                        .flex()
+                                        .items_center()
+                                        .bg(graphite_bg())
+                                        .cursor_row_resize()
+                                        .hover(|s| s.bg(graphite_elevated()))
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(|app, ev: &MouseDownEvent, _, cx| {
+                                                cx.stop_propagation();
+                                                app.active_resize = Some(ActiveResize::Inspector {
+                                                    start_y: ev.position.y,
+                                                    start_height: app.inspector_height,
+                                                });
                                                 cx.notify();
-                                            })),
+                                            }),
                                         )
-                                    }),
-                            ),
+                                        .on_double_click(cx.listener(|app, _, _, cx| {
+                                            app.inspector_height = DEFAULT_INSPECTOR_HEIGHT;
+                                            cx.notify();
+                                        }))
+                                        .child(
+                                            div()
+                                                .h(px(if resizing_inspector { 2.0 } else { 1.0 }))
+                                                .w_full()
+                                                .bg(if resizing_inspector {
+                                                    selenium_amber()
+                                                } else {
+                                                    graphite_border()
+                                                }),
+                                        ),
+                                )
+                            })
+                            .child(inspector),
                     ),
             )
             .when_some(preflight_overlay, |el, overlay| el.child(overlay))
@@ -1119,28 +1169,6 @@ impl PosthazeApp {
                                 app.open_settings_modal(window, cx);
                             })),
                     ),
-            )
-            .child(
-                resize_handle::<ResizeSidebar, ResizeSidebar>("sidebar-resize", Axis::Horizontal)
-                    .inside(HandleEdge::Trailing)
-                    .on_drag(
-                        ResizeSidebar {
-                            start_x: px(0.0),
-                            start_width: sidebar_width,
-                        },
-                        |drag, point, _, cx| {
-                            let start_x = point.x;
-                            let start_width = drag.start_width;
-                            cx.new(|_| ResizeSidebar {
-                                start_x,
-                                start_width,
-                            })
-                        },
-                    )
-                    .on_double_click(cx.listener(|app, _, _, cx| {
-                        app.sidebar_width = DEFAULT_SIDEBAR_WIDTH;
-                        cx.notify();
-                    })),
             )
     }
 
