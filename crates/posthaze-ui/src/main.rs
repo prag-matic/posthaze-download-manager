@@ -30,7 +30,7 @@ use posthaze_engine::{
     DownloadState, EngineEvent, ProgressSnapshot, SegmentProgress, Settings, categorize_subfolder,
 };
 
-use crate::assets::{BRAND_LOGO_SVG, PosthazeAssets};
+use crate::assets::{BRAND_APP_ICON_SVG, BRAND_LOGO_SVG, PosthazeAssets};
 use crate::bridge::{EngineBridge, default_db_path};
 use crate::context_menu::{ContextMenuAction, ContextMenuState, render_context_menu};
 use crate::curl_parser::{find_header_value, parse_url_or_curl, set_or_remove_header};
@@ -2325,23 +2325,10 @@ impl PosthazeApp {
                 .gap_3()
                 .bg(paper_bg())
                 .child(if is_empty_queue {
-                    div()
+                    svg()
+                        .path(BRAND_APP_ICON_SVG)
                         .w(px(44.0))
                         .h(px(44.0))
-                        .rounded(px(10.0))
-                        .bg(rgb(0x141414))
-                        .border_1()
-                        .border_color(graphite_border())
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(
-                            svg()
-                                .path(BRAND_LOGO_SVG)
-                                .w(px(26.0))
-                                .h(px(23.0))
-                                .text_color(silver_text()),
-                        )
                         .into_any_element()
                 } else {
                     Icon::new(IconName::Download)
