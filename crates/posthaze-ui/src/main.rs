@@ -99,10 +99,10 @@ fn main() {
             let window_options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                     None,
-                    size(px(960.0), px(720.0)),
+                    size(px(1020.0), px(640.0)),
                     cx,
                 ))),
-                window_min_size: Some(size(px(960.0), px(720.0))),
+                window_min_size: Some(size(px(1020.0), px(640.0))),
                 ..TitleBar::window_options()
             };
 
