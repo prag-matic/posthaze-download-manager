@@ -583,6 +583,7 @@ where
                         let act = on_action.clone();
                         Button::new("settings-defender-preset")
                             .small()
+                            .secondary()
                             .icon(IconName::ShieldCheck)
                             .label("Use Windows Defender")
                             .on_click(move |_, window, cx| {
@@ -866,6 +867,7 @@ where
                 .child(
                     Button::new("settings-cancel")
                         .small()
+                        .secondary()
                         .icon(IconName::X)
                         .label("Cancel")
                         .on_click(move |_, window, cx| on_cancel(window, cx)),

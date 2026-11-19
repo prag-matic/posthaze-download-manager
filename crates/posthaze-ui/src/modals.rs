@@ -467,6 +467,7 @@ where
                         .child(
                             Button::new("pf-cancel")
                                 .small()
+                                .secondary()
                                 .icon(IconName::X)
                                 .label("Cancel")
                                 .on_click(move |_, window, cx| on_close(window, cx)),
@@ -475,6 +476,7 @@ where
                             el.child(
                                 Button::new("pf-queue")
                                     .small()
+                                    .secondary()
                                     .icon(IconName::Clock)
                                     .label("Add Paused")
                                     .tooltip("Save to list in Paused state without starting transfer")
@@ -599,6 +601,7 @@ where
                         el.child(
                             Button::new("hash-copy")
                                 .small()
+                                .secondary()
                                 .icon(IconName::Copy)
                                 .label("Copy BLAKE3")
                                 .on_click(move |_, window, cx| {
@@ -714,6 +717,7 @@ where
                 .child(
                     Button::new("confirm-cancel")
                         .small()
+                        .secondary()
                         .icon(IconName::X)
                         .label("Cancel")
                         .on_click(move |_, window, cx| on_cancel(window, cx)),
@@ -783,6 +787,7 @@ where
                 .child(
                     Button::new("fileop-cancel")
                         .small()
+                        .secondary()
                         .icon(IconName::X)
                         .label("Cancel")
                         .on_click(move |_, window, cx| on_cancel(window, cx)),
