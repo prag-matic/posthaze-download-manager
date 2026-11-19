@@ -54,6 +54,7 @@ struct ActiveSegment {
     cursor: AtomicU64,
     end: AtomicU64,
     completed: AtomicBool,
+    claimed: AtomicBool,
 }
 
 impl ActiveSegment {
@@ -68,6 +69,7 @@ impl ActiveSegment {
             cursor: AtomicU64::new(cursor),
             end: AtomicU64::new(end),
             completed: AtomicBool::new(completed),
+            claimed: AtomicBool::new(false),
         })
     }
 
@@ -245,9 +247,45 @@ pub(crate) async fn execute_multi_segment_from_checkpoints(
         });
     }
 
-    let worker_count = incomplete_list.len().max(1).min(max_workers.max(1));
+    let worker_budget = max_workers.max(1);
+    let mut initial_work: Vec<Arc<ActiveSegment>> = Vec::with_capacity(worker_budget);
+    for seg in incomplete_list.into_iter().take(worker_budget) {
+        seg.claimed.store(true, Ordering::Release);
+        initial_work.push(seg);
+    }
+
+    while initial_work.len() < worker_budget {
+        let Some((target_idx, new_end, stolen)) = steal_largest_segment(&active_segments, &next_id)
+        else {
+            break;
+        };
+        if let Some((download_id, store)) = &persist {
+            let stolen_end = stolen.end.load(Ordering::Acquire);
+            if let Err(err) = store
+                .split_segment(
+                    download_id,
+                    target_idx,
+                    new_end,
+                    stolen.id,
+                    stolen.start,
+                    stolen_end,
+                )
+                .await
+            {
+                return Err(TransferFailure {
+                    error: err,
+                    segments: snapshot_segments(&active_segments),
+                });
+            }
+        }
+        stolen.claimed.store(true, Ordering::Release);
+        splits_performed.fetch_add(1, Ordering::Relaxed);
+        initial_work.push(stolen);
+    }
+
+    let worker_count = initial_work.len();
     let mut join_set = JoinSet::new();
-    for initial_seg in incomplete_list {
+    for initial_seg in initial_work {
         let client = client.clone();
         let url = url.to_string();
         let writer = Arc::clone(writer);
@@ -377,6 +415,10 @@ async fn run_worker_loop(
         worker_total += seg_bytes;
 
         current_seg.completed.store(true, Ordering::Release);
+        if let Some(unclaimed) = claim_unclaimed_segment(active_segments) {
+            current_seg = unclaimed;
+            continue;
+        }
         match steal_largest_segment(active_segments, next_id) {
             Some((target_idx, new_end, stolen)) => {
                 if let Some((download_id, store)) = &persist {
@@ -392,6 +434,7 @@ async fn run_worker_loop(
                         )
                         .await?;
                 }
+                stolen.claimed.store(true, Ordering::Release);
                 splits_performed.fetch_add(1, Ordering::Relaxed);
                 current_seg = stolen;
             }
@@ -400,6 +443,18 @@ async fn run_worker_loop(
     }
 
     Ok(worker_total)
+}
+
+fn claim_unclaimed_segment(
+    active_segments: &Mutex<Vec<Arc<ActiveSegment>>>,
+) -> Option<Arc<ActiveSegment>> {
+    let guard = active_segments.lock().expect("active_segments poisoned");
+    for seg in guard.iter() {
+        if !seg.completed.load(Ordering::Acquire) && !seg.claimed.swap(true, Ordering::AcqRel) {
+            return Some(Arc::clone(seg));
+        }
+    }
+    None
 }
 
 fn steal_largest_segment(
@@ -539,7 +594,9 @@ async fn run_segment_attempt(
     };
     let status = resp.status();
 
-    if !(status == StatusCode::PARTIAL_CONTENT || (allow_full_200 && status == StatusCode::OK)) {
+    if !(status == StatusCode::PARTIAL_CONTENT
+        || (allow_full_200 && attempt_start == 0 && status == StatusCode::OK))
+    {
         return Err(EngineError::HttpStatus {
             status: status.as_u16(),
             url: resp.url().to_string(),

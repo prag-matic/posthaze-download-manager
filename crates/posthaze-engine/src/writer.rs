@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -27,6 +29,7 @@ struct WriteChunk {
 pub struct PartFileWriter {
     part_path: PathBuf,
     tx: mpsc::Sender<WriteChunk>,
+    aborted: Arc<AtomicBool>,
     handle: JoinHandle<Result<(), std::io::Error>>,
 }
 
@@ -99,6 +102,8 @@ impl PartFileWriter {
         checkpoint_tx: Option<mpsc::Sender<Vec<(usize, u64)>>>,
     ) -> Self {
         let (tx, mut rx) = mpsc::channel::<WriteChunk>(WRITER_CHANNEL_CAPACITY);
+        let aborted = Arc::new(AtomicBool::new(false));
+        let aborted_flag = Arc::clone(&aborted);
         let handle = tokio::task::spawn_blocking(move || {
             let mut cursor = 0u64;
             let mut seg_cursors: HashMap<usize, u64> = HashMap::new();
@@ -106,6 +111,9 @@ impl PartFileWriter {
             let mut last_checkpoint = Instant::now();
 
             while let Some(chunk) = rx.blocking_recv() {
+                if aborted_flag.load(Ordering::Acquire) {
+                    return Ok(());
+                }
                 if chunk.offset != cursor {
                     file.seek(SeekFrom::Start(chunk.offset))?;
                     cursor = chunk.offset;
@@ -136,6 +144,9 @@ impl PartFileWriter {
                     }
                 }
             }
+            if aborted_flag.load(Ordering::Acquire) {
+                return Ok(());
+            }
             file.flush()?;
             if sync_on_complete {
                 file.sync_all()?;
@@ -146,6 +157,7 @@ impl PartFileWriter {
         Self {
             part_path,
             tx,
+            aborted,
             handle,
         }
     }
@@ -193,6 +205,7 @@ impl PartFileWriter {
 
     /// Aborts the writer task immediately without draining buffered `Chunk`s.
     pub(crate) async fn abort(self) {
+        self.aborted.store(true, Ordering::Release);
         self.handle.abort();
         drop(self.tx);
         let _ = self.handle.await;

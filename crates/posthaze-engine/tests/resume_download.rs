@@ -226,6 +226,10 @@ async fn fails_with_resource_changed_when_etag_changes_and_keeps_part() {
         part_path.exists(),
         ".part must remain intact on ResourceChanged"
     );
+    assert_eq!(
+        engine.get_download(&id).await.unwrap().unwrap().state,
+        DownloadState::Paused
+    );
 }
 
 #[tokio::test]

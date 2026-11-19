@@ -999,8 +999,9 @@ async fn run_resumed_download(
     let probe_duration = probe_start.elapsed();
 
     if let Err(err) = validate_resume_probe(&id, &record, &probe) {
+        let _ = store.set_state(&id, record.state).await;
         return Err(fail_download(
-            &store_opt,
+            &None,
             &progress_tx,
             &id,
             record.bytes_downloaded,
