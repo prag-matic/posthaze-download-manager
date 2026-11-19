@@ -91,7 +91,7 @@ pub(crate) fn build_row_menu_items(row: &DownloadRowView) -> Vec<ContextMenuEntr
             });
             items.push(ContextMenuEntry::Separator);
         }
-        DownloadState::Completed | DownloadState::Cancelled => {
+        DownloadState::Cancelled => {
             items.push(ContextMenuEntry::Item {
                 action: ContextMenuAction::RestartFresh,
                 label: "Download Again",
@@ -101,6 +101,7 @@ pub(crate) fn build_row_menu_items(row: &DownloadRowView) -> Vec<ContextMenuEntr
             });
             items.push(ContextMenuEntry::Separator);
         }
+        DownloadState::Completed => {}
     }
 
     let can_open_file = row.state == DownloadState::Completed && row.output_path.is_some();
@@ -353,6 +354,13 @@ mod tests {
     fn completed_row_menu_enables_open_file_and_delete_file_danger() {
         let row = sample_row(DownloadState::Completed, true, false);
         let items = build_row_menu_items(&row);
+        assert!(!items.iter().any(|e| matches!(
+            e,
+            ContextMenuEntry::Item {
+                action: ContextMenuAction::RestartFresh,
+                ..
+            }
+        )));
         assert!(items.iter().any(|e| matches!(
             e,
             ContextMenuEntry::Item {
