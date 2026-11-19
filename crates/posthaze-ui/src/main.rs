@@ -3,11 +3,13 @@
 mod bridge;
 mod inspector;
 mod modals;
+mod motion;
 mod theme;
 mod view_model;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use gpui_kit::assets::{AllAssets, IconName};
 use gpui_kit::component::button::{Button, ButtonVariants};
@@ -29,6 +31,7 @@ use crate::modals::{
     ConfirmAction, PreflightModalState, SettingsModalState, render_confirm_modal,
     render_preflight_modal, render_settings_modal,
 };
+use crate::motion::{MotionState, RowMotionSample};
 use crate::theme::*;
 use crate::view_model::{
     COLLAPSED_INSPECTOR_HEIGHT, DEFAULT_INSPECTOR_HEIGHT, DEFAULT_SIDEBAR_WIDTH, DownloadRowView,
@@ -142,6 +145,8 @@ struct PosthazeApp {
     inspector_height: f32,
     inspector_collapsed: bool,
     active_resize: Option<ActiveResize>,
+    motion: MotionState,
+    motion_loop_running: bool,
 }
 
 impl PosthazeApp {
@@ -180,6 +185,8 @@ impl PosthazeApp {
             inspector_height: DEFAULT_INSPECTOR_HEIGHT,
             inspector_collapsed: true,
             active_resize: None,
+            motion: MotionState::default(),
+            motion_loop_running: false,
         };
 
         app.refresh_from_engine(cx);
@@ -246,12 +253,26 @@ impl PosthazeApp {
                 match events.recv().await {
                     Ok(EngineEvent::ProgressUpdated { id, snapshot }) => {
                         let _ = this.update(cx, |app, cx| {
+                            if app.motion.on_progress(&id, &snapshot, Instant::now()) {
+                                app.ensure_motion_loop(cx);
+                            }
                             app.live_map.insert(id, snapshot);
                             cx.notify();
                         });
                     }
                     Ok(EngineEvent::StateChanged { id, state, .. }) => {
                         let _ = this.update(cx, |app, cx| {
+                            let total_bytes = app
+                                .records
+                                .iter()
+                                .find(|r| r.id == id)
+                                .and_then(|r| r.content_length);
+                            if app
+                                .motion
+                                .on_state_changed(&id, state, total_bytes, Instant::now())
+                            {
+                                app.ensure_motion_loop(cx);
+                            }
                             if state != DownloadState::Active {
                                 app.live_map.remove(&id);
                             }
@@ -275,6 +296,35 @@ impl PosthazeApp {
                         });
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn ensure_motion_loop(&mut self, cx: &mut Context<Self>) {
+        if self.motion_loop_running {
+            return;
+        }
+        self.motion_loop_running = true;
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(16))
+                    .await;
+                let keep_going = this
+                    .update(cx, |app, cx| {
+                        let active = app.motion.step(Instant::now());
+                        if active {
+                            cx.notify();
+                        } else {
+                            app.motion_loop_running = false;
+                        }
+                        active
+                    })
+                    .unwrap_or(false);
+                if !keep_going {
+                    break;
                 }
             }
         })
@@ -723,6 +773,9 @@ impl Render for PosthazeApp {
             })
             .unwrap_or_default();
 
+        let inspector_motion = selected_row
+            .map(|r| self.motion.sample(&r.id, r.total_bytes, Instant::now()))
+            .unwrap_or_default();
         let entity_restart = cx.entity().clone();
         let entity_delete = cx.entity().clone();
         let entity_inspector_toggle = cx.entity().clone();
@@ -731,6 +784,7 @@ impl Render for PosthazeApp {
             &selected_segments,
             px(profile.effective_inspector_height),
             self.inspector_collapsed,
+            inspector_motion,
             InspectorCallbacks {
                 on_restart_fresh: move |id: DownloadId, _: &mut Window, cx: &mut App| {
                     entity_restart.update(cx, |app, cx| app.restart_fresh_download(id, cx));
@@ -1822,8 +1876,18 @@ impl PosthazeApp {
             DownloadState::Paused | DownloadState::Cancelled => carbon_muted(),
         };
 
-        let cp_pct = (row.checkpoint_ratio() * 100.0).clamp(0.0, 100.0);
-        let total_pct = (row.total_ratio() * 100.0).clamp(0.0, 100.0);
+        let motion_sample: RowMotionSample =
+            self.motion.sample(&row.id, row.total_bytes, Instant::now());
+        let cp_pct = (motion_sample
+            .checkpoint_ratio
+            .unwrap_or_else(|| row.checkpoint_ratio())
+            * 100.0)
+            .clamp(0.0, 100.0);
+        let total_pct = (motion_sample
+            .downloaded_ratio
+            .unwrap_or_else(|| row.total_ratio())
+            * 100.0)
+            .clamp(0.0, 100.0);
         let inflight_pct = (total_pct - cp_pct).max(0.0);
 
         let id_select = row.id.clone();
@@ -1976,6 +2040,18 @@ impl PosthazeApp {
                             .h(px(6.0))
                             .w_full()
                             .bg(graphite_bg())
+                            .when(motion_sample.completion_flash > 0.05, |el| {
+                                el.border_1()
+                                    .border_color(halide_emerald().opacity(motion_sample.completion_flash))
+                            })
+                            .when(
+                                motion_sample.completion_flash <= 0.05
+                                    && motion_sample.split_flash > 0.05,
+                                |el| {
+                                    el.border_1()
+                                        .border_color(selenium_amber().opacity(motion_sample.split_flash))
+                                },
+                            )
                             .flex()
                             .overflow_hidden()
                             .child(
@@ -1990,12 +2066,28 @@ impl PosthazeApp {
                                         cyanotype_blue()
                                     }),
                             )
-                            .child(
-                                div()
+                            .child({
+                                let inflight_bar = div()
                                     .h_full()
                                     .w(relative(inflight_pct / 100.0))
-                                    .bg(selenium_amber()),
-                            ),
+                                    .bg(selenium_amber());
+                                if row.state == DownloadState::Active && inflight_pct > 0.0 {
+                                    inflight_bar
+                                        .with_animation(
+                                            SharedString::from(format!(
+                                                "row-inflight-pulse-{}",
+                                                row.id.as_str()
+                                            )),
+                                            Animation::new(Duration::from_millis(1400))
+                                                .repeat()
+                                                .with_easing(pulsating_between(0.72, 1.0)),
+                                            |el, delta| el.opacity(delta),
+                                        )
+                                        .into_any_element()
+                                } else {
+                                    inflight_bar.into_any_element()
+                                }
+                            }),
                     ),
             )
             // Speed

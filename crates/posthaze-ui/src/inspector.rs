@@ -1,5 +1,7 @@
 //! Bottom docked Selected Download Inspector with Graduated Interval Byte-Map Ruler.
 
+use std::time::Duration;
+
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::{Icon, Sizable};
@@ -7,6 +9,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use posthaze_engine::{DownloadId, DownloadState, SegmentProgress};
 
+use crate::motion::RowMotionSample;
 use crate::theme::*;
 use crate::view_model::{DownloadRowView, format_bytes, normalize_byte_map_segments};
 
@@ -21,6 +24,7 @@ pub(crate) fn render_inspector<F1, F2, F3>(
     segments: &[SegmentProgress],
     height: Pixels,
     collapsed: bool,
+    motion: RowMotionSample,
     callbacks: InspectorCallbacks<F1, F2, F3>,
 ) -> AnyElement
 where
@@ -391,14 +395,31 @@ where
                         .w_full()
                         .bg(byte_track_bg())
                         .border_1()
-                        .border_color(graphite_border())
+                        .border_color(if motion.completion_flash > 0.05 {
+                            halide_emerald().opacity(0.35 + 0.65 * motion.completion_flash)
+                        } else if motion.split_flash > 0.05 {
+                            selenium_amber().opacity(0.35 + 0.65 * motion.split_flash)
+                        } else {
+                            graphite_border()
+                        })
                         .flex()
                         .overflow_hidden()
                         .children(normalized.into_iter().enumerate().map(|(idx, seg)| {
+                            let is_active = row.state == DownloadState::Active;
+                            let inflight_el = div()
+                                .h_full()
+                                .w(relative(seg.inflight_fill_ratio))
+                                .bg(selenium_amber());
                             div()
                                 .h_full()
                                 .w(relative(seg.width_ratio))
-                                .when(idx > 0, |el| el.border_l_1().border_color(graphite_bg()))
+                                .when(idx > 0, |el| {
+                                    el.border_l_1().border_color(if motion.split_flash > 0.05 {
+                                        selenium_amber().opacity(motion.split_flash)
+                                    } else {
+                                        graphite_bg()
+                                    })
+                                })
                                 .flex()
                                 .overflow_hidden()
                                 .child(
@@ -413,12 +434,19 @@ where
                                             cyanotype_blue()
                                         }),
                                 )
-                                .child(
-                                    div()
-                                        .h_full()
-                                        .w(relative(seg.inflight_fill_ratio))
-                                        .bg(selenium_amber()),
-                                )
+                                .child(if is_active && seg.inflight_fill_ratio > 0.0 {
+                                    inflight_el
+                                        .with_animation(
+                                            SharedString::from(format!("insp-seg-inflight-{idx}")),
+                                            Animation::new(Duration::from_millis(1400))
+                                                .repeat()
+                                                .with_easing(pulsating_between(0.72, 1.0)),
+                                            |el, delta| el.opacity(delta),
+                                        )
+                                        .into_any_element()
+                                } else {
+                                    inflight_el.into_any_element()
+                                })
                         })),
                 )
                 .child(
@@ -528,12 +556,26 @@ where
                                 .items_center()
                                 .gap_2()
                                 .child(div().text_color(silver_text()).child(format!("{cp_pct}%")))
-                                .child(
+                                .child(if seg_status == "RECV" {
                                     div()
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(seg_color)
-                                        .child(seg_status),
-                                ),
+                                        .child(seg_status)
+                                        .with_animation(
+                                            SharedString::from(format!("insp-seg-recv-{}", seg.id)),
+                                            Animation::new(Duration::from_millis(1400))
+                                                .repeat()
+                                                .with_easing(pulsating_between(0.55, 1.0)),
+                                            |el, delta| el.opacity(delta),
+                                        )
+                                        .into_any_element()
+                                } else {
+                                    div()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(seg_color)
+                                        .child(seg_status)
+                                        .into_any_element()
+                                }),
                         )
                 })),
         )

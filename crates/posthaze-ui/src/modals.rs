@@ -1,5 +1,7 @@
 //! Pre-Flight Probe Confirmation Modal and Persisted Settings Modal.
 
+use std::time::Duration;
+
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputState};
@@ -111,9 +113,21 @@ where
                     .items_center()
                     .gap_2()
                     .child(
-                        Icon::new(IconName::LoaderCircle)
-                            .size(px(14.0))
-                            .text_color(selenium_amber()),
+                        div()
+                            .flex()
+                            .items_center()
+                            .child(
+                                Icon::new(IconName::LoaderCircle)
+                                    .size(px(14.0))
+                                    .text_color(selenium_amber()),
+                            )
+                            .with_animation(
+                                "preflight-probing-pulse",
+                                Animation::new(Duration::from_millis(900))
+                                    .repeat()
+                                    .with_easing(pulsating_between(0.45, 1.0)),
+                                |el, delta| el.opacity(delta),
+                            ),
                     )
                     .child(
                         div()
@@ -640,7 +654,12 @@ where
                 .max_h_full()
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(|_, _, cx| cx.stop_propagation())
-                .child(card),
+                .child(card)
+                .with_animation(
+                    "modal-card-enter",
+                    Animation::new(Duration::from_millis(140)).with_easing(ease_out_quint()),
+                    |el, delta| el.mt(px((1.0 - delta) * 8.0)).opacity(0.65 + 0.35 * delta),
+                ),
         )
         .into_any_element()
 }
