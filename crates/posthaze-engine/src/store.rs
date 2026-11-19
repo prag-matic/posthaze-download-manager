@@ -620,6 +620,46 @@ impl DownloadStore {
         .await?;
         Ok(())
     }
+
+    /// Deletes a `Download` record and its cascaded `Segment`s.
+    pub(crate) async fn delete_download(&self, id: &DownloadId) -> Result<(), EngineError> {
+        sqlx::query("DELETE FROM downloads WHERE id = ?")
+            .bind(id.as_str())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Clears `Segment`s and probe metadata so a `Download` can restart cleanly from byte `0`.
+    pub(crate) async fn reset_for_fresh_restart(&self, id: &DownloadId) -> Result<(), EngineError> {
+        let now = unix_now();
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM segments WHERE download_id = ?")
+            .bind(id.as_str())
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "UPDATE downloads
+             SET state = ?,
+                 final_url = NULL,
+                 part_path = NULL,
+                 content_length = NULL,
+                 supports_ranges = 0,
+                 etag = NULL,
+                 last_modified = NULL,
+                 bytes_downloaded = 0,
+                 error_message = NULL,
+                 updated_at = ?
+             WHERE id = ?",
+        )
+        .bind(DownloadState::Queued.as_str())
+        .bind(now)
+        .bind(id.as_str())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
 }
 
 fn row_to_record(row: SqliteRow) -> Result<DownloadRecord, EngineError> {

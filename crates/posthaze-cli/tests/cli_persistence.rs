@@ -224,4 +224,48 @@ async fn cli_resume_and_cancel_subcommands_work_end_to_end() {
     let stdout = String::from_utf8_lossy(&list_cmd.stdout);
     assert!(stdout.contains("Completed"), "stdout: {stdout}");
     assert!(stdout.contains("Cancelled"), "stdout: {stdout}");
+
+    // Delete the cancelled record (without --delete-file) and completed record (with --delete-file).
+    let del_cancelled = Command::new(bin)
+        .args([
+            "delete",
+            cancel_id.as_str(),
+            "--db",
+            db_path.to_str().unwrap(),
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        del_cancelled.status.success(),
+        "delete cancelled failed: {}",
+        String::from_utf8_lossy(&del_cancelled.stderr)
+    );
+
+    let del_completed = Command::new(bin)
+        .args([
+            "delete",
+            resume_id.as_str(),
+            "--delete-file",
+            "--db",
+            db_path.to_str().unwrap(),
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        del_completed.status.success(),
+        "delete completed failed: {}",
+        String::from_utf8_lossy(&del_completed.stderr)
+    );
+    assert!(!resume_out.exists(), "completed file should be removed");
+
+    let list_after_del = Command::new(bin)
+        .args(["list", "--db", db_path.to_str().unwrap()])
+        .output()
+        .await
+        .unwrap();
+    let stdout_after = String::from_utf8_lossy(&list_after_del.stdout);
+    assert!(!stdout_after.contains(cancel_id.as_str()));
+    assert!(!stdout_after.contains(resume_id.as_str()));
 }

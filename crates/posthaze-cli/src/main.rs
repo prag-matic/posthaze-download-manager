@@ -67,6 +67,14 @@ enum Commands {
         /// Persistent DownloadId (UUID) to cancel.
         id: String,
     },
+    /// Delete a download record and `.part` file, optionally removing the completed output file.
+    Delete {
+        /// Persistent DownloadId (UUID) to delete.
+        id: String,
+        /// Also delete the final output file from disk if present.
+        #[arg(long)]
+        delete_file: bool,
+    },
     /// Run a controlled local HTTP/1.1 range server for repeatable benchmarking.
     Serve {
         /// Virtual file size (e.g. 100M, 1G, 5G).
@@ -230,6 +238,7 @@ async fn main() -> ExitCode {
             stats_out,
         } => run_resume(db_path, id, debug || stats_out.is_some(), stats_out).await,
         Commands::Cancel { id } => run_cancel(db_path, id).await,
+        Commands::Delete { id, delete_file } => run_delete(db_path, id, delete_file).await,
         Commands::Serve {
             size,
             port,
@@ -393,13 +402,19 @@ async fn run_list(db_path: PathBuf) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-async fn run_cancel(db_path: PathBuf, id: String) -> ExitCode {
-    let engine = match DownloadEngine::open(&db_path).await {
-        Ok(engine) => engine,
+async fn open_engine_or_exit(db_path: &Path) -> Option<DownloadEngine> {
+    match DownloadEngine::open(db_path).await {
+        Ok(engine) => Some(engine),
         Err(err) => {
             eprintln!("Failed to open database {}: {err}", db_path.display());
-            return ExitCode::FAILURE;
+            None
         }
+    }
+}
+
+async fn run_cancel(db_path: PathBuf, id: String) -> ExitCode {
+    let Some(engine) = open_engine_or_exit(&db_path).await else {
+        return ExitCode::FAILURE;
     };
 
     let id = DownloadId::from(id);
@@ -410,6 +425,24 @@ async fn run_cancel(db_path: PathBuf, id: String) -> ExitCode {
         }
         Err(err) => {
             eprintln!("Failed to cancel download {id}: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run_delete(db_path: PathBuf, id: String, delete_file: bool) -> ExitCode {
+    let Some(engine) = open_engine_or_exit(&db_path).await else {
+        return ExitCode::FAILURE;
+    };
+
+    let id = DownloadId::from(id);
+    match engine.delete(&id, delete_file).await {
+        Ok(()) => {
+            println!("Deleted download {id}");
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("Failed to delete download {id}: {err}");
             ExitCode::FAILURE
         }
     }

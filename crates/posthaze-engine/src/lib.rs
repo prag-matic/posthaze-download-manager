@@ -245,6 +245,27 @@ fn default_downloads_dir() -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
+/// Non-mutating metadata returned by [`DownloadEngine::probe`] before starting a `Download`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreflightInfo {
+    /// Original URL supplied to the probe.
+    pub original_url: String,
+    /// Effective URL after following HTTP redirects.
+    pub final_url: String,
+    /// Sanitized filename derived from `Content-Disposition` or the URL path.
+    pub suggested_filename: String,
+    /// Collision-free target path inside the requested output directory.
+    pub disambiguated_output_path: PathBuf,
+    /// Server-reported `Content-Length`, if known.
+    pub content_length: Option<u64>,
+    /// Whether the server advertised byte-range (`206 Partial Content`) support.
+    pub supports_ranges: bool,
+    /// Server `ETag` `Validator`, if present.
+    pub etag: Option<String>,
+    /// Server `Last-Modified` `Validator`, if present.
+    pub last_modified: Option<String>,
+}
+
 /// Snapshot of a `Download`'s progress and metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProgressSnapshot {
@@ -403,13 +424,38 @@ impl DownloadEngine {
         })
     }
 
+    /// Probes `url` without creating any database record or `.part` file.
+    pub async fn probe(
+        &self,
+        url: impl Into<String>,
+        output_dir: impl AsRef<Path>,
+    ) -> Result<PreflightInfo, EngineError> {
+        let original_url = url.into();
+        let probed = probe_url(&self.client, &original_url).await?;
+        let disambiguated_output_path =
+            disambiguate_output_path(output_dir.as_ref(), &probed.suggested_filename);
+        Ok(PreflightInfo {
+            original_url,
+            final_url: probed.final_url,
+            suggested_filename: probed.suggested_filename,
+            disambiguated_output_path,
+            content_length: probed.content_length,
+            supports_ranges: probed.supports_ranges,
+            etag: probed.etag,
+            last_modified: probed.last_modified,
+        })
+    }
+
     /// Starts a `Download` asynchronously and returns a [`DownloadHandle`].
     pub async fn start(&self, request: DownloadRequest) -> Result<DownloadHandle, EngineError> {
         let id = DownloadId::new();
         if let Some(store) = &self.store {
             store.insert_queued(&id, &request).await?;
         }
+        Ok(self.spawn_fresh_download(id, request).await)
+    }
 
+    async fn spawn_fresh_download(&self, id: DownloadId, request: DownloadRequest) -> DownloadHandle {
         let (progress_tx, progress_rx) = watch::channel(ProgressSnapshot {
             state: DownloadState::Queued,
             bytes_downloaded: 0,
@@ -472,12 +518,12 @@ impl DownloadEngine {
             res
         });
 
-        Ok(DownloadHandle {
+        DownloadHandle {
             id,
             control_tx,
             progress_rx,
             join_handle,
-        })
+        }
     }
 
     /// Resumes a persisted `Paused` or resumable `Failed` `Download` by [`DownloadId`].
@@ -639,28 +685,42 @@ impl DownloadEngine {
         })
     }
 
-    /// Cancels an active or persisted (`Paused`/`Failed`/`Queued`) `Download`, deleting its `.part` file.
-    pub async fn cancel(&self, id: &DownloadId) -> Result<(), EngineError> {
+    async fn signal_and_wait_active(&self, id: &DownloadId, signal: ControlSignal) -> bool {
         let live = {
             let active = self.active.lock().await;
             active.get(id).cloned()
         };
-
         if let Some(ctrl) = live {
-            let _ = ctrl.control_tx.send(ControlSignal::Cancel);
+            let _ = ctrl.control_tx.send(signal);
             let mut done_rx = ctrl.done_rx;
             let _ = done_rx.wait_for(|&done| done).await;
-            return Ok(());
+            true
+        } else {
+            false
         }
+    }
 
+    async fn require_download_record(
+        &self,
+        id: &DownloadId,
+    ) -> Result<(&DownloadStore, DownloadRecord), EngineError> {
         let Some(store) = &self.store else {
             return Err(EngineError::NotFound(id.to_string()));
         };
-
         let record = store
             .get_download(id)
             .await?
             .ok_or_else(|| EngineError::NotFound(id.to_string()))?;
+        Ok((store, record))
+    }
+
+    /// Cancels an active or persisted (`Paused`/`Failed`/`Queued`) `Download`, deleting its `.part` file.
+    pub async fn cancel(&self, id: &DownloadId) -> Result<(), EngineError> {
+        if self.signal_and_wait_active(id, ControlSignal::Cancel).await {
+            return Ok(());
+        }
+
+        let (store, record) = self.require_download_record(id).await?;
 
         match record.state {
             DownloadState::Completed => {
@@ -677,10 +737,91 @@ impl DownloadEngine {
         }
 
         if let Some(part_path) = record.part_path {
-            remove_part_file(&part_path).await?;
+            remove_file_if_exists(&part_path).await?;
         }
         store.mark_cancelled(id).await?;
         Ok(())
+    }
+
+    /// Gracefully pauses an in-flight `Active` or `Queued` `Download` by [`DownloadId`].
+    pub async fn pause(&self, id: &DownloadId) -> Result<(), EngineError> {
+        if self.signal_and_wait_active(id, ControlSignal::Pause).await {
+            if let Some(store) = &self.store
+                && let Some(rec) = store.get_download(id).await?
+                && rec.state != DownloadState::Paused
+            {
+                return Err(EngineError::InvalidState(format!(
+                    "download finished in {} state before pause took effect",
+                    rec.state.as_str()
+                )));
+            }
+            return Ok(());
+        }
+
+        let (_, record) = self.require_download_record(id).await?;
+
+        Err(EngineError::InvalidState(format!(
+            "cannot pause download in {} state",
+            record.state.as_str()
+        )))
+    }
+
+    /// Deletes a `Download` record (stopping any active `Download`), its `.part` file, and optionally its final file.
+    pub async fn delete(&self, id: &DownloadId, delete_file: bool) -> Result<(), EngineError> {
+        let _ = self.signal_and_wait_active(id, ControlSignal::Cancel).await;
+        let (store, record) = self.require_download_record(id).await?;
+
+        if let Some(part_path) = &record.part_path {
+            remove_file_if_exists(part_path).await?;
+        }
+        if delete_file && let Some(output_path) = &record.output_path {
+            remove_file_if_exists(output_path).await?;
+        }
+        store.delete_download(id).await?;
+        Ok(())
+    }
+
+    /// Clears stale `.part` / `Segment` state for a `Paused`, `Failed`, or `Cancelled` `Download` and restarts from byte `0`.
+    pub async fn restart_fresh(&self, id: &DownloadId) -> Result<DownloadHandle, EngineError> {
+        {
+            let active = self.active.lock().await;
+            if active.contains_key(id) {
+                return Err(EngineError::InvalidState(format!(
+                    "download {id} is already active"
+                )));
+            }
+        }
+
+        let (store, record) = self.require_download_record(id).await?;
+
+        match record.state {
+            DownloadState::Paused | DownloadState::Failed | DownloadState::Cancelled => {}
+            other => {
+                return Err(EngineError::InvalidState(format!(
+                    "cannot restart download in {} state",
+                    other.as_str()
+                )));
+            }
+        }
+
+        if let Some(part_path) = &record.part_path {
+            remove_file_if_exists(part_path).await?;
+        }
+        store.reset_for_fresh_restart(id).await?;
+
+        let fallback_dir = match &record.output_dir {
+            Some(dir) => dir.clone(),
+            None => store.get_settings().await?.default_output_dir,
+        };
+        let req = DownloadRequest {
+            url: record.url,
+            output_path: record.output_path,
+            output_dir: fallback_dir,
+            max_workers: record.max_workers,
+            sync_on_complete: record.sync_on_complete,
+        };
+
+        Ok(self.spawn_fresh_download(id.clone(), req).await)
     }
 
     /// Lists all persisted `DownloadRecord`s ordered newest-first.
@@ -761,8 +902,8 @@ fn build_http_client() -> reqwest::Client {
         .unwrap_or_default()
 }
 
-async fn remove_part_file(part_path: &Path) -> Result<(), EngineError> {
-    match tokio::fs::remove_file(part_path).await {
+async fn remove_file_if_exists(path: &Path) -> Result<(), EngineError> {
+    match tokio::fs::remove_file(path).await {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(EngineError::Io(err)),
@@ -1050,7 +1191,7 @@ async fn finalize_transfer(
                     if let Ok(w) = Arc::try_unwrap(writer) {
                         w.abort().await;
                     }
-                    let _ = remove_part_file(part_path).await;
+                    let _ = remove_file_if_exists(part_path).await;
                     if let Some(store) = store {
                         let _ = store.mark_cancelled(id).await;
                     }
@@ -1329,7 +1470,7 @@ async fn run_download(
 
     let final_path = request
         .output_path
-        .unwrap_or_else(|| request.output_dir.join(&probe.suggested_filename));
+        .unwrap_or_else(|| disambiguate_output_path(&request.output_dir, &probe.suggested_filename));
     let part_path = make_part_path(&final_path);
 
     let transfer_start = Instant::now();
@@ -1467,6 +1608,34 @@ fn make_part_path(final_path: &Path) -> PathBuf {
     PathBuf::from(os)
 }
 
+fn disambiguate_output_path(output_dir: &Path, filename: &str) -> PathBuf {
+    let initial = output_dir.join(filename);
+    if !initial.exists() && !make_part_path(&initial).exists() {
+        return initial;
+    }
+
+    let file_path = Path::new(filename);
+    let stem = file_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(filename);
+    let ext = file_path.extension().and_then(|e| e.to_str());
+
+    let mut counter: usize = 1;
+    loop {
+        let numbered = match ext {
+            Some(ext) if !ext.is_empty() => format!("{stem} ({counter}).{ext}"),
+            _ => format!("{stem} ({counter})"),
+        };
+        let candidate = output_dir.join(numbered);
+        if !candidate.exists() && !make_part_path(&candidate).exists() {
+            return candidate;
+        }
+        counter += 1;
+    }
+}
+
 fn emit_progress(tx: &Option<watch::Sender<ProgressSnapshot>>, snapshot: ProgressSnapshot) {
     if let Some(tx) = tx {
         let _ = tx.send(snapshot);
@@ -1497,7 +1666,7 @@ async fn finalize_queued_interruption(
         }
         EngineError::Cancelled => {
             if let Some(part) = part_path {
-                let _ = remove_part_file(part).await;
+                let _ = remove_file_if_exists(part).await;
             }
             if let Some(store) = store {
                 let _ = store.mark_cancelled(id).await;
