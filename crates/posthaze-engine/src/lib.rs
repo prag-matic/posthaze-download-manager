@@ -19,13 +19,13 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use thiserror::Error;
-use tokio::sync::{Mutex, mpsc, watch};
+use tokio::sync::{Mutex, broadcast, mpsc, watch};
 
 use crate::probe::{ProbeResult, probe_url};
 use crate::queue::QueueCoordinator;
 use crate::store::DownloadStore;
 use crate::transfer::{
-    ControlSignal, MultiSegmentResult, SegmentCheckpoint, execute_multi_segment,
+    ControlSignal, LiveSegments, MultiSegmentResult, SegmentCheckpoint, execute_multi_segment,
     execute_multi_segment_from_checkpoints, execute_single_stream,
 };
 use crate::writer::PartFileWriter;
@@ -266,6 +266,23 @@ pub struct PreflightInfo {
     pub last_modified: Option<String>,
 }
 
+/// Live or persisted `Segment` progress.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SegmentProgress {
+    /// Zero-based `Segment` index within the `Download`.
+    pub id: usize,
+    /// Inclusive start byte offset of this `Segment`.
+    pub start: u64,
+    /// Current network progress offset (`>= start`).
+    pub cursor: u64,
+    /// Highest writer-acknowledged `Checkpoint` offset flushed to disk (`start <= checkpointed_cursor <= cursor`).
+    pub checkpointed_cursor: u64,
+    /// Exclusive end byte offset of this `Segment`, or `None` for an unbounded stream.
+    pub end: Option<u64>,
+    /// Whether this `Segment` has finished receiving all bytes.
+    pub completed: bool,
+}
+
 /// Snapshot of a `Download`'s progress and metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProgressSnapshot {
@@ -277,6 +294,70 @@ pub struct ProgressSnapshot {
     pub total_bytes: Option<u64>,
     /// Number of currently active `Worker`s.
     pub active_workers: usize,
+    /// Smoothed instantaneous throughput in bytes per second.
+    pub bytes_per_sec: u64,
+    /// Estimated remaining seconds until completion, if `total_bytes` and speed are known.
+    pub eta_secs: Option<u64>,
+    /// Per-`Segment` progress and disk `Checkpoint` offsets.
+    pub segments: Vec<SegmentProgress>,
+}
+
+impl Default for ProgressSnapshot {
+    fn default() -> Self {
+        Self {
+            state: DownloadState::Queued,
+            bytes_downloaded: 0,
+            total_bytes: None,
+            active_workers: 0,
+            bytes_per_sec: 0,
+            eta_secs: None,
+            segments: Vec::new(),
+        }
+    }
+}
+
+impl ProgressSnapshot {
+    fn status(
+        state: DownloadState,
+        bytes_downloaded: u64,
+        total_bytes: Option<u64>,
+        active_workers: usize,
+    ) -> Self {
+        Self {
+            state,
+            bytes_downloaded,
+            total_bytes,
+            active_workers,
+            bytes_per_sec: 0,
+            eta_secs: None,
+            segments: Vec::new(),
+        }
+    }
+}
+
+/// Engine-wide event stream consumed by desktop UI views and observers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EngineEvent {
+    /// A `Download` transitioned to a new [`DownloadState`].
+    StateChanged {
+        /// Identifier of the `Download`.
+        id: DownloadId,
+        /// New lifecycle state.
+        state: DownloadState,
+        /// Optional failure message when `state` is [`DownloadState::Failed`].
+        error: Option<String>,
+    },
+    /// Periodic or terminal [`ProgressSnapshot`] update for a `Download`.
+    ProgressUpdated {
+        /// Identifier of the `Download`.
+        id: DownloadId,
+        /// Latest progress and per-`Segment` snapshot.
+        snapshot: ProgressSnapshot,
+    },
+    /// `Queue` membership or concurrency slot assignment changed.
+    QueueUpdated,
+    /// Persisted [`Settings`] were updated.
+    SettingsUpdated(Settings),
 }
 
 /// Result and timing summary returned when a `Download` completes.
@@ -377,6 +458,7 @@ pub struct DownloadEngine {
     active: Arc<Mutex<HashMap<DownloadId, ActiveControl>>>,
     queue: Arc<QueueCoordinator>,
     ephemeral_settings: Arc<Mutex<Settings>>,
+    event_tx: broadcast::Sender<EngineEvent>,
 }
 
 impl Default for DownloadEngine {
@@ -386,42 +468,43 @@ impl Default for DownloadEngine {
 }
 
 impl DownloadEngine {
-    /// Constructs a new ephemeral [`DownloadEngine`] without SQLite persistence.
-    pub fn new() -> Self {
-        let defaults = Settings::default();
+    fn with_store(store: Option<DownloadStore>, settings: Settings) -> Self {
+        let (event_tx, _) = broadcast::channel(1024);
         Self {
             client: build_http_client(),
-            store: None,
+            store,
             active: Arc::new(Mutex::new(HashMap::new())),
-            queue: Arc::new(QueueCoordinator::new(defaults.max_concurrent_downloads)),
-            ephemeral_settings: Arc::new(Mutex::new(defaults)),
+            queue: Arc::new(QueueCoordinator::new(settings.max_concurrent_downloads)),
+            ephemeral_settings: Arc::new(Mutex::new(settings)),
+            event_tx,
         }
+    }
+
+    /// Constructs a new ephemeral [`DownloadEngine`] without SQLite persistence.
+    pub fn new() -> Self {
+        Self::with_store(None, Settings::default())
     }
 
     /// Opens or creates a SQLite-backed [`DownloadEngine`] at `db_path`.
     pub async fn open(db_path: impl AsRef<Path>) -> Result<Self, EngineError> {
         let store = DownloadStore::open(db_path.as_ref()).await?;
         let settings = store.get_settings().await?;
-        Ok(Self {
-            client: build_http_client(),
-            store: Some(store),
-            active: Arc::new(Mutex::new(HashMap::new())),
-            queue: Arc::new(QueueCoordinator::new(settings.max_concurrent_downloads)),
-            ephemeral_settings: Arc::new(Mutex::new(settings)),
-        })
+        Ok(Self::with_store(Some(store), settings))
     }
 
     /// Constructs an ephemeral in-memory SQLite-backed [`DownloadEngine`].
     pub async fn in_memory() -> Result<Self, EngineError> {
         let store = DownloadStore::in_memory().await?;
         let settings = store.get_settings().await?;
-        Ok(Self {
-            client: build_http_client(),
-            store: Some(store),
-            active: Arc::new(Mutex::new(HashMap::new())),
-            queue: Arc::new(QueueCoordinator::new(settings.max_concurrent_downloads)),
-            ephemeral_settings: Arc::new(Mutex::new(settings)),
-        })
+        Ok(Self::with_store(Some(store), settings))
+    }
+
+    /// Subscribes to the engine-wide [`EngineEvent`] broadcast stream.
+    ///
+    /// Subscribers that fall behind the `1024`-event buffer (`RecvError::Lagged`) should
+    /// reconcile their view via [`DownloadEngine::list_downloads`].
+    pub fn subscribe_events(&self) -> broadcast::Receiver<EngineEvent> {
+        self.event_tx.subscribe()
     }
 
     /// Probes `url` without creating any database record or `.part` file.
@@ -456,12 +539,12 @@ impl DownloadEngine {
     }
 
     async fn spawn_fresh_download(&self, id: DownloadId, request: DownloadRequest) -> DownloadHandle {
-        let (progress_tx, progress_rx) = watch::channel(ProgressSnapshot {
-            state: DownloadState::Queued,
-            bytes_downloaded: 0,
-            total_bytes: None,
-            active_workers: 0,
-        });
+        let (progress_tx, progress_rx) = watch::channel(ProgressSnapshot::status(
+            DownloadState::Queued,
+            0,
+            None,
+            0,
+        ));
         let (control_tx, control_rx) = watch::channel(ControlSignal::Run);
         let (done_tx, done_rx) = watch::channel(false);
 
@@ -480,9 +563,17 @@ impl DownloadEngine {
         let store = self.store.clone();
         let active_map = Arc::clone(&self.active);
         let queue = Arc::clone(&self.queue);
+        let event_tx = self.event_tx.clone();
         let task_id = id.clone();
+        let sink = ProgressSink::new(id.clone(), Some(progress_tx), event_tx.clone());
 
         queue.enqueue(id.clone());
+        let _ = event_tx.send(EngineEvent::StateChanged {
+            id: id.clone(),
+            state: DownloadState::Queued,
+            error: None,
+        });
+        let _ = event_tx.send(EngineEvent::QueueUpdated);
 
         let join_handle = tokio::spawn(async move {
             let mut control_rx = control_rx;
@@ -493,7 +584,7 @@ impl DownloadEngine {
                         store,
                         task_id.clone(),
                         request,
-                        Some(progress_tx),
+                        sink,
                         control_rx,
                     )
                     .await;
@@ -508,12 +599,13 @@ impl DownloadEngine {
                         None,
                         0,
                         None,
-                        &progress_tx,
+                        &sink,
                         err,
                     )
                     .await
                 }
             };
+            let _ = event_tx.send(EngineEvent::QueueUpdated);
             let _ = done_tx.send(true);
             res
         });
@@ -602,12 +694,12 @@ impl DownloadEngine {
 
         store.set_state(id, DownloadState::Queued).await?;
 
-        let (progress_tx, progress_rx) = watch::channel(ProgressSnapshot {
-            state: DownloadState::Queued,
-            bytes_downloaded: record.bytes_downloaded,
-            total_bytes: record.content_length,
-            active_workers: 0,
-        });
+        let (progress_tx, progress_rx) = watch::channel(ProgressSnapshot::status(
+            DownloadState::Queued,
+            record.bytes_downloaded,
+            record.content_length,
+            0,
+        ));
         let (control_tx, control_rx) = watch::channel(ControlSignal::Run);
         let (done_tx, done_rx) = watch::channel(false);
 
@@ -626,9 +718,17 @@ impl DownloadEngine {
         let store = store.clone();
         let active_map = Arc::clone(&self.active);
         let queue = Arc::clone(&self.queue);
+        let event_tx = self.event_tx.clone();
         let task_id = id.clone();
+        let sink = ProgressSink::new(id.clone(), Some(progress_tx), event_tx.clone());
 
         queue.enqueue(id.clone());
+        let _ = event_tx.send(EngineEvent::StateChanged {
+            id: id.clone(),
+            state: DownloadState::Queued,
+            error: None,
+        });
+        let _ = event_tx.send(EngineEvent::QueueUpdated);
 
         let join_handle = tokio::spawn(async move {
             let mut control_rx = control_rx;
@@ -640,7 +740,7 @@ impl DownloadEngine {
                             Some(store),
                             task_id.clone(),
                             req,
-                            Some(progress_tx),
+                            sink,
                             control_rx,
                         )
                         .await
@@ -651,7 +751,7 @@ impl DownloadEngine {
                             task_id.clone(),
                             record,
                             segments,
-                            Some(progress_tx),
+                            sink,
                             control_rx,
                         )
                         .await
@@ -667,12 +767,13 @@ impl DownloadEngine {
                         record.part_path.as_deref(),
                         record.bytes_downloaded,
                         record.content_length,
-                        &progress_tx,
+                        &sink,
                         err,
                     )
                     .await
                 }
             };
+            let _ = event_tx.send(EngineEvent::QueueUpdated);
             let _ = done_tx.send(true);
             res
         });
@@ -740,6 +841,12 @@ impl DownloadEngine {
             remove_file_if_exists(&part_path).await?;
         }
         store.mark_cancelled(id).await?;
+        let _ = self.event_tx.send(EngineEvent::StateChanged {
+            id: id.clone(),
+            state: DownloadState::Cancelled,
+            error: None,
+        });
+        let _ = self.event_tx.send(EngineEvent::QueueUpdated);
         Ok(())
     }
 
@@ -778,6 +885,7 @@ impl DownloadEngine {
             remove_file_if_exists(output_path).await?;
         }
         store.delete_download(id).await?;
+        let _ = self.event_tx.send(EngineEvent::QueueUpdated);
         Ok(())
     }
 
@@ -840,6 +948,23 @@ impl DownloadEngine {
         }
     }
 
+    /// Loads persisted `Segment` `Checkpoint`s for a `Download` as [`SegmentProgress`] entries.
+    pub async fn list_segments(&self, id: &DownloadId) -> Result<Vec<SegmentProgress>, EngineError> {
+        let (store, _) = self.require_download_record(id).await?;
+        let checkpoints = store.get_segments(id).await?;
+        Ok(checkpoints
+            .into_iter()
+            .map(|cp| SegmentProgress {
+                id: cp.segment_index,
+                start: cp.start,
+                cursor: cp.cursor,
+                checkpointed_cursor: cp.cursor,
+                end: cp.end,
+                completed: cp.completed,
+            })
+            .collect())
+    }
+
     /// Reads the persisted [`Settings`] for this engine.
     pub async fn get_settings(&self) -> Result<Settings, EngineError> {
         match &self.store {
@@ -867,6 +992,8 @@ impl DownloadEngine {
             }
         }
         self.queue.set_max_concurrent(settings.max_concurrent_downloads);
+        let _ = self.event_tx.send(EngineEvent::SettingsUpdated(settings));
+        let _ = self.event_tx.send(EngineEvent::QueueUpdated);
         Ok(())
     }
 
@@ -881,12 +1008,13 @@ impl DownloadEngine {
             store.insert_queued(&id, &request).await?;
         }
         let (_control_tx, control_rx) = watch::channel(ControlSignal::Run);
+        let sink = ProgressSink::new(id.clone(), progress_tx, self.event_tx.clone());
         run_download(
             self.client.clone(),
             self.store.clone(),
             id,
             request,
-            progress_tx,
+            sink,
             control_rx,
         )
         .await
@@ -910,18 +1038,59 @@ async fn remove_file_if_exists(path: &Path) -> Result<(), EngineError> {
     }
 }
 
+#[derive(Clone)]
+struct ProgressSink {
+    id: DownloadId,
+    watch_tx: Option<watch::Sender<ProgressSnapshot>>,
+    event_tx: broadcast::Sender<EngineEvent>,
+}
+
+impl ProgressSink {
+    fn new(
+        id: DownloadId,
+        watch_tx: Option<watch::Sender<ProgressSnapshot>>,
+        event_tx: broadcast::Sender<EngineEvent>,
+    ) -> Self {
+        Self {
+            id,
+            watch_tx,
+            event_tx,
+        }
+    }
+
+    fn send(&self, snapshot: ProgressSnapshot) {
+        if let Some(tx) = &self.watch_tx {
+            let _ = tx.send(snapshot.clone());
+        }
+        let _ = self.event_tx.send(EngineEvent::ProgressUpdated {
+            id: self.id.clone(),
+            snapshot,
+        });
+    }
+
+    fn emit_state(&self, state: DownloadState, error: Option<String>) {
+        let _ = self.event_tx.send(EngineEvent::StateChanged {
+            id: self.id.clone(),
+            state,
+            error,
+        });
+    }
+}
+
 async fn fail_download(
     store: &Option<DownloadStore>,
-    progress_tx: &Option<watch::Sender<ProgressSnapshot>>,
+    sink: &ProgressSink,
     id: &DownloadId,
     bytes: u64,
     total: Option<u64>,
     err: EngineError,
 ) -> EngineError {
+    let err_msg = err.to_string();
     if let Some(store) = store {
-        let _ = store.mark_failed(id, bytes, &err.to_string()).await;
+        let _ = store.mark_failed(id, bytes, &err_msg).await;
     }
-    emit_failed(progress_tx, bytes, total);
+    sink.emit_state(DownloadState::Failed, Some(err_msg));
+    emit_failed(sink, bytes, total);
     err
 }
 
@@ -929,7 +1098,7 @@ async fn fail_download(
 async fn probe_with_control(
     client: &reqwest::Client,
     store: &Option<DownloadStore>,
-    progress_tx: &Option<watch::Sender<ProgressSnapshot>>,
+    sink: &ProgressSink,
     control_rx: &mut watch::Receiver<ControlSignal>,
     id: &DownloadId,
     url: &str,
@@ -939,30 +1108,22 @@ async fn probe_with_control(
     if let Some(store) = store
         && let Err(err) = store.set_state(id, DownloadState::Probing).await
     {
-        return Err(fail_download(&None, progress_tx, id, initial_bytes, initial_total, err).await);
+        return Err(fail_download(&None, sink, id, initial_bytes, initial_total, err).await);
     }
+    sink.emit_state(DownloadState::Probing, None);
     emit_progress(
-        progress_tx,
-        ProgressSnapshot {
-            state: DownloadState::Probing,
-            bytes_downloaded: initial_bytes,
-            total_bytes: initial_total,
-            active_workers: 0,
-        },
+        sink,
+        ProgressSnapshot::status(DownloadState::Probing, initial_bytes, initial_total, 0),
     );
 
     if *control_rx.borrow() == ControlSignal::Cancel {
         if let Some(store) = store {
             let _ = store.mark_cancelled(id).await;
         }
+        sink.emit_state(DownloadState::Cancelled, None);
         emit_progress(
-            progress_tx,
-            ProgressSnapshot {
-                state: DownloadState::Cancelled,
-                bytes_downloaded: initial_bytes,
-                total_bytes: initial_total,
-                active_workers: 0,
-            },
+            sink,
+            ProgressSnapshot::status(DownloadState::Cancelled, initial_bytes, initial_total, 0),
         );
         return Err(EngineError::Cancelled);
     }
@@ -976,14 +1137,15 @@ async fn probe_with_control(
                     if let Some(store) = store {
                         let _ = store.mark_cancelled(id).await;
                     }
+                    sink.emit_state(DownloadState::Cancelled, None);
                     emit_progress(
-                        progress_tx,
-                        ProgressSnapshot {
-                            state: DownloadState::Cancelled,
-                            bytes_downloaded: initial_bytes,
-                            total_bytes: initial_total,
-                            active_workers: 0,
-                        },
+                        sink,
+                        ProgressSnapshot::status(
+                            DownloadState::Cancelled,
+                            initial_bytes,
+                            initial_total,
+                            0,
+                        ),
                     );
                     Err(EngineError::Cancelled)
                 }
@@ -992,20 +1154,16 @@ async fn probe_with_control(
                         if let Some(store) = store {
                             let _ = store.set_state(id, prev).await;
                         }
+                        sink.emit_state(prev, None);
                         emit_progress(
-                            progress_tx,
-                            ProgressSnapshot {
-                                state: prev,
-                                bytes_downloaded: initial_bytes,
-                                total_bytes: initial_total,
-                                active_workers: 0,
-                            },
+                            sink,
+                            ProgressSnapshot::status(prev, initial_bytes, initial_total, 0),
                         );
                         Err(EngineError::Paused)
                     } else {
                         Err(fail_download(
                             store,
-                            progress_tx,
+                            sink,
                             id,
                             initial_bytes,
                             initial_total,
@@ -1021,7 +1179,7 @@ async fn probe_with_control(
         }
         res = probe_url(client, url) => match res {
             Ok(probe) => Ok(probe),
-            Err(err) => Err(fail_download(store, progress_tx, id, initial_bytes, initial_total, err).await),
+            Err(err) => Err(fail_download(store, sink, id, initial_bytes, initial_total, err).await),
         }
     }
 }
@@ -1079,18 +1237,27 @@ fn validate_resume_probe(
 fn spawn_checkpoint_task(
     store: &Option<DownloadStore>,
     id: &DownloadId,
+    checkpointed_cursors: Arc<std::sync::Mutex<HashMap<usize, u64>>>,
 ) -> (
     Option<crate::writer::CheckpointSender>,
     Option<tokio::task::JoinHandle<()>>,
 ) {
-    let Some(store) = store.clone() else {
-        return (None, None);
-    };
+    let store = store.clone();
     let (tx, mut rx) = mpsc::channel::<Vec<(usize, u64)>>(4);
     let task_id = id.clone();
     let handle = tokio::spawn(async move {
         while let Some(cursors) = rx.recv().await {
-            if let Err(err) = store.apply_writer_checkpoint(&task_id, &cursors).await {
+            {
+                let mut map = checkpointed_cursors.lock().unwrap();
+                for &(seg_idx, cursor) in &cursors {
+                    map.entry(seg_idx)
+                        .and_modify(|prev| *prev = (*prev).max(cursor))
+                        .or_insert(cursor);
+                }
+            }
+            if let Some(store) = &store
+                && let Err(err) = store.apply_writer_checkpoint(&task_id, &cursors).await
+            {
                 tracing::warn!(download_id = %task_id, error = %err, "failed to persist writer checkpoint");
             }
         }
@@ -1101,7 +1268,7 @@ fn spawn_checkpoint_task(
 #[allow(clippy::too_many_arguments)]
 async fn finalize_transfer(
     store: &Option<DownloadStore>,
-    progress_tx: &Option<watch::Sender<ProgressSnapshot>>,
+    sink: &ProgressSink,
     id: &DownloadId,
     probe: &ProbeResult,
     final_path: PathBuf,
@@ -1125,7 +1292,7 @@ async fn finalize_transfer(
                         }
                         return Err(fail_download(
                             store,
-                            progress_tx,
+                            sink,
                             id,
                             bytes,
                             probe.content_length,
@@ -1141,7 +1308,7 @@ async fn finalize_transfer(
                             Err(flush_err) => {
                                 return Err(fail_download(
                                     store,
-                                    progress_tx,
+                                    sink,
                                     id,
                                     bytes,
                                     probe.content_length,
@@ -1153,7 +1320,7 @@ async fn finalize_transfer(
                         Err(_) => {
                             return Err(fail_download(
                                 store,
-                                progress_tx,
+                                sink,
                                 id,
                                 bytes,
                                 probe.content_length,
@@ -1176,14 +1343,15 @@ async fn finalize_transfer(
                     } else {
                         bytes
                     };
+                    sink.emit_state(DownloadState::Paused, None);
                     emit_progress(
-                        progress_tx,
-                        ProgressSnapshot {
-                            state: DownloadState::Paused,
-                            bytes_downloaded: persisted_bytes,
-                            total_bytes: probe.content_length,
-                            active_workers: 0,
-                        },
+                        sink,
+                        ProgressSnapshot::status(
+                            DownloadState::Paused,
+                            persisted_bytes,
+                            probe.content_length,
+                            0,
+                        ),
                     );
                     return Err(EngineError::Paused);
                 }
@@ -1195,14 +1363,15 @@ async fn finalize_transfer(
                     if let Some(store) = store {
                         let _ = store.mark_cancelled(id).await;
                     }
+                    sink.emit_state(DownloadState::Cancelled, None);
                     emit_progress(
-                        progress_tx,
-                        ProgressSnapshot {
-                            state: DownloadState::Cancelled,
-                            bytes_downloaded: bytes,
-                            total_bytes: probe.content_length,
-                            active_workers: 0,
-                        },
+                        sink,
+                        ProgressSnapshot::status(
+                            DownloadState::Cancelled,
+                            bytes,
+                            probe.content_length,
+                            0,
+                        ),
                     );
                     return Err(EngineError::Cancelled);
                 }
@@ -1224,13 +1393,15 @@ async fn finalize_transfer(
                         {
                             acked_bytes = persisted;
                         }
-                        emit_failed(progress_tx, acked_bytes, probe.content_length);
+                        sink.emit_state(DownloadState::Failed, Some(err.to_string()));
+                        emit_failed(sink, acked_bytes, probe.content_length);
                         return Err(err);
                     }
                     if let Some(store) = store {
                         let _ = store.mark_failed(id, bytes, &err.to_string()).await;
                     }
-                    emit_failed(progress_tx, bytes, probe.content_length);
+                    sink.emit_state(DownloadState::Failed, Some(err.to_string()));
+                    emit_failed(sink, bytes, probe.content_length);
                     return Err(err);
                 }
             }
@@ -1242,7 +1413,7 @@ async fn finalize_transfer(
         Err(_) => {
             return Err(fail_download(
                 store,
-                progress_tx,
+                sink,
                 id,
                 res.bytes_written,
                 probe.content_length,
@@ -1257,7 +1428,7 @@ async fn finalize_transfer(
     if let Err(err) = writer.finish(&final_path).await {
         return Err(fail_download(
             store,
-            progress_tx,
+            sink,
             id,
             res.bytes_written,
             probe.content_length,
@@ -1273,14 +1444,15 @@ async fn finalize_transfer(
     let transfer_duration = transfer_start.elapsed();
     let total_duration = total_start.elapsed();
 
+    sink.emit_state(DownloadState::Completed, None);
     emit_progress(
-        progress_tx,
-        ProgressSnapshot {
-            state: DownloadState::Completed,
-            bytes_downloaded: res.bytes_written,
-            total_bytes: probe.content_length.or(Some(res.bytes_written)),
-            active_workers: 0,
-        },
+        sink,
+        ProgressSnapshot::status(
+            DownloadState::Completed,
+            res.bytes_written,
+            probe.content_length.or(Some(res.bytes_written)),
+            0,
+        ),
     );
 
     Ok(DownloadOutcome {
@@ -1306,7 +1478,7 @@ async fn run_resumed_download(
     id: DownloadId,
     record: DownloadRecord,
     segments: Vec<SegmentCheckpoint>,
-    progress_tx: Option<watch::Sender<ProgressSnapshot>>,
+    sink: ProgressSink,
     mut control_rx: watch::Receiver<ControlSignal>,
 ) -> Result<DownloadOutcome, EngineError> {
     let final_path = record.output_path.clone().ok_or_else(|| {
@@ -1322,7 +1494,7 @@ async fn run_resumed_download(
     let probe = probe_with_control(
         &client,
         &store_opt,
-        &progress_tx,
+        &sink,
         &mut control_rx,
         &id,
         &record.url,
@@ -1335,7 +1507,7 @@ async fn run_resumed_download(
     if let Err(err) = validate_resume_probe(&id, &record, &probe) {
         return Err(fail_download(
             &store_opt,
-            &progress_tx,
+            &sink,
             &id,
             record.bytes_downloaded,
             record.content_length,
@@ -1344,8 +1516,17 @@ async fn run_resumed_download(
         .await);
     }
 
+    let initial_cp_map: HashMap<usize, u64> = segments
+        .iter()
+        .map(|s| (s.segment_index, s.cursor))
+        .collect();
+    let checkpointed_cursors = Arc::new(std::sync::Mutex::new(initial_cp_map));
+    let live_segments_slot: Arc<std::sync::Mutex<Option<LiveSegments>>> =
+        Arc::new(std::sync::Mutex::new(None));
+
     let transfer_start = Instant::now();
-    let (cp_tx, cp_handle) = spawn_checkpoint_task(&store_opt, &id);
+    let (cp_tx, cp_handle) =
+        spawn_checkpoint_task(&store_opt, &id, Arc::clone(&checkpointed_cursors));
     let writer = match PartFileWriter::spawn_existing_with_sync(
         part_path.clone(),
         record.sync_on_complete,
@@ -1358,7 +1539,7 @@ async fn run_resumed_download(
             }
             return Err(fail_download(
                 &store_opt,
-                &progress_tx,
+                &sink,
                 &id,
                 record.bytes_downloaded,
                 probe.content_length,
@@ -1374,7 +1555,7 @@ async fn run_resumed_download(
         }
         return Err(fail_download(
             &None,
-            &progress_tx,
+            &sink,
             &id,
             record.bytes_downloaded,
             probe.content_length,
@@ -1390,21 +1571,25 @@ async fn run_resumed_download(
     let downloaded = Arc::new(AtomicU64::new(initial_bytes));
     let active_workers = Arc::new(AtomicUsize::new(0));
 
+    sink.emit_state(DownloadState::Active, None);
     emit_progress(
-        &progress_tx,
-        ProgressSnapshot {
-            state: DownloadState::Active,
-            bytes_downloaded: initial_bytes,
-            total_bytes: probe.content_length,
-            active_workers: 0,
-        },
+        &sink,
+        ProgressSnapshot::status(
+            DownloadState::Active,
+            initial_bytes,
+            probe.content_length,
+            0,
+        ),
     );
 
     let reporter = spawn_progress_reporter(
-        progress_tx.clone(),
+        sink.clone(),
         Arc::clone(&downloaded),
         Arc::clone(&active_workers),
         probe.content_length,
+        Arc::clone(&live_segments_slot),
+        Arc::clone(&checkpointed_cursors),
+        initial_bytes,
     );
 
     let transfer_result = execute_multi_segment_from_checkpoints(
@@ -1417,6 +1602,7 @@ async fn run_resumed_download(
         &active_workers,
         control_rx,
         Some((id.clone(), store.clone())),
+        Some(&live_segments_slot),
     )
     .await;
 
@@ -1426,7 +1612,7 @@ async fn run_resumed_download(
 
     let out = finalize_transfer(
         &store_opt,
-        &progress_tx,
+        &sink,
         &id,
         &probe,
         final_path,
@@ -1450,7 +1636,7 @@ async fn run_download(
     store: Option<DownloadStore>,
     id: DownloadId,
     request: DownloadRequest,
-    progress_tx: Option<watch::Sender<ProgressSnapshot>>,
+    sink: ProgressSink,
     mut control_rx: watch::Receiver<ControlSignal>,
 ) -> Result<DownloadOutcome, EngineError> {
     let total_start = Instant::now();
@@ -1458,7 +1644,7 @@ async fn run_download(
     let probe = probe_with_control(
         &client,
         &store,
-        &progress_tx,
+        &sink,
         &mut control_rx,
         &id,
         &request.url,
@@ -1473,8 +1659,13 @@ async fn run_download(
         .unwrap_or_else(|| disambiguate_output_path(&request.output_dir, &probe.suggested_filename));
     let part_path = make_part_path(&final_path);
 
+    let checkpointed_cursors = Arc::new(std::sync::Mutex::new(HashMap::new()));
+    let live_segments_slot: Arc<std::sync::Mutex<Option<LiveSegments>>> =
+        Arc::new(std::sync::Mutex::new(None));
+
     let transfer_start = Instant::now();
-    let (cp_tx, cp_handle) = spawn_checkpoint_task(&store, &id);
+    let (cp_tx, cp_handle) =
+        spawn_checkpoint_task(&store, &id, Arc::clone(&checkpointed_cursors));
     let writer = match PartFileWriter::spawn_with_checkpoint(
         part_path.clone(),
         probe.content_length,
@@ -1487,7 +1678,7 @@ async fn run_download(
                 h.abort();
             }
             return Err(
-                fail_download(&store, &progress_tx, &id, 0, probe.content_length, err).await,
+                fail_download(&store, &sink, &id, 0, probe.content_length, err).await,
             );
         }
     };
@@ -1500,27 +1691,26 @@ async fn run_download(
         if let Some(h) = cp_handle {
             h.abort();
         }
-        return Err(fail_download(&None, &progress_tx, &id, 0, probe.content_length, err).await);
+        return Err(fail_download(&None, &sink, &id, 0, probe.content_length, err).await);
     }
 
     let downloaded = Arc::new(AtomicU64::new(0));
     let active_workers = Arc::new(AtomicUsize::new(0));
 
+    sink.emit_state(DownloadState::Active, None);
     emit_progress(
-        &progress_tx,
-        ProgressSnapshot {
-            state: DownloadState::Active,
-            bytes_downloaded: 0,
-            total_bytes: probe.content_length,
-            active_workers: 0,
-        },
+        &sink,
+        ProgressSnapshot::status(DownloadState::Active, 0, probe.content_length, 0),
     );
 
     let reporter = spawn_progress_reporter(
-        progress_tx.clone(),
+        sink.clone(),
         Arc::clone(&downloaded),
         Arc::clone(&active_workers),
         probe.content_length,
+        Arc::clone(&live_segments_slot),
+        Arc::clone(&checkpointed_cursors),
+        0,
     );
 
     let persist = store.as_ref().map(|s| (id.clone(), s.clone()));
@@ -1536,6 +1726,7 @@ async fn run_download(
                 &active_workers,
                 control_rx,
                 persist,
+                Some(&live_segments_slot),
             )
             .await
         }
@@ -1562,7 +1753,7 @@ async fn run_download(
 
     let out = finalize_transfer(
         &store,
-        &progress_tx,
+        &sink,
         &id,
         &probe,
         final_path,
@@ -1582,24 +1773,93 @@ async fn run_download(
 }
 
 fn spawn_progress_reporter(
-    progress_tx: Option<watch::Sender<ProgressSnapshot>>,
+    sink: ProgressSink,
     downloaded: Arc<AtomicU64>,
     active_workers: Arc<AtomicUsize>,
     total_bytes: Option<u64>,
+    live_segments_slot: Arc<std::sync::Mutex<Option<LiveSegments>>>,
+    checkpointed_cursors: Arc<std::sync::Mutex<HashMap<usize, u64>>>,
+    initial_bytes: u64,
 ) -> Option<tokio::task::JoinHandle<()>> {
-    let tx = progress_tx?;
     Some(tokio::spawn(async move {
         let mut interval = tokio::time::interval(PROGRESS_EMIT_INTERVAL);
+        let mut last_sample_time = Instant::now();
+        let mut last_sample_bytes = initial_bytes;
+        let mut ema_bps: f64 = 0.0;
+
         loop {
             interval.tick().await;
-            let _ = tx.send(ProgressSnapshot {
+            let bytes = downloaded.load(Ordering::Relaxed);
+            let now = Instant::now();
+            let elapsed = now.duration_since(last_sample_time);
+            if elapsed >= Duration::from_millis(200) {
+                let delta = bytes.saturating_sub(last_sample_bytes);
+                let inst_bps = delta as f64 / elapsed.as_secs_f64();
+                ema_bps = if ema_bps == 0.0 {
+                    inst_bps
+                } else {
+                    0.35 * inst_bps + 0.65 * ema_bps
+                };
+                last_sample_time = now;
+                last_sample_bytes = bytes;
+            }
+            let bytes_per_sec = ema_bps.round() as u64;
+            let eta_secs = total_bytes.and_then(|total| {
+                if bytes >= total {
+                    Some(0)
+                } else if bytes_per_sec > 0 {
+                    Some((total - bytes).div_ceil(bytes_per_sec))
+                } else {
+                    None
+                }
+            });
+
+            let segments = collect_segment_progress(
+                &live_segments_slot,
+                &checkpointed_cursors,
+                bytes,
+                total_bytes,
+            );
+
+            sink.send(ProgressSnapshot {
                 state: DownloadState::Active,
-                bytes_downloaded: downloaded.load(Ordering::Relaxed),
+                bytes_downloaded: bytes,
                 total_bytes,
                 active_workers: active_workers.load(Ordering::Relaxed),
+                bytes_per_sec,
+                eta_secs,
+                segments,
             });
         }
     }))
+}
+
+fn collect_segment_progress(
+    live_segments_slot: &Arc<std::sync::Mutex<Option<LiveSegments>>>,
+    checkpointed_cursors: &Arc<std::sync::Mutex<HashMap<usize, u64>>>,
+    bytes_downloaded: u64,
+    total_bytes: Option<u64>,
+) -> Vec<SegmentProgress> {
+    let live_arc = live_segments_slot.lock().unwrap().clone();
+    let cp_map = checkpointed_cursors.lock().unwrap();
+
+    if let Some(live_segments) = live_arc {
+        let segs = live_segments.lock().unwrap();
+        let mut out: Vec<SegmentProgress> =
+            segs.iter().map(|seg| seg.snapshot_progress(&cp_map)).collect();
+        out.sort_by_key(|s| s.id);
+        out
+    } else {
+        let flushed = cp_map.get(&0).copied().unwrap_or(0);
+        vec![SegmentProgress {
+            id: 0,
+            start: 0,
+            cursor: bytes_downloaded,
+            checkpointed_cursor: flushed.min(bytes_downloaded),
+            end: total_bytes,
+            completed: false,
+        }]
+    }
 }
 
 fn make_part_path(final_path: &Path) -> PathBuf {
@@ -1636,10 +1896,8 @@ fn disambiguate_output_path(output_dir: &Path, filename: &str) -> PathBuf {
     }
 }
 
-fn emit_progress(tx: &Option<watch::Sender<ProgressSnapshot>>, snapshot: ProgressSnapshot) {
-    if let Some(tx) = tx {
-        let _ = tx.send(snapshot);
-    }
+fn emit_progress(sink: &ProgressSink, snapshot: ProgressSnapshot) {
+    sink.send(snapshot);
 }
 
 async fn finalize_queued_interruption(
@@ -1648,7 +1906,7 @@ async fn finalize_queued_interruption(
     part_path: Option<&Path>,
     bytes_downloaded: u64,
     total_bytes: Option<u64>,
-    progress_tx: &watch::Sender<ProgressSnapshot>,
+    sink: &ProgressSink,
     err: EngineError,
 ) -> Result<DownloadOutcome, EngineError> {
     match err {
@@ -1656,12 +1914,13 @@ async fn finalize_queued_interruption(
             if let Some(store) = store {
                 let _ = store.set_state(id, DownloadState::Paused).await;
             }
-            let _ = progress_tx.send(ProgressSnapshot {
-                state: DownloadState::Paused,
+            sink.emit_state(DownloadState::Paused, None);
+            sink.send(ProgressSnapshot::status(
+                DownloadState::Paused,
                 bytes_downloaded,
                 total_bytes,
-                active_workers: 0,
-            });
+                0,
+            ));
             Err(EngineError::Paused)
         }
         EngineError::Cancelled => {
@@ -1671,26 +1930,22 @@ async fn finalize_queued_interruption(
             if let Some(store) = store {
                 let _ = store.mark_cancelled(id).await;
             }
-            let _ = progress_tx.send(ProgressSnapshot {
-                state: DownloadState::Cancelled,
+            sink.emit_state(DownloadState::Cancelled, None);
+            sink.send(ProgressSnapshot::status(
+                DownloadState::Cancelled,
                 bytes_downloaded,
                 total_bytes,
-                active_workers: 0,
-            });
+                0,
+            ));
             Err(EngineError::Cancelled)
         }
         other => Err(other),
     }
 }
 
-fn emit_failed(tx: &Option<watch::Sender<ProgressSnapshot>>, bytes: u64, total: Option<u64>) {
+fn emit_failed(sink: &ProgressSink, bytes: u64, total: Option<u64>) {
     emit_progress(
-        tx,
-        ProgressSnapshot {
-            state: DownloadState::Failed,
-            bytes_downloaded: bytes,
-            total_bytes: total,
-            active_workers: 0,
-        },
+        sink,
+        ProgressSnapshot::status(DownloadState::Failed, bytes, total, 0),
     );
 }

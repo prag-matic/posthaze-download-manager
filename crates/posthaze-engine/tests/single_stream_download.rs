@@ -49,9 +49,7 @@ async fn downloads_single_stream_and_verifies_blake3_and_metadata() {
     let engine = DownloadEngine::new();
     let (tx, rx) = watch::channel(ProgressSnapshot {
         state: DownloadState::Queued,
-        bytes_downloaded: 0,
-        total_bytes: None,
-        active_workers: 0,
+        ..Default::default()
     });
 
     let outcome = engine

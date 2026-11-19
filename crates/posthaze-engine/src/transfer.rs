@@ -42,7 +42,7 @@ pub struct SegmentSpec {
 }
 
 #[derive(Debug)]
-struct ActiveSegment {
+pub(crate) struct ActiveSegment {
     id: usize,
     start: u64,
     cursor: AtomicU64,
@@ -50,6 +50,27 @@ struct ActiveSegment {
     completed: AtomicBool,
     claimed: AtomicBool,
 }
+
+impl ActiveSegment {
+    pub(crate) fn snapshot_progress(
+        &self,
+        cp_map: &std::collections::HashMap<usize, u64>,
+    ) -> crate::SegmentProgress {
+        let cursor = self.cursor.load(Ordering::Relaxed).max(self.start);
+        let end = self.end.load(Ordering::Relaxed);
+        let flushed = cp_map.get(&self.id).copied().unwrap_or(self.start);
+        crate::SegmentProgress {
+            id: self.id,
+            start: self.start,
+            cursor,
+            checkpointed_cursor: flushed.max(self.start).min(cursor),
+            end: Some(end),
+            completed: self.completed.load(Ordering::Relaxed),
+        }
+    }
+}
+
+pub(crate) type LiveSegments = Arc<Mutex<Vec<Arc<ActiveSegment>>>>;
 
 impl ActiveSegment {
     fn new(id: usize, start: u64, end: u64) -> Arc<Self> {
@@ -148,6 +169,7 @@ pub(crate) async fn execute_multi_segment(
     active_workers: &Arc<AtomicUsize>,
     control_rx: watch::Receiver<ControlSignal>,
     persist: Option<(DownloadId, DownloadStore)>,
+    live_segments_slot: Option<&Arc<Mutex<Option<LiveSegments>>>>,
 ) -> Result<MultiSegmentResult, EngineError> {
     let initial_specs = plan_segments(total_bytes, max_workers);
     let checkpoints: Vec<SegmentCheckpoint> = initial_specs
@@ -172,6 +194,7 @@ pub(crate) async fn execute_multi_segment(
         active_workers,
         control_rx,
         persist,
+        live_segments_slot,
     )
     .await
 }
@@ -187,6 +210,7 @@ pub(crate) async fn execute_multi_segment_from_checkpoints(
     active_workers: &Arc<AtomicUsize>,
     control_rx: watch::Receiver<ControlSignal>,
     persist: Option<(DownloadId, DownloadStore)>,
+    live_segments_slot: Option<&Arc<Mutex<Option<LiveSegments>>>>,
 ) -> Result<MultiSegmentResult, EngineError> {
     if checkpoints.is_empty() {
         return Ok(MultiSegmentResult {
@@ -221,6 +245,10 @@ pub(crate) async fn execute_multi_segment_from_checkpoints(
             })
             .collect(),
     ));
+
+    if let Some(slot) = live_segments_slot {
+        *slot.lock().unwrap() = Some(Arc::clone(&active_segments));
+    }
 
     let incomplete_list: Vec<Arc<ActiveSegment>> = {
         let guard = active_segments.lock().expect("active_segments poisoned");
