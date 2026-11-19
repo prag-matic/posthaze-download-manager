@@ -1,5 +1,6 @@
 //! Posthaze Download Manager desktop UI powered by GPUI and GPUI Kit.
 
+mod assets;
 mod bridge;
 mod context_menu;
 mod curl_parser;
@@ -15,7 +16,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use gpui_kit::assets::{AllAssets, IconName};
+use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::tooltip::Tooltip;
@@ -29,6 +30,7 @@ use posthaze_engine::{
     DownloadState, EngineEvent, ProgressSnapshot, SegmentProgress, Settings, categorize_subfolder,
 };
 
+use crate::assets::{BRAND_APP_ICON, BRAND_LOGO_MARK, PosthazeAssets};
 use crate::bridge::{EngineBridge, default_db_path};
 use crate::context_menu::{ContextMenuAction, ContextMenuState, render_context_menu};
 use crate::curl_parser::{find_header_value, parse_url_or_curl, set_or_remove_header};
@@ -60,7 +62,7 @@ fn main() {
     let bridge = EngineBridge::open(default_db_path()).expect("failed to initialize engine");
 
     gpui_kit::application()
-        .with_assets(AllAssets)
+        .with_assets(PosthazeAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
             Theme::change(ThemeMode::Dark, None, cx);
@@ -1855,15 +1857,10 @@ impl PosthazeApp {
                     .items_center()
                     .gap_2()
                     .child(
-                        div()
-                            .w(px(14.0))
-                            .h(px(14.0))
-                            .border_1()
-                            .border_color(silver_muted())
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(div().w(px(6.0)).h(px(6.0)).bg(selenium_amber())),
+                        img(BRAND_LOGO_MARK)
+                            .w(px(16.0))
+                            .h(px(16.0))
+                            .object_fit(ObjectFit::Contain),
                     )
                     .child(
                         div()
@@ -2326,11 +2323,19 @@ impl PosthazeApp {
                 .justify_center()
                 .gap_3()
                 .bg(paper_bg())
-                .child(
+                .child(if is_empty_queue {
+                    img(BRAND_APP_ICON)
+                        .w(px(44.0))
+                        .h(px(44.0))
+                        .rounded(px(8.0))
+                        .object_fit(ObjectFit::Contain)
+                        .into_any_element()
+                } else {
                     Icon::new(IconName::Download)
                         .size(px(28.0))
-                        .text_color(carbon_muted()),
-                )
+                        .text_color(carbon_muted())
+                        .into_any_element()
+                })
                 .child(
                     div()
                         .text_size(TYPE_DISPLAY)

@@ -8,3 +8,6 @@ license.workspace = true
 gpui-kit = "0.10.0"
 posthaze-engine = { path = "../posthaze-engine" }
 tokio.workspace = true
+
+[target.'cfg(windows)'.build-dependencies]
+tauri-winres = "0.3"
