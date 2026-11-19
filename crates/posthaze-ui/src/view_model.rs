@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use gpui_kit::assets::IconName;
 use posthaze_engine::{
     DownloadId, DownloadRecord, DownloadState, ProgressSnapshot, SegmentProgress, Settings,
 };
@@ -223,16 +224,16 @@ pub fn compute_fifo_ranks(
         .collect()
 }
 
-/// Fixed-cell geometric state mark and short label for a [`DownloadState`].
-pub fn state_glyph(state: DownloadState) -> (&'static str, &'static str) {
+/// Lucide state icon and short label for a [`DownloadState`].
+pub fn state_icon(state: DownloadState) -> (IconName, &'static str) {
     match state {
-        DownloadState::Queued => ("◌", "QUEUED"),
-        DownloadState::Probing => ("◐", "PROBING"),
-        DownloadState::Active => ("●", "ACTIVE"),
-        DownloadState::Paused => ("❚❚", "PAUSED"),
-        DownloadState::Completed => ("✓", "DONE"),
-        DownloadState::Failed => ("✕", "FAILED"),
-        DownloadState::Cancelled => ("✕", "CANCELLED"),
+        DownloadState::Queued => (IconName::Clock, "QUEUED"),
+        DownloadState::Probing => (IconName::LoaderCircle, "PROBING"),
+        DownloadState::Active => (IconName::ArrowDown, "ACTIVE"),
+        DownloadState::Paused => (IconName::Pause, "PAUSED"),
+        DownloadState::Completed => (IconName::CircleCheck, "DONE"),
+        DownloadState::Failed => (IconName::TriangleAlert, "FAILED"),
+        DownloadState::Cancelled => (IconName::CircleX, "CANCELLED"),
     }
 }
 
@@ -621,5 +622,16 @@ mod tests {
         rec.error_message = Some("HTTP error: timeout".to_string());
         let transient_row = DownloadRowView::from_record(&rec, None, None);
         assert!(!transient_row.is_resource_changed);
+    }
+
+    #[test]
+    fn maps_every_download_state_to_lucide_icon() {
+        assert_eq!(state_icon(DownloadState::Queued).1, "QUEUED");
+        assert_eq!(state_icon(DownloadState::Probing).1, "PROBING");
+        assert_eq!(state_icon(DownloadState::Active).1, "ACTIVE");
+        assert_eq!(state_icon(DownloadState::Paused).1, "PAUSED");
+        assert_eq!(state_icon(DownloadState::Completed).1, "DONE");
+        assert_eq!(state_icon(DownloadState::Failed).1, "FAILED");
+        assert_eq!(state_icon(DownloadState::Cancelled).1, "CANCELLED");
     }
 }

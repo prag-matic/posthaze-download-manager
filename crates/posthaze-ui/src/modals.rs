@@ -1,8 +1,9 @@
 //! Pre-Flight Probe Confirmation Modal and Persisted Settings Modal.
 
-use gpui_kit::component::Sizable;
+use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::{Icon, Sizable};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use posthaze_engine::{PreflightInfo, Settings};
@@ -99,11 +100,22 @@ where
             )
             .child(
                 div()
-                    .font_family(MONO_FONT)
-                    .text_size(TYPE_BODY)
-                    .line_height(px(18.0))
-                    .text_color(selenium_amber())
-                    .child("◐ Inspecting HTTP HEAD / Range: bytes=0-0 ..."),
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        Icon::new(IconName::LoaderCircle)
+                            .size(px(14.0))
+                            .text_color(selenium_amber()),
+                    )
+                    .child(
+                        div()
+                            .font_family(MONO_FONT)
+                            .text_size(TYPE_BODY)
+                            .line_height(px(18.0))
+                            .text_color(selenium_amber())
+                            .child("Inspecting HTTP HEAD / Range: bytes=0-0 ..."),
+                    ),
             )
             .child(
                 div()
@@ -118,9 +130,13 @@ where
                 div()
                     .flex()
                     .justify_end()
-                    .child(Button::new("probe-cancel").small().label("Cancel").on_click(
-                        move |_, window, cx| on_close(window, cx),
-                    )),
+                    .child(
+                        Button::new("probe-cancel")
+                            .small()
+                            .icon(IconName::X)
+                            .label("Cancel")
+                            .on_click(move |_, window, cx| on_close(window, cx)),
+                    ),
             ),
         PreflightModalState::Error { url, message } => {
             let url_retry = url.clone();
@@ -137,11 +153,22 @@ where
                 .gap_3()
                 .child(
                     div()
-                        .text_size(TYPE_HEADING)
-                        .line_height(px(22.0))
-                        .font_weight(FontWeight::BOLD)
-                        .text_color(errata_vermilion())
-                        .child("PROBE FAILED"),
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            Icon::new(IconName::TriangleAlert)
+                                .size(px(16.0))
+                                .text_color(errata_vermilion()),
+                        )
+                        .child(
+                            div()
+                                .text_size(TYPE_HEADING)
+                                .line_height(px(22.0))
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(errata_vermilion())
+                                .child("PROBE FAILED"),
+                        ),
                 )
                 .child(
                     div()
@@ -165,16 +192,27 @@ where
                         .flex()
                         .justify_end()
                         .gap_2()
-                        .child(Button::new("probe-edit").small().label("Edit URL").on_click(
-                            move |_, window, cx| on_edit_url(url_edit.clone(), window, cx),
-                        ))
-                        .child(Button::new("probe-close").small().label("Close").on_click(
-                            move |_, window, cx| on_close(window, cx),
-                        ))
+                        .child(
+                            Button::new("probe-edit")
+                                .small()
+                                .icon(IconName::Clipboard)
+                                .label("Edit URL")
+                                .on_click(move |_, window, cx| {
+                                    on_edit_url(url_edit.clone(), window, cx);
+                                }),
+                        )
+                        .child(
+                            Button::new("probe-close")
+                                .small()
+                                .icon(IconName::X)
+                                .label("Close")
+                                .on_click(move |_, window, cx| on_close(window, cx)),
+                        )
                         .child(
                             Button::new("probe-retry")
                                 .small()
                                 .primary()
+                                .icon(IconName::RefreshCw)
                                 .label("Retry Probe")
                                 .on_click(move |_, window, cx| {
                                     on_retry(url_retry.clone(), window, cx);
@@ -273,23 +311,33 @@ where
                                 .gap_2()
                                 .when(info.supports_ranges, |el| {
                                     let dec = on_worker_delta.clone();
-                                    el.child(Button::new("w-dec").xsmall().label("-").on_click(
-                                        move |_, window, cx| dec(-1, window, cx),
-                                    ))
+                                    el.child(
+                                        Button::new("w-dec")
+                                            .xsmall()
+                                            .icon(IconName::Minus)
+                                            .tooltip("Decrease workers")
+                                            .on_click(move |_, window, cx| dec(-1, window, cx)),
+                                    )
                                 })
                                 .child(
                                     div()
                                         .w(px(32.0))
                                         .text_center()
-                                        .font_family("Consolas")
-                                        .text_xs()
+                                        .font_family(MONO_FONT)
+                                        .text_size(TYPE_BODY)
                                         .text_color(silver_text())
                                         .child(workers.to_string()),
                                 )
                                 .when(info.supports_ranges, |el| {
-                                    el.child(Button::new("w-inc").xsmall().label("+").on_click(
-                                        move |_, window, cx| on_worker_delta(1, window, cx),
-                                    ))
+                                    el.child(
+                                        Button::new("w-inc")
+                                            .xsmall()
+                                            .icon(IconName::Plus)
+                                            .tooltip("Increase workers")
+                                            .on_click(move |_, window, cx| {
+                                                on_worker_delta(1, window, cx)
+                                            }),
+                                    )
                                 }),
                         ),
                 )
@@ -299,12 +347,17 @@ where
                         .justify_end()
                         .gap_2()
                         .pt_2()
-                        .child(Button::new("pf-cancel").small().label("Cancel").on_click(
-                            move |_, window, cx| on_close(window, cx),
-                        ))
+                        .child(
+                            Button::new("pf-cancel")
+                                .small()
+                                .icon(IconName::X)
+                                .label("Cancel")
+                                .on_click(move |_, window, cx| on_close(window, cx)),
+                        )
                         .child(
                             Button::new("pf-queue")
                                 .small()
+                                .icon(IconName::Clock)
                                 .label("Add to Queue")
                                 .on_click(move |_, window, cx| confirm_queue(false, window, cx)),
                         )
@@ -312,6 +365,7 @@ where
                             Button::new("pf-now")
                                 .small()
                                 .primary()
+                                .icon(IconName::Download)
                                 .label("Download Now")
                                 .on_click(move |_, window, cx| confirm_now(true, window, cx)),
                         ),
@@ -386,6 +440,11 @@ where
                 .child(
                     Button::new("settings-sync")
                         .xsmall()
+                        .icon(if state.sync_on_complete {
+                            IconName::Check
+                        } else {
+                            IconName::X
+                        })
                         .label(if state.sync_on_complete { "ON" } else { "OFF" })
                         .on_click(move |_, window, cx| on_toggle_sync(window, cx)),
                 ),
@@ -399,6 +458,7 @@ where
                 .child(
                     Button::new("settings-cancel")
                         .small()
+                        .icon(IconName::X)
                         .label("Cancel")
                         .on_click(move |_, window, cx| on_cancel(window, cx)),
                 )
@@ -406,6 +466,7 @@ where
                     Button::new("settings-save")
                         .small()
                         .primary()
+                        .icon(IconName::Check)
                         .label("Save Settings")
                         .on_click(move |_, window, cx| on_save(window, cx)),
                 ),

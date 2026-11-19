@@ -1,7 +1,8 @@
 //! Bottom docked Selected Download Inspector with Graduated Interval Byte-Map Ruler.
 
-use gpui_kit::component::Sizable;
+use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::{Icon, Sizable};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use posthaze_engine::{DownloadId, DownloadState, SegmentProgress};
@@ -146,12 +147,23 @@ where
                     .gap_2()
                     .child(
                         div()
-                            .font_family(MONO_FONT)
-                            .text_size(TYPE_BODY)
-                            .line_height(px(18.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(silver_text())
-                            .child("ERRATA: Remote resource changed since pause — .part preserved safely."),
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                Icon::new(IconName::TriangleAlert)
+                                    .size(px(14.0))
+                                    .text_color(silver_text()),
+                            )
+                            .child(
+                                div()
+                                    .font_family(MONO_FONT)
+                                    .text_size(TYPE_BODY)
+                                    .line_height(px(18.0))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(silver_text())
+                                    .child("ERRATA: Remote resource changed since pause — .part preserved safely."),
+                            ),
                     )
                     .child(
                         div()
@@ -162,6 +174,7 @@ where
                                 Button::new("errata-restart-fresh")
                                     .xsmall()
                                     .primary()
+                                    .icon(IconName::RotateCcw)
                                     .label("Restart Fresh")
                                     .on_click(move |_, window, cx| {
                                         (callbacks.on_restart_fresh)(id_restart.clone(), window, cx);
@@ -170,6 +183,7 @@ where
                             .child(
                                 Button::new("errata-delete")
                                     .xsmall()
+                                    .icon(IconName::Trash)
                                     .label("Delete")
                                     .on_click(move |_, window, cx| {
                                         (callbacks.on_delete)(id_delete.clone(), window, cx);

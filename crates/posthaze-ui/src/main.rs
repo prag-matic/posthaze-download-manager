@@ -9,9 +9,10 @@ mod view_model;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use gpui_kit::component::Sizable;
+use gpui_kit::assets::{AllAssets, IconName};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::{Icon, Sizable};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use posthaze_engine::{
@@ -28,7 +29,7 @@ use crate::theme::*;
 use crate::view_model::{
     DownloadRowView, FilterTab, SortColumn, SortDirection, compute_fifo_ranks,
     filter_and_sort_rows, format_bytes, format_eta, format_speed, parse_settings_inputs,
-    state_glyph,
+    state_icon,
 };
 
 const COL_STATE: f32 = 104.0;
@@ -36,12 +37,14 @@ const COL_PROGRESS: f32 = 176.0;
 const COL_SPEED: f32 = 90.0;
 const COL_ETA: f32 = 64.0;
 const COL_SEGS: f32 = 48.0;
-const COL_ACTIONS: f32 = 160.0;
+const COL_ACTIONS: f32 = 148.0;
 
 fn main() {
     let bridge = EngineBridge::open(default_db_path()).expect("failed to initialize engine");
 
-    gpui_kit::application().run(move |cx| {
+    gpui_kit::application()
+        .with_assets(AllAssets)
+        .run(move |cx| {
         gpui_kit::init(cx);
 
         let window_options = WindowOptions {
@@ -731,11 +734,22 @@ impl PosthazeApp {
                             .border_color(graphite_border())
                             .child(
                                 div()
-                                    .text_size(TYPE_HEADING)
-                                    .line_height(px(20.0))
-                                    .font_weight(FontWeight::BOLD)
-                                    .text_color(silver_text())
-                                    .child("POSTHAZE"),
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(
+                                        Icon::new(IconName::Download)
+                                            .size(px(15.0))
+                                            .text_color(selenium_amber()),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(TYPE_HEADING)
+                                            .line_height(px(20.0))
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(silver_text())
+                                            .child("POSTHAZE"),
+                                    ),
                             )
                             .child(
                                 div()
@@ -852,6 +866,7 @@ impl PosthazeApp {
                     .child(
                         Button::new("open-settings")
                             .small()
+                            .icon(IconName::Settings)
                             .label("Settings")
                             .on_click(cx.listener(|app, _, window, cx| {
                                 app.open_settings_modal(window, cx);
@@ -881,6 +896,7 @@ impl PosthazeApp {
             .child(
                 Button::new("paste-probe")
                     .primary()
+                    .icon(IconName::ClipboardPaste)
                     .label("Paste & Probe")
                     .on_click(cx.listener(|app, _, window, cx| {
                         app.paste_and_probe_from_clipboard(window, cx);
@@ -888,6 +904,7 @@ impl PosthazeApp {
             )
             .child(
                 Button::new("resume-all")
+                    .icon(IconName::Play)
                     .label("Resume All")
                     .on_click(cx.listener(|app, _, _, cx| {
                         app.resume_all(cx);
@@ -895,6 +912,7 @@ impl PosthazeApp {
             )
             .child(
                 Button::new("pause-all")
+                    .icon(IconName::Pause)
                     .label("Pause All")
                     .on_click(cx.listener(|app, _, _, cx| {
                         app.pause_all(cx);
@@ -902,6 +920,7 @@ impl PosthazeApp {
             )
             .child(
                 Button::new("clear-completed")
+                    .icon(IconName::Trash)
                     .label("Clear Completed")
                     .on_click(cx.listener(|app, _, _, cx| {
                         app.clear_completed(cx);
@@ -924,6 +943,11 @@ impl PosthazeApp {
                 .justify_center()
                 .gap_3()
                 .bg(paper_bg())
+                .child(
+                    Icon::new(IconName::Download)
+                        .size(px(28.0))
+                        .text_color(carbon_muted()),
+                )
                 .child(
                     div()
                         .text_size(TYPE_DISPLAY)
@@ -953,6 +977,7 @@ impl PosthazeApp {
                     el.child(
                         Button::new("empty-paste")
                             .primary()
+                            .icon(IconName::ClipboardPaste)
                             .label("Paste URL from Clipboard & Probe")
                             .on_click(cx.listener(|app, _, window, cx| {
                                 app.paste_and_probe_from_clipboard(window, cx);
@@ -1012,21 +1037,27 @@ impl PosthazeApp {
         col: SortColumn,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        let indicator = if self.sort_col == col {
-            match self.sort_dir {
-                SortDirection::Ascending => " ▲",
-                SortDirection::Descending => " ▼",
-            }
+        let sort_icon = if self.sort_col == col {
+            Some(match self.sort_dir {
+                SortDirection::Ascending => IconName::ChevronUp,
+                SortDirection::Descending => IconName::ChevronDown,
+            })
         } else {
-            ""
+            None
         };
         let base = div()
             .id(SharedString::from(format!("hdr-{title}")))
+            .flex()
+            .items_center()
+            .gap_1()
             .cursor_pointer()
             .on_click(cx.listener(move |app, _, _, cx| {
                 app.toggle_sort(col, cx);
             }))
-            .child(format!("{title}{indicator}"));
+            .child(title)
+            .when_some(sort_icon, |el, icon| {
+                el.child(Icon::new(icon).size(px(12.0)).text_color(carbon_text()))
+            });
         match width {
             Some(w) => base.w(px(w)).into_any_element(),
             None => base.flex_1().min_w(px(120.0)).into_any_element(),
@@ -1035,7 +1066,7 @@ impl PosthazeApp {
 
     fn render_row(&self, row: &DownloadRowView, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let is_selected = self.selected_id.as_ref() == Some(&row.id);
-        let (glyph, label) = state_glyph(row.state);
+        let (icon_name, label) = state_icon(row.state);
         let state_color = match row.state {
             DownloadState::Active => selenium_amber(),
             DownloadState::Probing | DownloadState::Queued => cyanotype_blue(),
@@ -1086,7 +1117,7 @@ impl PosthazeApp {
                     .line_height(px(16.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(state_color)
-                    .child(glyph)
+                    .child(Icon::new(icon_name).size(px(13.0)).text_color(state_color))
                     .child(if let Some(rank) = row.fifo_rank {
                         if rank == 1 {
                             "#1 NEXT".to_string()
@@ -1199,7 +1230,9 @@ impl PosthazeApp {
                                     row.id.as_str()
                                 )))
                                 .xsmall()
-                                .label("Pause")
+                                .ghost()
+                                .icon(IconName::Pause)
+                                .tooltip("Pause")
                                 .on_click(cx.listener(move |app, _, _, cx| {
                                     app.pause_download(id_pause.clone(), cx);
                                 })),
@@ -1218,7 +1251,9 @@ impl PosthazeApp {
                                     )))
                                     .xsmall()
                                     .primary()
-                                    .label("Restart Fresh")
+                                    .icon(IconName::RotateCcw)
+                                    .label("Restart")
+                                    .tooltip("Restart Fresh")
                                     .on_click(cx.listener(move |app, _, _, cx| {
                                         app.restart_fresh_download(id_action.clone(), cx);
                                     })),
@@ -1230,7 +1265,9 @@ impl PosthazeApp {
                                         row.id.as_str()
                                     )))
                                     .xsmall()
-                                    .label("Resume")
+                                    .ghost()
+                                    .icon(IconName::Play)
+                                    .tooltip("Resume")
                                     .on_click(cx.listener(move |app, _, _, cx| {
                                         app.resume_download(id_action.clone(), cx);
                                     })),
@@ -1247,7 +1284,9 @@ impl PosthazeApp {
                                     row.id.as_str()
                                 )))
                                 .xsmall()
-                                .label("Cancel")
+                                .ghost()
+                                .icon(IconName::X)
+                                .tooltip("Cancel")
                                 .on_click(cx.listener(move |app, _, _, cx| {
                                     app.cancel_download(id_cancel.clone(), cx);
                                 })),
@@ -1257,7 +1296,9 @@ impl PosthazeApp {
                     .child(
                         Button::new(SharedString::from(format!("del-{}", row.id.as_str())))
                             .xsmall()
-                            .label("Delete")
+                            .ghost()
+                            .icon(IconName::Trash)
+                            .tooltip("Delete")
                             .on_click(cx.listener(move |app, _, _, cx| {
                                 app.delete_download(id_delete.clone(), cx);
                             })),
