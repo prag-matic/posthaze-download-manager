@@ -35,7 +35,8 @@ use crate::motion::{MotionState, RowMotionSample};
 use crate::theme::*;
 use crate::view_model::{
     COLLAPSED_INSPECTOR_HEIGHT, DEFAULT_INSPECTOR_HEIGHT, DEFAULT_SIDEBAR_WIDTH, DownloadRowView,
-    FilterTab, LayoutProfile, RAIL_SIDEBAR_WIDTH, SortColumn, SortDirection,
+    FilterTab, INSPECTOR_MAGNETIC_SNAP_RADIUS, LayoutProfile, RAIL_SIDEBAR_WIDTH,
+    SIDEBAR_MAGNETIC_SNAP_RADIUS, SortColumn, SortDirection, apply_magnetic_detent,
     compute_fifo_ranks, compute_layout_profile, derive_display_filename, filter_and_sort_rows,
     format_bytes, format_eta, format_speed, parse_settings_inputs, resolve_inspector_drag,
     resolve_sidebar_drag, state_icon,
@@ -714,17 +715,28 @@ impl PosthazeApp {
 impl Render for PosthazeApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let viewport = window.viewport_size();
-        let left_width = if self.sidebar_collapsed {
+        let target_left_width = if self.sidebar_collapsed {
             RAIL_SIDEBAR_WIDTH
         } else {
             self.sidebar_width
         };
+        let left_width = self.motion.current_sidebar_width(target_left_width);
         let right_width = (f32::from(viewport.width) - left_width - 7.0).max(0.0);
         let profile = compute_layout_profile(
             right_width,
             f32::from(viewport.height),
             self.inspector_height,
         );
+        let target_inspector_height = if self.inspector_collapsed {
+            COLLAPSED_INSPECTOR_HEIGHT
+        } else {
+            profile.effective_inspector_height
+        };
+        let animated_inspector_height = self
+            .motion
+            .current_inspector_height(target_inspector_height);
+        let render_inspector_collapsed = self.inspector_collapsed
+            && (animated_inspector_height - COLLAPSED_INSPECTOR_HEIGHT).abs() <= 1.0;
         let ranks = compute_fifo_ranks(&self.records, &self.live_map);
         let all_rows: Vec<DownloadRowView> = self
             .records
@@ -782,8 +794,8 @@ impl Render for PosthazeApp {
         let inspector = render_inspector(
             selected_row,
             &selected_segments,
-            px(profile.effective_inspector_height),
-            self.inspector_collapsed,
+            px(animated_inspector_height),
+            render_inspector_collapsed,
             inspector_motion,
             InspectorCallbacks {
                 on_restart_fresh: move |id: DownloadId, _: &mut Window, cx: &mut App| {
@@ -802,7 +814,19 @@ impl Render for PosthazeApp {
                 },
                 on_toggle_collapse: move |_: &mut Window, cx: &mut App| {
                     entity_inspector_toggle.update(cx, |app, cx| {
+                        let from = if app.inspector_collapsed {
+                            COLLAPSED_INSPECTOR_HEIGHT
+                        } else {
+                            app.inspector_height
+                        };
                         app.inspector_collapsed = !app.inspector_collapsed;
+                        let to = if app.inspector_collapsed {
+                            COLLAPSED_INSPECTOR_HEIGHT
+                        } else {
+                            app.inspector_height
+                        };
+                        app.motion.animate_inspector(from, to);
+                        app.ensure_motion_loop(cx);
                         cx.notify();
                     });
                 },
@@ -1021,20 +1045,44 @@ impl Render for PosthazeApp {
                         start_width,
                     } => {
                         let delta = f32::from(event.position.x - start_x);
+                        let (detented, did_snap) = apply_magnetic_detent(
+                            start_width + delta,
+                            DEFAULT_SIDEBAR_WIDTH,
+                            SIDEBAR_MAGNETIC_SNAP_RADIUS,
+                        );
                         let (collapsed, expanded_width) =
-                            resolve_sidebar_drag(start_width + delta, app.sidebar_width);
+                            resolve_sidebar_drag(detented, app.sidebar_width);
+                        let was_collapsed = app.sidebar_collapsed;
+                        let width_changed = (expanded_width - app.sidebar_width).abs() > 0.5;
                         app.sidebar_collapsed = collapsed;
                         app.sidebar_width = expanded_width;
+                        app.motion.set_sidebar_immediate();
+                        if (did_snap && width_changed) || (collapsed != was_collapsed) {
+                            app.motion.trigger_sash_detent(Instant::now());
+                            app.ensure_motion_loop(cx);
+                        }
                     }
                     ActiveResize::Inspector {
                         start_y,
                         start_height,
                     } => {
                         let delta = f32::from(start_y - event.position.y);
+                        let (detented, did_snap) = apply_magnetic_detent(
+                            start_height + delta,
+                            DEFAULT_INSPECTOR_HEIGHT,
+                            INSPECTOR_MAGNETIC_SNAP_RADIUS,
+                        );
                         let (collapsed, expanded_height) =
-                            resolve_inspector_drag(start_height + delta, app.inspector_height);
+                            resolve_inspector_drag(detented, app.inspector_height);
+                        let was_collapsed = app.inspector_collapsed;
+                        let height_changed = (expanded_height - app.inspector_height).abs() > 0.5;
                         app.inspector_collapsed = collapsed;
                         app.inspector_height = expanded_height;
+                        app.motion.set_inspector_immediate();
+                        if (did_snap && height_changed) || (collapsed != was_collapsed) {
+                            app.motion.trigger_sash_detent(Instant::now());
+                            app.ensure_motion_loop(cx);
+                        }
                     }
                 }
                 cx.notify();
@@ -1083,20 +1131,70 @@ impl Render for PosthazeApp {
                                 }),
                             )
                             .on_double_click(cx.listener(|app, _, _, cx| {
+                                let from = if app.sidebar_collapsed {
+                                    RAIL_SIDEBAR_WIDTH
+                                } else {
+                                    app.sidebar_width
+                                };
                                 app.sidebar_collapsed = false;
                                 app.sidebar_width = DEFAULT_SIDEBAR_WIDTH;
+                                app.motion.animate_sidebar(from, DEFAULT_SIDEBAR_WIDTH);
+                                app.motion.trigger_sash_detent(Instant::now());
+                                app.ensure_motion_loop(cx);
                                 cx.notify();
                             }))
-                            .child(
+                            .relative()
+                            .child({
+                                let detent_flash = self.motion.sash_detent_flash(Instant::now());
+                                let is_snapped = !self.sidebar_collapsed
+                                    && (self.sidebar_width - DEFAULT_SIDEBAR_WIDTH).abs() < 0.5;
                                 div()
-                                    .w(px(if resizing_sidebar { 2.0 } else { 1.0 }))
+                                    .w(px(if resizing_sidebar || detent_flash > 0.05 {
+                                        2.0
+                                    } else {
+                                        1.0
+                                    }))
                                     .h_full()
-                                    .bg(if resizing_sidebar {
+                                    .bg(if detent_flash > 0.05 || (resizing_sidebar && is_snapped) {
+                                        cyanotype_blue()
+                                    } else if resizing_sidebar {
                                         selenium_amber()
                                     } else {
                                         graphite_border()
-                                    }),
-                            ),
+                                    })
+                            })
+                            .when(resizing_sidebar, |el| {
+                                let is_snapped = !self.sidebar_collapsed
+                                    && (self.sidebar_width - DEFAULT_SIDEBAR_WIDTH).abs() < 0.5;
+                                let label = if self.sidebar_collapsed {
+                                    format!("RAIL {:.0} px", RAIL_SIDEBAR_WIDTH)
+                                } else if is_snapped {
+                                    format!("{:.0} px · DEFAULT", self.sidebar_width)
+                                } else {
+                                    format!("{:.0} px", self.sidebar_width)
+                                };
+                                el.child(
+                                    div()
+                                        .absolute()
+                                        .left(px(10.0))
+                                        .top(px(14.0))
+                                        .px_2()
+                                        .py_0p5()
+                                        .rounded(px(3.0))
+                                        .bg(graphite_bg())
+                                        .border_1()
+                                        .border_color(if is_snapped {
+                                            cyanotype_blue()
+                                        } else {
+                                            selenium_amber()
+                                        })
+                                        .font_family(MONO_FONT)
+                                        .text_size(TYPE_HEADER)
+                                        .text_color(silver_text())
+                                        .whitespace_nowrap()
+                                        .child(label),
+                                )
+                            }),
                     )
                     // Main Right Column: Top Toolbar + Center Table + Collapsible & Resizable Bottom Inspector
                     .child(
@@ -1180,20 +1278,77 @@ impl Render for PosthazeApp {
                                         }),
                                     )
                                     .on_double_click(cx.listener(|app, _, _, cx| {
+                                        let from = if app.inspector_collapsed {
+                                            COLLAPSED_INSPECTOR_HEIGHT
+                                        } else {
+                                            app.inspector_height
+                                        };
                                         app.inspector_collapsed = false;
                                         app.inspector_height = DEFAULT_INSPECTOR_HEIGHT;
+                                        app.motion.animate_inspector(from, DEFAULT_INSPECTOR_HEIGHT);
+                                        app.motion.trigger_sash_detent(Instant::now());
+                                        app.ensure_motion_loop(cx);
                                         cx.notify();
                                     }))
-                                    .child(
+                                    .relative()
+                                    .child({
+                                        let detent_flash =
+                                            self.motion.sash_detent_flash(Instant::now());
+                                        let is_snapped = !self.inspector_collapsed
+                                            && (self.inspector_height - DEFAULT_INSPECTOR_HEIGHT)
+                                                .abs()
+                                                < 0.5;
                                         div()
-                                            .h(px(if resizing_inspector { 2.0 } else { 1.0 }))
+                                            .h(px(if resizing_inspector || detent_flash > 0.05 {
+                                                2.0
+                                            } else {
+                                                1.0
+                                            }))
                                             .w_full()
-                                            .bg(if resizing_inspector {
+                                            .bg(if detent_flash > 0.05
+                                                || (resizing_inspector && is_snapped)
+                                            {
+                                                cyanotype_blue()
+                                            } else if resizing_inspector {
                                                 selenium_amber()
                                             } else {
                                                 graphite_border()
-                                            }),
-                                    ),
+                                            })
+                                    })
+                                    .when(resizing_inspector, |el| {
+                                        let is_snapped = !self.inspector_collapsed
+                                            && (self.inspector_height - DEFAULT_INSPECTOR_HEIGHT)
+                                                .abs()
+                                                < 0.5;
+                                        let label = if self.inspector_collapsed {
+                                            format!("COLLAPSED {:.0} px", COLLAPSED_INSPECTOR_HEIGHT)
+                                        } else if is_snapped {
+                                            format!("{:.0} px · DEFAULT", self.inspector_height)
+                                        } else {
+                                            format!("{:.0} px", self.inspector_height)
+                                        };
+                                        el.child(
+                                            div()
+                                                .absolute()
+                                                .right(px(16.0))
+                                                .top(px(-24.0))
+                                                .px_2()
+                                                .py_0p5()
+                                                .rounded(px(3.0))
+                                                .bg(graphite_bg())
+                                                .border_1()
+                                                .border_color(if is_snapped {
+                                                    cyanotype_blue()
+                                                } else {
+                                                    selenium_amber()
+                                                })
+                                                .font_family(MONO_FONT)
+                                                .text_size(TYPE_HEADER)
+                                                .text_color(silver_text())
+                                                .whitespace_nowrap()
+                                                .child(label),
+                                        )
+                                    }),
                             )
                             .child(inspector),
                     ),
@@ -1258,9 +1413,14 @@ impl PosthazeApp {
             FilterTab::Failed,
         ];
 
-        let sidebar_width = self.sidebar_width;
+        let target_width = if self.sidebar_collapsed {
+            RAIL_SIDEBAR_WIDTH
+        } else {
+            self.sidebar_width
+        };
+        let sidebar_width = self.motion.current_sidebar_width(target_width);
 
-        if self.sidebar_collapsed {
+        if self.sidebar_collapsed && (sidebar_width - RAIL_SIDEBAR_WIDTH).abs() <= 1.0 {
             return div()
                 .relative()
                 .w(px(RAIL_SIDEBAR_WIDTH))
@@ -1360,6 +1520,9 @@ impl PosthazeApp {
                                 .tooltip("Expand Sidebar")
                                 .on_click(cx.listener(|app, _, _, cx| {
                                     app.sidebar_collapsed = false;
+                                    app.motion
+                                        .animate_sidebar(RAIL_SIDEBAR_WIDTH, app.sidebar_width);
+                                    app.ensure_motion_loop(cx);
                                     cx.notify();
                                 })),
                         ),
@@ -1371,6 +1534,7 @@ impl PosthazeApp {
             .relative()
             .w(px(sidebar_width))
             .h_full()
+            .overflow_hidden()
             .flex()
             .flex_col()
             .justify_between()
@@ -1581,6 +1745,9 @@ impl PosthazeApp {
                                     .tooltip("Collapse to Rail")
                                     .on_click(cx.listener(|app, _, _, cx| {
                                         app.sidebar_collapsed = true;
+                                        app.motion
+                                            .animate_sidebar(app.sidebar_width, RAIL_SIDEBAR_WIDTH);
+                                        app.ensure_motion_loop(cx);
                                         cx.notify();
                                     })),
                             ),

@@ -11,6 +11,16 @@ pub(crate) const SPLIT_FLASH_MS: f32 = 420.0;
 /// Duration of the emerald pulse when a download completes.
 pub(crate) const COMPLETION_FLASH_MS: f32 = 650.0;
 
+/// Duration of the cyanotype/amber sash detent flash.
+pub(crate) const DETENT_FLASH_MS: f32 = 240.0;
+
+/// Animated panel dimension state for smooth collapse/expand/reset transitions.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PanelAnim {
+    pub current: f32,
+    pub target: f32,
+}
+
 /// Per-download interpolated byte telemetry and transient visual pulses.
 #[derive(Debug, Clone)]
 pub(crate) struct AnimatedTelemetry {
@@ -41,9 +51,72 @@ pub(crate) struct RowMotionSample {
 pub(crate) struct MotionState {
     entries: HashMap<DownloadId, AnimatedTelemetry>,
     last_step_at: Option<Instant>,
+    sidebar_anim: Option<PanelAnim>,
+    inspector_anim: Option<PanelAnim>,
+    sash_detent_flash_at: Option<Instant>,
 }
 
 impl MotionState {
+    /// Starts or updates a smooth panel width transition for the left sidebar.
+    pub(crate) fn animate_sidebar(&mut self, from: f32, to: f32) {
+        let current = self.sidebar_anim.map(|a| a.current).unwrap_or(from);
+        if (to - current).abs() <= 0.5 {
+            self.sidebar_anim = None;
+        } else {
+            self.sidebar_anim = Some(PanelAnim {
+                current,
+                target: to,
+            });
+        }
+    }
+
+    /// Starts or updates a smooth panel height transition for the bottom inspector.
+    pub(crate) fn animate_inspector(&mut self, from: f32, to: f32) {
+        let current = self.inspector_anim.map(|a| a.current).unwrap_or(from);
+        if (to - current).abs() <= 0.5 {
+            self.inspector_anim = None;
+        } else {
+            self.inspector_anim = Some(PanelAnim {
+                current,
+                target: to,
+            });
+        }
+    }
+
+    /// Clears any active sidebar animation during direct pointer drag (zero lag).
+    pub(crate) fn set_sidebar_immediate(&mut self) {
+        self.sidebar_anim = None;
+    }
+
+    /// Clears any active inspector animation during direct pointer drag (zero lag).
+    pub(crate) fn set_inspector_immediate(&mut self) {
+        self.inspector_anim = None;
+    }
+
+    /// Returns the active animated sidebar width, or `fallback` when settled.
+    pub(crate) fn current_sidebar_width(&self, fallback: f32) -> f32 {
+        self.sidebar_anim.map(|a| a.current).unwrap_or(fallback)
+    }
+
+    /// Returns the active animated inspector height, or `fallback` when settled.
+    pub(crate) fn current_inspector_height(&self, fallback: f32) -> f32 {
+        self.inspector_anim.map(|a| a.current).unwrap_or(fallback)
+    }
+
+    /// Triggers a brief tactile flash along the active resize sash on magnetic detent.
+    pub(crate) fn trigger_sash_detent(&mut self, now: Instant) {
+        self.sash_detent_flash_at = Some(now);
+    }
+
+    /// Returns the current detent flash intensity (`0.0..=1.0`).
+    pub(crate) fn sash_detent_flash(&self, now: Instant) -> f32 {
+        self.sash_detent_flash_at
+            .map(|started| {
+                let elapsed_ms = now.saturating_duration_since(started).as_secs_f32() * 1000.0;
+                decay_ease_out(elapsed_ms, DETENT_FLASH_MS)
+            })
+            .unwrap_or(0.0)
+    }
     /// Records a fresh live progress snapshot from the engine.
     ///
     /// Returns `true` if a new animation or interpolation is active and a frame should be scheduled.
@@ -183,6 +256,36 @@ impl MotionState {
             }
         }
 
+        let panel_alpha = (1.0 - (-dt * 18.0).exp()) as f32;
+        if let Some(mut anim) = self.sidebar_anim {
+            let diff = anim.target - anim.current;
+            if diff.abs() > 0.5 {
+                anim.current += diff * panel_alpha;
+                self.sidebar_anim = Some(anim);
+                any_active = true;
+            } else {
+                self.sidebar_anim = None;
+            }
+        }
+        if let Some(mut anim) = self.inspector_anim {
+            let diff = anim.target - anim.current;
+            if diff.abs() > 0.5 {
+                anim.current += diff * panel_alpha;
+                self.inspector_anim = Some(anim);
+                any_active = true;
+            } else {
+                self.inspector_anim = None;
+            }
+        }
+        if let Some(started) = self.sash_detent_flash_at {
+            let elapsed = now.saturating_duration_since(started).as_secs_f32() * 1000.0;
+            if elapsed < DETENT_FLASH_MS {
+                any_active = true;
+            } else {
+                self.sash_detent_flash_at = None;
+            }
+        }
+
         if !any_active {
             self.last_step_at = None;
         }
@@ -297,5 +400,24 @@ mod tests {
         motion.step(after_ms);
         let settled = motion.sample(&id, Some(1000), after_ms);
         assert_eq!(settled.completion_flash, 0.0);
+    }
+
+    #[test]
+    fn panel_animations_interpolate_and_yield_to_immediate_drag() {
+        let mut motion = MotionState::default();
+        let t0 = Instant::now();
+        motion.animate_sidebar(52.0, 220.0);
+        assert!(motion.step(t0 + Duration::from_millis(16)));
+        let mid = motion.current_sidebar_width(220.0);
+        assert!(mid > 52.0 && mid < 220.0);
+
+        // Pointer drag clears animation immediately with zero lag.
+        motion.set_sidebar_immediate();
+        assert_eq!(motion.current_sidebar_width(245.0), 245.0);
+
+        // Detent flash decays cleanly.
+        motion.trigger_sash_detent(t0);
+        assert!(motion.sash_detent_flash(t0 + Duration::from_millis(40)) > 0.5);
+        assert_eq!(motion.sash_detent_flash(t0 + Duration::from_millis(300)), 0.0);
     }
 }

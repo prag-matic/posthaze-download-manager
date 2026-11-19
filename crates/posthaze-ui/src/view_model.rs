@@ -18,6 +18,8 @@ pub const MAX_SIDEBAR_WIDTH: f32 = 380.0;
 pub const RAIL_SIDEBAR_WIDTH: f32 = 52.0;
 /// Dragging narrower than this threshold snaps the sidebar into the icon rail.
 pub const SIDEBAR_RAIL_SNAP_THRESHOLD: f32 = 130.0;
+/// Magnetic snap radius (in logical pixels) around canonical sidebar landmarks.
+pub const SIDEBAR_MAGNETIC_SNAP_RADIUS: f32 = 8.0;
 
 /// Default height (in logical pixels) of the bottom selected-download inspector.
 pub const DEFAULT_INSPECTOR_HEIGHT: f32 = 240.0;
@@ -29,6 +31,17 @@ pub const MAX_INSPECTOR_HEIGHT: f32 = 460.0;
 pub const COLLAPSED_INSPECTOR_HEIGHT: f32 = 28.0;
 /// Dragging shorter than this threshold snaps the inspector to its collapsed strip.
 pub const INSPECTOR_COLLAPSE_SNAP_THRESHOLD: f32 = 90.0;
+/// Magnetic snap radius (in logical pixels) around canonical inspector landmarks.
+pub const INSPECTOR_MAGNETIC_SNAP_RADIUS: f32 = 8.0;
+
+/// Snaps `value` to `target` when within `radius`, returning `(snapped_value, did_snap)`.
+pub fn apply_magnetic_detent(value: f32, target: f32, radius: f32) -> (f32, bool) {
+    if (value - target).abs() <= radius {
+        (target, true)
+    } else {
+        (value, false)
+    }
+}
 
 /// Clamps the left sidebar width to `[MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH]`.
 pub fn clamp_sidebar_width(width: f32) -> f32 {
@@ -778,6 +791,10 @@ mod tests {
         assert_eq!(resolve_inspector_drag(60.0, 280.0), (true, 280.0));
         assert_eq!(resolve_inspector_drag(90.0, 280.0), (false, MIN_INSPECTOR_HEIGHT));
         assert_eq!(resolve_inspector_drag(320.0, 240.0), (false, 320.0));
+
+        assert_eq!(apply_magnetic_detent(225.0, 220.0, 8.0), (220.0, true));
+        assert_eq!(apply_magnetic_detent(212.0, 220.0, 8.0), (220.0, true));
+        assert_eq!(apply_magnetic_detent(235.0, 220.0, 8.0), (235.0, false));
     }
 
     #[test]
