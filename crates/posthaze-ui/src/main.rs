@@ -843,11 +843,45 @@ impl Render for PosthazeApp {
                                 el.child(
                                     div()
                                         .px_4()
-                                        .py_2()
-                                        .bg(errata_vermilion())
-                                        .text_color(silver_text())
-                                        .text_xs()
-                                        .child(msg),
+                                        .py_1p5()
+                                        .bg(rgba(0xEF444424))
+                                        .border_b_1()
+                                        .border_color(errata_vermilion())
+                                        .flex()
+                                        .items_center()
+                                        .justify_between()
+                                        .gap_3()
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .gap_2()
+                                                .min_w_0()
+                                                .child(
+                                                    Icon::new(IconName::TriangleAlert)
+                                                        .size(px(14.0))
+                                                        .text_color(errata_vermilion()),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .font_family(MONO_FONT)
+                                                        .text_size(TYPE_BODY)
+                                                        .text_color(silver_text())
+                                                        .truncate()
+                                                        .child(msg),
+                                                ),
+                                        )
+                                        .child(
+                                            Button::new("dismiss-status-banner")
+                                                .xsmall()
+                                                .ghost()
+                                                .icon(IconName::X)
+                                                .tooltip("Dismiss")
+                                                .on_click(cx.listener(|app, _, _, cx| {
+                                                    app.status_banner = None;
+                                                    cx.notify();
+                                                })),
+                                        ),
                                 )
                             })
                             .child(self.render_table(&visible_rows, is_empty_queue, cx))
