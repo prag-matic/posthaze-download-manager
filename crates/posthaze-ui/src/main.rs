@@ -1,6 +1,7 @@
 //! Posthaze Download Manager desktop UI powered by GPUI and GPUI Kit.
 
 mod bridge;
+mod context_menu;
 mod inspector;
 mod modals;
 mod motion;
@@ -26,6 +27,7 @@ use posthaze_engine::{
 };
 
 use crate::bridge::{EngineBridge, default_db_path};
+use crate::context_menu::{ContextMenuAction, ContextMenuState, render_context_menu};
 use crate::inspector::{InspectorCallbacks, render_inspector};
 use crate::modals::{
     ConfirmAction, PreflightModalState, SettingsModalState, render_confirm_modal,
@@ -141,6 +143,7 @@ struct PosthazeApp {
     preflight_modal: Option<PreflightModalState>,
     settings_modal: Option<SettingsModalState>,
     confirm_modal: Option<ConfirmAction>,
+    context_menu: Option<ContextMenuState>,
     sidebar_width: f32,
     sidebar_collapsed: bool,
     inspector_height: f32,
@@ -181,6 +184,7 @@ impl PosthazeApp {
             preflight_modal: None,
             settings_modal: None,
             confirm_modal: None,
+            context_menu: None,
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
             sidebar_collapsed: true,
             inspector_height: DEFAULT_INSPECTOR_HEIGHT,
@@ -560,14 +564,28 @@ impl PosthazeApp {
     }
 
     fn request_delete_download(&mut self, id: DownloadId, filename: String, cx: &mut Context<Self>) {
-        self.confirm_modal = Some(ConfirmAction::DeleteDownload { id, filename });
+        self.request_delete_download_with_file(id, filename, false, cx);
+    }
+
+    fn request_delete_download_with_file(
+        &mut self,
+        id: DownloadId,
+        filename: String,
+        delete_file: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.confirm_modal = Some(ConfirmAction::DeleteDownload {
+            id,
+            filename,
+            delete_file,
+        });
         cx.notify();
     }
 
-    fn delete_download(&mut self, id: DownloadId, cx: &mut Context<Self>) {
+    fn delete_download(&mut self, id: DownloadId, delete_file: bool, cx: &mut Context<Self>) {
         let rx = self
             .bridge
-            .dispatch(move |engine| async move { engine.delete(&id, false).await });
+            .dispatch(move |engine| async move { engine.delete(&id, delete_file).await });
         self.run_unit_action(rx, cx);
     }
 
@@ -589,8 +607,90 @@ impl PosthazeApp {
             return;
         };
         match action {
-            ConfirmAction::DeleteDownload { id, .. } => self.delete_download(id, cx),
+            ConfirmAction::DeleteDownload {
+                id, delete_file, ..
+            } => self.delete_download(id, delete_file, cx),
             ConfirmAction::ClearCompleted { .. } => self.clear_completed(cx),
+        }
+    }
+
+    fn open_downloaded_file(&mut self, output_path: Option<PathBuf>, cx: &mut Context<Self>) {
+        let Some(path) = output_path else {
+            self.status_banner = Some("No output path recorded for this download.".to_string());
+            cx.notify();
+            return;
+        };
+        if !path.exists() {
+            self.status_banner = Some(format!("File not found on disk: {}", path.display()));
+            cx.notify();
+            return;
+        }
+        #[cfg(target_os = "windows")]
+        let spawn_res = std::process::Command::new("explorer.exe").arg(&path).spawn();
+        #[cfg(not(target_os = "windows"))]
+        let spawn_res: std::io::Result<std::process::Child> = Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "Open File is only supported on Windows",
+        ));
+
+        if let Err(err) = spawn_res {
+            self.status_banner = Some(format!("Could not open file: {err}"));
+            cx.notify();
+        }
+    }
+
+    fn execute_context_menu_action(
+        &mut self,
+        id: DownloadId,
+        action: ContextMenuAction,
+        cx: &mut Context<Self>,
+    ) {
+        self.context_menu = None;
+        let record = self.records.iter().find(|r| r.id == id).cloned();
+
+        match action {
+            ContextMenuAction::Pause => self.pause_download(id, cx),
+            ContextMenuAction::Resume => self.resume_download(id, cx),
+            ContextMenuAction::RestartFresh => self.restart_fresh_download(id, cx),
+            ContextMenuAction::Cancel => self.cancel_download(id, cx),
+            ContextMenuAction::OpenFile => {
+                self.open_downloaded_file(record.and_then(|r| r.output_path), cx);
+            }
+            ContextMenuAction::ShowInFolder => {
+                self.open_download_folder(record.and_then(|r| r.output_path), cx);
+            }
+            ContextMenuAction::CopyUrl => {
+                if let Some(rec) = record {
+                    let url = rec.final_url.unwrap_or(rec.url);
+                    cx.write_to_clipboard(ClipboardItem::new_string(url));
+                }
+                cx.notify();
+            }
+            ContextMenuAction::InspectByteMap => {
+                self.selected_id = Some(id.clone());
+                self.load_segments_for(id, cx);
+                if self.inspector_collapsed {
+                    self.inspector_collapsed = false;
+                    self.motion
+                        .animate_inspector(COLLAPSED_INSPECTOR_HEIGHT, self.inspector_height);
+                    self.ensure_motion_loop(cx);
+                }
+                cx.notify();
+            }
+            ContextMenuAction::RemoveFromList => {
+                let filename = record
+                    .as_ref()
+                    .map(derive_display_filename)
+                    .unwrap_or_else(|| "download".to_string());
+                self.request_delete_download_with_file(id, filename, false, cx);
+            }
+            ContextMenuAction::DeleteFileAndEntry => {
+                let filename = record
+                    .as_ref()
+                    .map(derive_display_filename)
+                    .unwrap_or_else(|| "download".to_string());
+                self.request_delete_download_with_file(id, filename, true, cx);
+            }
         }
     }
 
@@ -919,6 +1019,28 @@ impl Render for PosthazeApp {
             )
         });
 
+        let context_menu_overlay = self.context_menu.as_ref().and_then(|menu| {
+            let row = all_rows.iter().find(|r| r.id == menu.download_id)?;
+            let e_close = cx.entity().clone();
+            let e_action = cx.entity().clone();
+            Some(render_context_menu(
+                row,
+                menu.anchor,
+                viewport,
+                move |_, cx| {
+                    e_close.update(cx, |app, cx| {
+                        app.context_menu = None;
+                        cx.notify();
+                    });
+                },
+                move |id, action, _, cx| {
+                    e_action.update(cx, |app, cx| {
+                        app.execute_context_menu_action(id, action, cx);
+                    });
+                },
+            ))
+        });
+
         let active_resize = self.active_resize;
         let resizing_sidebar = matches!(active_resize, Some(ActiveResize::Sidebar { .. }));
         let resizing_inspector = matches!(active_resize, Some(ActiveResize::Inspector { .. }));
@@ -943,6 +1065,9 @@ impl Render for PosthazeApp {
                         changed = true;
                     }
                     if app.settings_modal.take().is_some() {
+                        changed = true;
+                    }
+                    if app.context_menu.take().is_some() {
                         changed = true;
                     }
                     if changed {
@@ -1353,6 +1478,7 @@ impl Render for PosthazeApp {
                             .child(inspector),
                     ),
             )
+            .when_some(context_menu_overlay, |el, overlay| el.child(overlay))
             .when_some(preflight_overlay, |el, overlay| el.child(overlay))
             .when_some(settings_overlay, |el, overlay| el.child(overlay))
             .when_some(confirm_overlay, |el, overlay| el.child(overlay))
@@ -2089,6 +2215,22 @@ impl PosthazeApp {
                 app.load_segments_for(id_select.clone(), cx);
                 cx.notify();
             }))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener({
+                    let id_ctx = row.id.clone();
+                    move |app, ev: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        app.selected_id = Some(id_ctx.clone());
+                        app.load_segments_for(id_ctx.clone(), cx);
+                        app.context_menu = Some(ContextMenuState {
+                            download_id: id_ctx.clone(),
+                            anchor: ev.position,
+                        });
+                        cx.notify();
+                    }
+                }),
+            )
             // 3px selection accent bar + 13px margin = 16px left offset matching header px_4
             .child(
                 div()

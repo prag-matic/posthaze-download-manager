@@ -15,7 +15,11 @@ use crate::view_model::format_bytes;
 
 /// Active confirmation prompt for destructive queue/record actions.
 pub(crate) enum ConfirmAction {
-    DeleteDownload { id: DownloadId, filename: String },
+    DeleteDownload {
+        id: DownloadId,
+        filename: String,
+        delete_file: bool,
+    },
     ClearCompleted { count: usize },
 }
 
@@ -525,7 +529,22 @@ where
     F2: Fn(&mut Window, &mut App) + 'static,
 {
     let (title, detail, confirm_label) = match action {
-        ConfirmAction::DeleteDownload { filename, .. } => (
+        ConfirmAction::DeleteDownload {
+            filename,
+            delete_file: true,
+            ..
+        } => (
+            "Delete File & Entry",
+            format!(
+                "Permanently delete \"{filename}\" from disk and remove it from the list? This cannot be undone."
+            ),
+            "Delete File",
+        ),
+        ConfirmAction::DeleteDownload {
+            filename,
+            delete_file: false,
+            ..
+        } => (
             "Remove Download",
             format!(
                 "Remove \"{filename}\" from the list? Partial progress will be discarded; completed files on disk are kept."
