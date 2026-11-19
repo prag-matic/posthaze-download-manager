@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
 use sqlx::Row;
 use sqlx::sqlite::{
     SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteRow,
@@ -18,7 +19,7 @@ use crate::{DownloadId, DownloadRequest, DownloadState, EngineError, Settings};
 const DOWNLOAD_SELECT_COLUMNS: &str = "
     id, url, final_url, output_dir, output_path, part_path, state,
     content_length, supports_ranges, etag, last_modified,
-    max_workers, sync_on_complete, bytes_downloaded,
+    max_workers, sync_on_complete, request_headers, bytes_downloaded,
     error_message, created_at, updated_at
 ";
 
@@ -51,6 +52,8 @@ pub struct DownloadRecord {
     pub max_workers: usize,
     /// Whether `sync_all()` is enabled on completion.
     pub sync_on_complete: bool,
+    /// Custom HTTP request headers persisted for probes, transfers, and resume.
+    pub headers: Vec<(String, String)>,
     /// Total bytes written to disk so far.
     pub bytes_downloaded: u64,
     /// Error message if the `Download` transitioned to `Failed`.
@@ -145,11 +148,12 @@ impl DownloadStore {
             .output_path
             .as_ref()
             .map(|p| p.to_string_lossy().into_owned());
+        let request_headers = encode_headers(&request.headers);
         sqlx::query(
             "INSERT INTO downloads (
                 id, url, output_dir, output_path, state, max_workers, sync_on_complete,
-                bytes_downloaded, created_at, updated_at
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
+                request_headers, bytes_downloaded, created_at, updated_at
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
         )
         .bind(id.as_str())
         .bind(&request.url)
@@ -158,6 +162,7 @@ impl DownloadStore {
         .bind(state.as_str())
         .bind(request.max_workers as i64)
         .bind(i64::from(request.sync_on_complete))
+        .bind(request_headers)
         .bind(now)
         .bind(now)
         .execute(&self.pool)
@@ -710,11 +715,44 @@ fn row_to_record(row: SqliteRow) -> Result<DownloadRecord, EngineError> {
         last_modified: row.try_get("last_modified")?,
         max_workers: usize::try_from(row.try_get::<i64, _>("max_workers")?).unwrap_or(1),
         sync_on_complete: row.try_get::<i64, _>("sync_on_complete")? != 0,
+        headers: decode_headers(
+            &row.try_get::<String, _>("request_headers")
+                .unwrap_or_default(),
+        ),
         bytes_downloaded: u64::try_from(row.try_get::<i64, _>("bytes_downloaded")?).unwrap_or(0),
         error_message: row.try_get("error_message")?,
         created_at: row.try_get("created_at")?,
         updated_at: row.try_get("updated_at")?,
     })
+}
+
+fn encode_headers(headers: &[(String, String)]) -> String {
+    headers
+        .iter()
+        .map(|(k, v)| {
+            format!(
+                "{}={}",
+                utf8_percent_encode(k, NON_ALPHANUMERIC),
+                utf8_percent_encode(v, NON_ALPHANUMERIC)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn decode_headers(raw: &str) -> Vec<(String, String)> {
+    raw.lines()
+        .filter_map(|line| {
+            let (k, v) = line.split_once('=')?;
+            let key = percent_decode_str(k).decode_utf8().ok()?.into_owned();
+            let val = percent_decode_str(v).decode_utf8().ok()?.into_owned();
+            if key.is_empty() {
+                None
+            } else {
+                Some((key, val))
+            }
+        })
+        .collect()
 }
 
 fn unix_now() -> i64 {

@@ -10,6 +10,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use posthaze_engine::{DownloadId, PreflightInfo, Settings};
 
+use crate::curl_parser::mask_header_summary;
 use crate::theme::*;
 use crate::view_model::format_bytes;
 
@@ -27,15 +28,22 @@ pub(crate) enum ConfirmAction {
 pub(crate) enum PreflightModalState {
     Probing {
         url: String,
+        headers: Vec<(String, String)>,
     },
     Error {
         url: String,
+        headers: Vec<(String, String)>,
         message: String,
     },
     Resolved {
         info: PreflightInfo,
         filename_input: Entity<InputState>,
         dir_input: Entity<InputState>,
+        cookie_input: Entity<InputState>,
+        referer_input: Entity<InputState>,
+        user_agent_input: Entity<InputState>,
+        headers: Vec<(String, String)>,
+        editing_headers: bool,
         workers: usize,
     },
 }
@@ -76,24 +84,26 @@ impl SettingsModalState {
     }
 }
 
-pub(crate) fn render_preflight_modal<F1, F2, F3, F4, F5>(
+pub(crate) fn render_preflight_modal<F1, F2, F3, F4, F5, F6>(
     state: &PreflightModalState,
     on_close: F1,
     on_retry: F2,
     on_worker_delta: F3,
     on_confirm: F4,
     on_edit_url: F5,
+    on_toggle_headers: F6,
 ) -> AnyElement
 where
     F1: Fn(&mut Window, &mut App) + Clone + 'static,
-    F2: Fn(String, &mut Window, &mut App) + 'static,
+    F2: Fn(String, Vec<(String, String)>, &mut Window, &mut App) + 'static,
     F3: Fn(isize, &mut Window, &mut App) + Clone + 'static,
     F4: Fn(bool, &mut Window, &mut App) + Clone + 'static,
     F5: Fn(String, &mut Window, &mut App) + 'static,
+    F6: Fn(&mut Window, &mut App) + 'static,
 {
     let on_backdrop_close = on_close.clone();
     let card = match state {
-        PreflightModalState::Probing { url } => div()
+        PreflightModalState::Probing { url, headers } => div()
             .w(px(520.0))
             .p_5()
             .bg(graphite_bg())
@@ -151,6 +161,15 @@ where
                     .truncate()
                     .child(url.clone()),
             )
+            .when(!headers.is_empty(), |el| {
+                el.child(
+                    div()
+                        .font_family(MONO_FONT)
+                        .text_size(TYPE_MICRO)
+                        .text_color(silver_muted())
+                        .child(format!("Sending {} custom request header(s)", headers.len())),
+                )
+            })
             .child(
                 div()
                     .flex()
@@ -163,9 +182,15 @@ where
                             .on_click(move |_, window, cx| on_close(window, cx)),
                     ),
             ),
-        PreflightModalState::Error { url, message } => {
+        PreflightModalState::Error {
+            url,
+            headers,
+            message,
+        } => {
             let url_retry = url.clone();
+            let headers_retry = headers.clone();
             let url_edit = url.clone();
+            let is_forbidden = message.contains("403");
             div()
                 .w(px(520.0))
                 .p_5()
@@ -212,6 +237,20 @@ where
                         .truncate()
                         .child(url.clone()),
                 )
+                .when(is_forbidden, |el| {
+                    el.child(
+                        div()
+                            .p_2p5()
+                            .bg(graphite_elevated())
+                            .border_1()
+                            .border_color(graphite_border())
+                            .rounded(px(4.0))
+                            .text_xs()
+                            .line_height(px(16.0))
+                            .text_color(silver_muted())
+                            .child("Tip: If this site requires a browser session, right-click the request in DevTools -> Copy as cURL, then paste it into the URL bar."),
+                    )
+                })
                 .child(
                     div()
                         .flex()
@@ -240,7 +279,7 @@ where
                                 .icon(IconName::RefreshCw)
                                 .label("Retry Probe")
                                 .on_click(move |_, window, cx| {
-                                    on_retry(url_retry.clone(), window, cx);
+                                    on_retry(url_retry.clone(), headers_retry.clone(), window, cx);
                                 }),
                         ),
                 )
@@ -249,6 +288,11 @@ where
             info,
             filename_input,
             dir_input,
+            cookie_input,
+            referer_input,
+            user_agent_input,
+            headers,
+            editing_headers,
             workers,
         } => {
             let size_label = info
@@ -257,6 +301,8 @@ where
                 .unwrap_or_else(|| "Unknown Size (Stream)".to_string());
             let confirm_now = on_confirm.clone();
             let confirm_queue = on_confirm;
+            let header_count = headers.len();
+            let header_summary = (!headers.is_empty()).then(|| mask_header_summary(headers));
 
             div()
                 .w(px(560.0))
@@ -316,6 +362,60 @@ where
                 )
                 .child(labeled_input("Filename", filename_input))
                 .child(labeled_input("Destination Directory", dir_input))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            Button::new("preflight-toggle-headers")
+                                .xsmall()
+                                .ghost()
+                                .icon(IconName::Settings)
+                                .label(if header_count > 0 {
+                                    format!("Request Headers ({header_count})")
+                                } else {
+                                    "+ Request Headers".to_string()
+                                })
+                                .on_click(move |_, window, cx| on_toggle_headers(window, cx)),
+                        )
+                        .when_some(header_summary, |el, summary| {
+                            el.child(
+                                div()
+                                    .id("preflight-headers-badge")
+                                    .px_2()
+                                    .py_0p5()
+                                    .rounded(px(3.0))
+                                    .bg(graphite_elevated())
+                                    .border_1()
+                                    .border_color(graphite_border())
+                                    .font_family(MONO_FONT)
+                                    .text_size(TYPE_MICRO)
+                                    .text_color(silver_muted())
+                                    .tooltip(move |window, cx| {
+                                        gpui_kit::component::tooltip::Tooltip::new(summary.clone())
+                                            .build(window, cx)
+                                    })
+                                    .child("cURL Headers Active"),
+                            )
+                        }),
+                )
+                .when(*editing_headers, |el| {
+                    el.child(
+                        div()
+                            .p_2p5()
+                            .bg(graphite_elevated())
+                            .border_1()
+                            .border_color(graphite_border())
+                            .rounded(px(4.0))
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .child(labeled_input("Cookie", cookie_input))
+                            .child(labeled_input("Referer", referer_input))
+                            .child(labeled_input("User-Agent", user_agent_input)),
+                    )
+                })
                 .child(
                     div()
                         .flex()

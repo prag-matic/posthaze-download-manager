@@ -2,6 +2,7 @@
 
 mod bridge;
 mod context_menu;
+mod curl_parser;
 mod inspector;
 mod modals;
 mod motion;
@@ -28,6 +29,7 @@ use posthaze_engine::{
 
 use crate::bridge::{EngineBridge, default_db_path};
 use crate::context_menu::{ContextMenuAction, ContextMenuState, render_context_menu};
+use crate::curl_parser::{find_header_value, parse_url_or_curl, set_or_remove_header};
 use crate::inspector::{InspectorCallbacks, render_inspector};
 use crate::modals::{
     ConfirmAction, PreflightModalState, SettingsModalState, render_confirm_modal,
@@ -338,23 +340,32 @@ impl PosthazeApp {
 
     fn submit_url_from_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let raw = self.url_input.read(cx).value().to_string();
-        let trimmed = raw.trim().to_string();
+        let trimmed = raw.trim();
         if trimmed.is_empty() {
             return;
         }
-        self.begin_probe(trimmed, window, cx);
+        let parsed = parse_url_or_curl(trimmed);
+        if !parsed.headers.is_empty() {
+            let clean_url = parsed.url.clone();
+            self.url_input.update(cx, |state, cx| {
+                state.set_value(clean_url, window, cx);
+            });
+        }
+        self.begin_probe(parsed.url, parsed.headers, window, cx);
     }
 
     fn paste_and_probe_from_clipboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(item) = cx.read_from_clipboard()
             && let Some(text) = item.text()
         {
-            let trimmed = text.trim().to_string();
+            let trimmed = text.trim();
             if !trimmed.is_empty() {
+                let parsed = parse_url_or_curl(trimmed);
+                let clean_url = parsed.url.clone();
                 self.url_input.update(cx, |state, cx| {
-                    state.set_value(trimmed.clone(), window, cx);
+                    state.set_value(clean_url, window, cx);
                 });
-                self.begin_probe(trimmed, window, cx);
+                self.begin_probe(parsed.url, parsed.headers, window, cx);
                 return;
             }
         }
@@ -362,18 +373,30 @@ impl PosthazeApp {
         cx.notify();
     }
 
-    fn begin_probe(&mut self, url: String, window: &mut Window, cx: &mut Context<Self>) {
+    fn begin_probe(
+        &mut self,
+        url: String,
+        headers: Vec<(String, String)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.status_banner = None;
-        self.preflight_modal = Some(PreflightModalState::Probing { url: url.clone() });
+        self.preflight_modal = Some(PreflightModalState::Probing {
+            url: url.clone(),
+            headers: headers.clone(),
+        });
         cx.notify();
 
         let out_dir = self.settings.default_output_dir.clone();
         let default_workers = self.settings.max_workers.clamp(1, 32);
         let window_handle = window.window_handle();
         let probe_url = url.clone();
-        let rx = self
-            .bridge
-            .dispatch(move |engine| async move { engine.probe(probe_url, out_dir).await });
+        let probe_headers = headers.clone();
+        let rx = self.bridge.dispatch(move |engine| async move {
+            engine
+                .probe_with_headers(probe_url, out_dir, &probe_headers)
+                .await
+        });
 
         cx.spawn(async move |this, cx| {
             let res = rx.await;
@@ -408,6 +431,27 @@ impl PosthazeApp {
                                 st.set_value(initial_dir, window, cx);
                                 st
                             });
+                            let initial_cookie = find_header_value(&headers, "Cookie").to_string();
+                            let initial_referer = find_header_value(&headers, "Referer").to_string();
+                            let initial_ua = find_header_value(&headers, "User-Agent").to_string();
+                            let cookie_input = cx.new(|cx| {
+                                let mut st = InputState::new(window, cx)
+                                    .placeholder("Optional Cookie header...");
+                                st.set_value(initial_cookie, window, cx);
+                                st
+                            });
+                            let referer_input = cx.new(|cx| {
+                                let mut st = InputState::new(window, cx)
+                                    .placeholder("Optional Referer URL...");
+                                st.set_value(initial_referer, window, cx);
+                                st
+                            });
+                            let user_agent_input = cx.new(|cx| {
+                                let mut st = InputState::new(window, cx)
+                                    .placeholder("Optional User-Agent override...");
+                                st.set_value(initial_ua, window, cx);
+                                st
+                            });
                             let workers = if info.supports_ranges {
                                 default_workers
                             } else {
@@ -417,18 +461,25 @@ impl PosthazeApp {
                                 info,
                                 filename_input,
                                 dir_input,
+                                cookie_input,
+                                referer_input,
+                                user_agent_input,
+                                headers,
+                                editing_headers: false,
                                 workers,
                             });
                         }
                         Ok(Err(err)) => {
                             app.preflight_modal = Some(PreflightModalState::Error {
                                 url,
+                                headers,
                                 message: err.to_string(),
                             });
                         }
                         Err(_) => {
                             app.preflight_modal = Some(PreflightModalState::Error {
                                 url,
+                                headers,
                                 message: "Engine bridge channel closed".to_string(),
                             });
                         }
@@ -450,7 +501,12 @@ impl PosthazeApp {
             info,
             filename_input,
             dir_input,
+            cookie_input,
+            referer_input,
+            user_agent_input,
+            mut headers,
             workers,
+            ..
         }) = self.preflight_modal.take()
         else {
             return;
@@ -458,6 +514,13 @@ impl PosthazeApp {
 
         let filename = filename_input.read(cx).value().trim().to_string();
         let dir_str = dir_input.read(cx).value().trim().to_string();
+        let cookie_val = cookie_input.read(cx).value().to_string();
+        let referer_val = referer_input.read(cx).value().to_string();
+        let ua_val = user_agent_input.read(cx).value().to_string();
+        set_or_remove_header(&mut headers, "Cookie", &cookie_val);
+        set_or_remove_header(&mut headers, "Referer", &referer_val);
+        set_or_remove_header(&mut headers, "User-Agent", &ua_val);
+
         let out_dir = if dir_str.is_empty() {
             self.settings.default_output_dir.clone()
         } else {
@@ -470,6 +533,7 @@ impl PosthazeApp {
         }
         req.max_workers = if info.supports_ranges { workers } else { 1 };
         req.sync_on_complete = self.settings.sync_on_complete;
+        req.headers = headers;
 
         self.url_input.update(cx, |state, cx| {
             state.set_value(String::new(), window, cx);
@@ -939,6 +1003,7 @@ impl Render for PosthazeApp {
             let e_delta = cx.entity().clone();
             let e_confirm = cx.entity().clone();
             let e_edit = cx.entity().clone();
+            let e_toggle_headers = cx.entity().clone();
             render_preflight_modal(
                 modal,
                 move |_, cx| {
@@ -947,8 +1012,8 @@ impl Render for PosthazeApp {
                         cx.notify();
                     });
                 },
-                move |url, window, cx| {
-                    e_retry.update(cx, |app, cx| app.begin_probe(url, window, cx));
+                move |url, headers, window, cx| {
+                    e_retry.update(cx, |app, cx| app.begin_probe(url, headers, window, cx));
                 },
                 move |delta, _, cx| {
                     e_delta.update(cx, |app, cx| {
@@ -971,6 +1036,17 @@ impl Render for PosthazeApp {
                             st.focus(window, cx);
                         });
                         cx.notify();
+                    });
+                },
+                move |_, cx| {
+                    e_toggle_headers.update(cx, |app, cx| {
+                        if let Some(PreflightModalState::Resolved {
+                            editing_headers, ..
+                        }) = &mut app.preflight_modal
+                        {
+                            *editing_headers = !*editing_headers;
+                            cx.notify();
+                        }
                     });
                 },
             )

@@ -3,10 +3,34 @@ use std::path::Path;
 use percent_encoding::percent_decode_str;
 use reqwest::StatusCode;
 use reqwest::header::{
-    ACCEPT_RANGES, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_RANGE, ETAG, LAST_MODIFIED, RANGE,
+    ACCEPT_RANGES, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_RANGE, ETAG, HeaderName,
+    HeaderValue, LAST_MODIFIED, RANGE,
 };
 
 use crate::EngineError;
+
+/// Applies validated custom HTTP headers to `req`, skipping `Range`/`Host`/`Content-Length`.
+pub(crate) fn apply_custom_headers(
+    mut req: reqwest::RequestBuilder,
+    headers: &[(String, String)],
+) -> reqwest::RequestBuilder {
+    for (name, value) in headers {
+        let trimmed = name.trim();
+        if trimmed.eq_ignore_ascii_case("range")
+            || trimmed.eq_ignore_ascii_case("host")
+            || trimmed.eq_ignore_ascii_case("content-length")
+        {
+            continue;
+        }
+        if let (Ok(h_name), Ok(h_val)) = (
+            HeaderName::from_bytes(trimmed.as_bytes()),
+            HeaderValue::from_str(value.trim()),
+        ) {
+            req = req.header(h_name, h_val);
+        }
+    }
+    req
+}
 
 /// Metadata gathered during `Probing`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,10 +43,16 @@ pub struct ProbeResult {
     pub suggested_filename: String,
 }
 
-/// Probes `url` with `HEAD` and falls back to `GET` (`Range: bytes=0-0`) when `HEAD` is blocked
-/// (`403`/`405`/`501`) or omits range/length metadata.
-pub async fn probe_url(client: &reqwest::Client, url: &str) -> Result<ProbeResult, EngineError> {
-    let head_resp = client.head(url).send().await?;
+/// Probes `url` with optional custom HTTP request `headers`, falling back to `Range: bytes=0-0`
+/// `GET` when `HEAD` is blocked or omits range/length metadata.
+pub async fn probe_url_with_headers(
+    client: &reqwest::Client,
+    url: &str,
+    headers: &[(String, String)],
+) -> Result<ProbeResult, EngineError> {
+    let head_resp = apply_custom_headers(client.head(url), headers)
+        .send()
+        .await?;
     let head_status = head_resp.status();
     let head_final_url = head_resp.url().to_string();
 
@@ -33,7 +63,7 @@ pub async fn probe_url(client: &reqwest::Client, url: &str) -> Result<ProbeResul
         }
 
         // HEAD succeeded but omitted range or length metadata; verify via Range GET.
-        let mut range_probe = probe_range_get(client, &head_final_url).await?;
+        let mut range_probe = probe_range_get(client, &head_final_url, headers).await?;
         if range_probe.etag.is_none() {
             range_probe.etag = head_probe.etag;
         }
@@ -53,7 +83,7 @@ pub async fn probe_url(client: &reqwest::Client, url: &str) -> Result<ProbeResul
         head_status,
         StatusCode::FORBIDDEN | StatusCode::METHOD_NOT_ALLOWED | StatusCode::NOT_IMPLEMENTED
     ) {
-        return probe_range_get(client, &head_final_url).await;
+        return probe_range_get(client, &head_final_url, headers).await;
     }
 
     Err(EngineError::HttpStatus {
@@ -82,8 +112,14 @@ fn extract_probe_from_head(resp: &reqwest::Response) -> ProbeResult {
     }
 }
 
-async fn probe_range_get(client: &reqwest::Client, url: &str) -> Result<ProbeResult, EngineError> {
-    let resp = client.get(url).header(RANGE, "bytes=0-0").send().await?;
+async fn probe_range_get(
+    client: &reqwest::Client,
+    url: &str,
+    headers: &[(String, String)],
+) -> Result<ProbeResult, EngineError> {
+    let resp = apply_custom_headers(client.get(url).header(RANGE, "bytes=0-0"), headers)
+        .send()
+        .await?;
     let status = resp.status();
     let final_url = resp.url().to_string();
 

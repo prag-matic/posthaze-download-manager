@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::sync::{Mutex, broadcast, mpsc, watch};
 
-use crate::probe::{ProbeResult, probe_url};
+use crate::probe::{ProbeResult, probe_url_with_headers};
 use crate::queue::QueueCoordinator;
 use crate::store::DownloadStore;
 use crate::transfer::{
@@ -195,6 +195,8 @@ pub struct DownloadRequest {
     pub max_workers: usize,
     /// Whether to call `File::sync_all()` (`FlushFileBuffers`) before renaming `.part`.
     pub sync_on_complete: bool,
+    /// Custom HTTP request headers (`(name, value)`) sent on probe, transfer, and resume.
+    pub headers: Vec<(String, String)>,
 }
 
 impl DownloadRequest {
@@ -206,6 +208,7 @@ impl DownloadRequest {
             output_dir: output_dir.into(),
             max_workers: 8,
             sync_on_complete: false,
+            headers: Vec::new(),
         }
     }
 }
@@ -513,8 +516,18 @@ impl DownloadEngine {
         url: impl Into<String>,
         output_dir: impl AsRef<Path>,
     ) -> Result<PreflightInfo, EngineError> {
+        self.probe_with_headers(url, output_dir, &[]).await
+    }
+
+    /// Probes `url` with custom HTTP request `headers` without creating any database record or `.part` file.
+    pub async fn probe_with_headers(
+        &self,
+        url: impl Into<String>,
+        output_dir: impl AsRef<Path>,
+        headers: &[(String, String)],
+    ) -> Result<PreflightInfo, EngineError> {
         let original_url = url.into();
-        let probed = probe_url(&self.client, &original_url).await?;
+        let probed = probe_url_with_headers(&self.client, &original_url, headers).await?;
         let disambiguated_output_path =
             disambiguate_output_path(output_dir.as_ref(), &probed.suggested_filename);
         Ok(PreflightInfo {
@@ -682,6 +695,7 @@ impl DownloadEngine {
                 output_dir: fallback_dir,
                 max_workers: record.max_workers,
                 sync_on_complete: record.sync_on_complete,
+                headers: record.headers.clone(),
             };
             (Vec::new(), Some(req))
         } else {
@@ -947,6 +961,7 @@ impl DownloadEngine {
             output_dir: fallback_dir,
             max_workers: record.max_workers,
             sync_on_complete: record.sync_on_complete,
+            headers: record.headers,
         };
 
         Ok(self.spawn_fresh_download(id.clone(), req).await)
@@ -1043,7 +1058,7 @@ impl DownloadEngine {
 
 fn build_http_client() -> reqwest::Client {
     reqwest::Client::builder()
-        .user_agent(concat!("posthaze/", env!("CARGO_PKG_VERSION")))
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
         .connect_timeout(Duration::from_secs(15))
         .tcp_nodelay(true)
         .build()
@@ -1122,6 +1137,7 @@ async fn probe_with_control(
     control_rx: &mut watch::Receiver<ControlSignal>,
     id: &DownloadId,
     url: &str,
+    headers: &[(String, String)],
     (initial_bytes, initial_total): (u64, Option<u64>),
     resume_prev_state: Option<DownloadState>,
 ) -> Result<ProbeResult, EngineError> {
@@ -1197,7 +1213,7 @@ async fn probe_with_control(
                 ControlSignal::Run => unreachable!("Run does not wake select as interruption"),
             }
         }
-        res = probe_url(client, url) => match res {
+        res = probe_url_with_headers(client, url, headers) => match res {
             Ok(probe) => Ok(probe),
             Err(err) => Err(fail_download(store, sink, id, initial_bytes, initial_total, err).await),
         }
@@ -1518,6 +1534,7 @@ async fn run_resumed_download(
         &mut control_rx,
         &id,
         &record.url,
+        &record.headers,
         (record.bytes_downloaded, record.content_length),
         Some(record.state),
     )
@@ -1615,6 +1632,7 @@ async fn run_resumed_download(
     let transfer_result = execute_multi_segment_from_checkpoints(
         &client,
         &probe.final_url,
+        &record.headers,
         segments,
         record.max_workers,
         &writer,
@@ -1668,6 +1686,7 @@ async fn run_download(
         &mut control_rx,
         &id,
         &request.url,
+        &request.headers,
         (0, None),
         None,
     )
@@ -1739,6 +1758,7 @@ async fn run_download(
             execute_multi_segment(
                 &client,
                 &probe.final_url,
+                &request.headers,
                 total_bytes,
                 request.max_workers,
                 &writer,
@@ -1753,6 +1773,7 @@ async fn run_download(
         _ => execute_single_stream(
             &client,
             &probe.final_url,
+            &request.headers,
             &writer,
             &downloaded,
             &active_workers,

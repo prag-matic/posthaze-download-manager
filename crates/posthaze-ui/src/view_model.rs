@@ -561,6 +561,7 @@ mod tests {
             last_modified: None,
             max_workers: 8,
             sync_on_complete: false,
+            headers: Vec::new(),
             bytes_downloaded: 250,
             error_message: None,
             created_at,

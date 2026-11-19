@@ -313,6 +313,7 @@ mod tests {
             supports_ranges: true,
             max_workers: 4,
             sync_on_complete: false,
+            headers: Vec::new(),
             error_message: resource_changed.then(|| "remote resource changed".to_string()),
             created_at: 1,
             updated_at: 1,

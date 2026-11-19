@@ -9,6 +9,7 @@ use reqwest::header::RANGE;
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 
+use crate::probe::apply_custom_headers;
 use crate::store::DownloadStore;
 use crate::writer::PartFileWriter;
 use crate::{DownloadId, EngineError};
@@ -118,6 +119,7 @@ pub fn plan_segments(total_bytes: u64, max_workers: usize) -> Vec<SegmentSpec> {
 pub async fn execute_single_stream(
     client: &reqwest::Client,
     url: &str,
+    headers: &[(String, String)],
     writer: &PartFileWriter,
     downloaded: &AtomicU64,
     active_workers: &AtomicUsize,
@@ -134,7 +136,7 @@ pub async fn execute_single_stream(
             active_workers.store(0, Ordering::Relaxed);
             return Err(signal_to_error(*control_rx.borrow()));
         }
-        res = client.get(url).send() => res?,
+        res = apply_custom_headers(client.get(url), headers).send() => res?,
     };
     let status = resp.status();
     if !status.is_success() {
@@ -162,6 +164,7 @@ pub struct MultiSegmentResult {
 pub(crate) async fn execute_multi_segment(
     client: &reqwest::Client,
     url: &str,
+    headers: &[(String, String)],
     total_bytes: u64,
     max_workers: usize,
     writer: &Arc<PartFileWriter>,
@@ -187,6 +190,7 @@ pub(crate) async fn execute_multi_segment(
     execute_multi_segment_from_checkpoints(
         client,
         url,
+        headers,
         checkpoints,
         max_workers,
         writer,
@@ -203,6 +207,7 @@ pub(crate) async fn execute_multi_segment(
 pub(crate) async fn execute_multi_segment_from_checkpoints(
     client: &reqwest::Client,
     url: &str,
+    headers: &[(String, String)],
     checkpoints: Vec<SegmentCheckpoint>,
     max_workers: usize,
     writer: &Arc<PartFileWriter>,
@@ -313,12 +318,14 @@ pub(crate) async fn execute_multi_segment_from_checkpoints(
         let retries_performed = Arc::clone(&retries_performed);
         let control_rx = control_rx.clone();
         let persist = persist.clone();
+        let headers: Arc<[(String, String)]> = headers.to_vec().into();
 
         join_set.spawn(async move {
             active_workers.fetch_add(1, Ordering::Relaxed);
             let res = run_worker_loop(
                 &client,
                 &url,
+                &headers,
                 initial_seg,
                 worker_count == 1,
                 &writer,
@@ -376,6 +383,7 @@ fn sum_segment_bytes(active_segments: &Mutex<Vec<Arc<ActiveSegment>>>) -> u64 {
 async fn run_worker_loop(
     client: &reqwest::Client,
     url: &str,
+    headers: &[(String, String)],
     mut current_seg: Arc<ActiveSegment>,
     allow_full_200: bool,
     writer: &PartFileWriter,
@@ -393,6 +401,7 @@ async fn run_worker_loop(
         let seg_bytes = run_segment_worker(
             client,
             url,
+            headers,
             &current_seg,
             allow_full_200,
             writer,
@@ -489,6 +498,7 @@ fn steal_largest_segment(
 async fn run_segment_worker(
     client: &reqwest::Client,
     url: &str,
+    headers: &[(String, String)],
     seg: &ActiveSegment,
     allow_full_200: bool,
     writer: &PartFileWriter,
@@ -512,6 +522,7 @@ async fn run_segment_worker(
         match run_segment_attempt(
             client,
             url,
+            headers,
             seg,
             attempt_start,
             end_snapshot,
@@ -562,6 +573,7 @@ async fn run_segment_worker(
 async fn run_segment_attempt(
     client: &reqwest::Client,
     url: &str,
+    headers: &[(String, String)],
     seg: &ActiveSegment,
     attempt_start: u64,
     end_snapshot: u64,
@@ -579,7 +591,7 @@ async fn run_segment_attempt(
             }
             unreachable!("Run signal does not trigger abort");
         }
-        res = client.get(url).header(RANGE, range_header).send() => res?,
+        res = apply_custom_headers(client.get(url).header(RANGE, range_header), headers).send() => res?,
     };
     let status = resp.status();
 
