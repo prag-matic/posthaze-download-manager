@@ -263,27 +263,41 @@ where
                         ),
                 ),
         )
-        // Errata Recovery Strip on ResourceChanged
-        .when(row.is_resource_changed, |el| {
+        // Diagnostic & Errata Strip for Failed Downloads
+        .when(row.state == DownloadState::Failed, |el| {
+            let msg = if row.is_resource_changed {
+                "ERRATA: Remote resource changed since pause — .part preserved safely.".to_string()
+            } else {
+                format!(
+                    "FAILED: {}",
+                    row.error_message
+                        .as_deref()
+                        .unwrap_or("Transfer failed with an unspecified error.")
+                )
+            };
             el.child(
                 div()
                     .px_3()
                     .py_1p5()
                     .rounded(px(4.0))
-                    .bg(errata_vermilion())
+                    .bg(rgba(0xEF444424))
+                    .border_1()
+                    .border_color(errata_vermilion())
                     .flex()
                     .items_center()
                     .justify_between()
                     .gap_2()
                     .child(
                         div()
+                            .flex_1()
                             .flex()
                             .items_center()
                             .gap_2()
+                            .min_w_0()
                             .child(
                                 Icon::new(IconName::TriangleAlert)
                                     .size(px(14.0))
-                                    .text_color(silver_text()),
+                                    .text_color(errata_vermilion()),
                             )
                             .child(
                                 div()
@@ -292,7 +306,8 @@ where
                                     .line_height(px(18.0))
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(silver_text())
-                                    .child("ERRATA: Remote resource changed since pause — .part preserved safely."),
+                                    .truncate()
+                                    .child(msg),
                             ),
                     )
                     .child(
@@ -300,16 +315,22 @@ where
                             .flex()
                             .items_center()
                             .gap_1p5()
-                            .child(
-                                Button::new("errata-restart-fresh")
-                                    .xsmall()
-                                    .primary()
-                                    .icon(IconName::RotateCcw)
-                                    .label("Restart Fresh")
-                                    .on_click(move |_, window, cx| {
-                                        (callbacks.on_restart_fresh)(id_restart.clone(), window, cx);
-                                    }),
-                            )
+                            .when(row.is_resource_changed, |actions| {
+                                actions.child(
+                                    Button::new("errata-restart-fresh")
+                                        .xsmall()
+                                        .primary()
+                                        .icon(IconName::RotateCcw)
+                                        .label("Restart Fresh")
+                                        .on_click(move |_, window, cx| {
+                                            (callbacks.on_restart_fresh)(
+                                                id_restart.clone(),
+                                                window,
+                                                cx,
+                                            );
+                                        }),
+                                )
+                            })
                             .child(
                                 Button::new("errata-delete")
                                     .xsmall()

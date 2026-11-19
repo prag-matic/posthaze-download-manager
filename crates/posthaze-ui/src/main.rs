@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use gpui_kit::assets::{AllAssets, IconName};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{
     Icon, InteractiveElementExt as _, Sizable, Theme, ThemeMode, TitleBar,
 };
@@ -184,23 +185,27 @@ impl PosthazeApp {
     }
 
     fn refresh_from_engine(&self, cx: &mut Context<Self>) {
-        let selected = self.selected_id.clone();
         let rx = self.bridge.dispatch(move |engine| async move {
             let records = engine.list_downloads().await;
             let settings = engine.get_settings().await;
-            let segments = if let Some(id) = selected.as_ref() {
-                engine.list_segments(id).await.ok().map(|s| (id.clone(), s))
-            } else {
-                None
-            };
-            (records, settings, segments)
+            let mut all_segments = HashMap::new();
+            if let Ok(ref recs) = records {
+                for rec in recs {
+                    if let Ok(segs) = engine.list_segments(&rec.id).await
+                        && !segs.is_empty()
+                    {
+                        all_segments.insert(rec.id.clone(), segs);
+                    }
+                }
+            }
+            (records, settings, all_segments)
         });
         cx.spawn(async move |this, cx| {
-            if let Ok((Ok(records), Ok(settings), segments)) = rx.await {
+            if let Ok((Ok(records), Ok(settings), all_segments)) = rx.await {
                 let _ = this.update(cx, |app, cx| {
                     app.records = records;
                     app.settings = settings;
-                    if let Some((id, segs)) = segments {
+                    for (id, segs) in all_segments {
                         app.persisted_segments.insert(id, segs);
                     }
                     if app.selected_id.is_none() {
@@ -605,6 +610,7 @@ impl Render for PosthazeApp {
                 DownloadRowView::from_record(
                     rec,
                     self.live_map.get(&rec.id),
+                    self.persisted_segments.get(&rec.id).map(Vec::as_slice),
                     ranks.get(&rec.id).copied(),
                 )
             })
@@ -1596,6 +1602,10 @@ impl PosthazeApp {
         let id_cancel = row.id.clone();
         let id_delete = row.id.clone();
 
+        let failed_tooltip = (row.state == DownloadState::Failed)
+            .then(|| row.error_message.clone())
+            .flatten();
+
         div()
             .id(SharedString::from(format!("row-{}", row.id.as_str())))
             .h(px(38.0))
@@ -1631,6 +1641,7 @@ impl PosthazeApp {
             // State + FIFO rank badge
             .child(
                 div()
+                    .id(SharedString::from(format!("state-{}", row.id.as_str())))
                     .w(px(COL_STATE))
                     .h_full()
                     .pr_2()
@@ -1644,6 +1655,9 @@ impl PosthazeApp {
                     .line_height(px(16.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(state_color)
+                    .when_some(failed_tooltip, |el, msg| {
+                        el.tooltip(move |window, cx| Tooltip::new(msg.clone()).build(window, cx))
+                    })
                     .child(Icon::new(icon_name).size(px(13.0)).text_color(state_color))
                     .child(if let Some(rank) = row.fifo_rank {
                         div()

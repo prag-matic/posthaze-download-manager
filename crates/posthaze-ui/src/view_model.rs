@@ -138,10 +138,12 @@ pub struct DownloadRowView {
 }
 
 impl DownloadRowView {
-    /// Builds a row view from a persisted [`DownloadRecord`] and optional live [`ProgressSnapshot`].
+    /// Builds a row view from a persisted [`DownloadRecord`], optional live [`ProgressSnapshot`],
+    /// and optional persisted [`SegmentProgress`] slice.
     pub fn from_record(
         record: &DownloadRecord,
         live: Option<&ProgressSnapshot>,
+        persisted_segments: Option<&[SegmentProgress]>,
         fifo_rank: Option<usize>,
     ) -> Self {
         let state = live.map_or(record.state, |s| s.state);
@@ -150,7 +152,9 @@ impl DownloadRowView {
         let bytes_per_sec = live.map_or(0, |s| s.bytes_per_sec);
         let eta_secs = live.and_then(|s| s.eta_secs);
         let active_workers = live.map_or(0, |s| s.active_workers);
-        let segments: &[SegmentProgress] = live.map_or(&[], |s| s.segments.as_slice());
+        let segments: &[SegmentProgress] = live
+            .filter(|s| !s.segments.is_empty())
+            .map_or_else(|| persisted_segments.unwrap_or(&[]), |s| s.segments.as_slice());
 
         let checkpointed_bytes = if state == DownloadState::Completed {
             bytes_downloaded
@@ -563,7 +567,7 @@ mod tests {
                 },
             ],
         };
-        let row = DownloadRowView::from_record(&rec, Some(&snap), None);
+        let row = DownloadRowView::from_record(&rec, Some(&snap), None, None);
         assert!((row.checkpoint_ratio() - 0.5).abs() < 1e-6);
         assert!((row.total_ratio() - 0.75).abs() < 1e-6);
         assert_eq!(row.segment_count, 2);
@@ -575,9 +579,11 @@ mod tests {
             &make_record("1", "https://example.com/zeta.bin", DownloadState::Paused, 10),
             None,
             None,
+            None,
         );
         let r2 = DownloadRowView::from_record(
             &make_record("2", "https://example.com/alpha.bin", DownloadState::Queued, 20),
+            None,
             None,
             Some(1),
         );
@@ -655,12 +661,47 @@ mod tests {
     fn detects_resource_changed_error_for_errata_recovery() {
         let mut rec = make_record("rc", "https://example.com/fw.bin", DownloadState::Failed, 1);
         rec.error_message = Some("remote resource changed: ETag mismatch".to_string());
-        let row = DownloadRowView::from_record(&rec, None, None);
+        let row = DownloadRowView::from_record(&rec, None, None, None);
         assert!(row.is_resource_changed);
 
         rec.error_message = Some("HTTP error: timeout".to_string());
-        let transient_row = DownloadRowView::from_record(&rec, None, None);
+        let transient_row = DownloadRowView::from_record(&rec, None, None, None);
         assert!(!transient_row.is_resource_changed);
+        assert_eq!(
+            transient_row.error_message.as_deref(),
+            Some("HTTP error: timeout")
+        );
+    }
+
+    #[test]
+    fn preserves_persisted_segment_count_when_live_snapshot_absent() {
+        let persisted = vec![
+            SegmentProgress {
+                id: 0,
+                start: 0,
+                cursor: 500,
+                checkpointed_cursor: 500,
+                end: Some(500),
+                completed: true,
+            },
+            SegmentProgress {
+                id: 1,
+                start: 500,
+                cursor: 750,
+                checkpointed_cursor: 750,
+                end: Some(1000),
+                completed: false,
+            },
+        ];
+        for state in [
+            DownloadState::Paused,
+            DownloadState::Failed,
+            DownloadState::Completed,
+        ] {
+            let rec = make_record("s", "https://example.com/archive.bin", state, 1);
+            let row = DownloadRowView::from_record(&rec, None, Some(&persisted), None);
+            assert_eq!(row.segment_count, 2);
+        }
     }
 
     #[test]
