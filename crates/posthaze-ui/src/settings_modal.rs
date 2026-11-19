@@ -19,16 +19,18 @@ pub(crate) enum SettingsTab {
     General,
     Downloads,
     Network,
+    Notifications,
     Automation,
     Interface,
     Reset,
 }
 
 impl SettingsTab {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::General,
         Self::Downloads,
         Self::Network,
+        Self::Notifications,
         Self::Automation,
         Self::Interface,
         Self::Reset,
@@ -39,6 +41,7 @@ impl SettingsTab {
             Self::General => "General",
             Self::Downloads => "Downloads",
             Self::Network => "Network",
+            Self::Notifications => "Notifications",
             Self::Automation => "Automation",
             Self::Interface => "Interface",
             Self::Reset => "Reset",
@@ -50,7 +53,8 @@ impl SettingsTab {
             Self::General => "Default save location and folder sorting.",
             Self::Downloads => "File collisions, removal behavior, and automatic retries.",
             Self::Network => "Proxy routing, bandwidth cap, and connection limits.",
-            Self::Automation => "Windows notifications and post-download commands.",
+            Self::Notifications => "Windows desktop alerts for queue and transfer events.",
+            Self::Automation => "External commands and antivirus scans run after completion.",
             Self::Interface => "Row interactions, Pre-Flight actions, and display scale.",
             Self::Reset => "Restore all preferences to factory defaults.",
         }
@@ -61,7 +65,8 @@ impl SettingsTab {
             Self::General => IconName::Folder,
             Self::Downloads => IconName::Download,
             Self::Network => IconName::Globe,
-            Self::Automation => IconName::Bell,
+            Self::Notifications => IconName::Bell,
+            Self::Automation => IconName::ShieldCheck,
             Self::Interface => IconName::LayoutDashboard,
             Self::Reset => IconName::RotateCcw,
         }
@@ -526,11 +531,10 @@ where
                 )),
             ),
 
-        SettingsTab::Automation => div()
+        SettingsTab::Notifications => div()
             .flex()
             .flex_col()
             .gap_2()
-            .child(section_heading("Desktop Notifications"))
             .child(toggle_row(
                 "notify-added",
                 "Download Added",
@@ -555,6 +559,7 @@ where
                 SettingsAction::ToggleNotifyFailed,
                 on_action.clone(),
             ))
+            .child(div().h(px(1.0)).w_full().my_1().bg(graphite_border()))
             .child(toggle_row(
                 "notify-inactive",
                 "Only When Window Is Unfocused",
@@ -562,8 +567,12 @@ where
                 state.notify_only_inactive,
                 SettingsAction::ToggleNotifyOnlyInactive,
                 on_action.clone(),
-            ))
-            .child(div().h(px(1.0)).w_full().my_1().bg(graphite_border()))
+            )),
+
+        SettingsTab::Automation => div()
+            .flex()
+            .flex_col()
+            .gap_2()
             .child(
                 div()
                     .flex()
