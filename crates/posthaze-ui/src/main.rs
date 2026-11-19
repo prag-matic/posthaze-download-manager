@@ -1684,6 +1684,7 @@ impl Render for PosthazeApp {
                             .flex()
                             .flex_col()
                             .flex_1()
+                            .min_w_0()
                             .h_full()
                             .overflow_hidden()
                             .child(self.render_toolbar(profile, cx))
@@ -2415,7 +2416,9 @@ impl PosthazeApp {
                         SortColumn::Progress,
                         cx,
                     ))
-                    .child(self.header_cell("SPEED", Some(COL_SPEED), SortColumn::Speed, cx))
+                    .when(profile.show_speed, |el| {
+                        el.child(self.header_cell("SPEED", Some(COL_SPEED), SortColumn::Speed, cx))
+                    })
                     .when(profile.show_eta, |el| {
                         el.child(
                             div()
@@ -2598,6 +2601,7 @@ impl PosthazeApp {
             .child(
                 div()
                     .w(px(3.0))
+                    .flex_shrink_0()
                     .h_full()
                     .mr(px(13.0))
                     .bg(if is_selected {
@@ -2611,12 +2615,14 @@ impl PosthazeApp {
                 div()
                     .id(SharedString::from(format!("state-{}", row.id.as_str())))
                     .w(px(COL_STATE))
+                    .flex_shrink_0()
                     .h_full()
                     .pr_2()
                     .border_r_1()
                     .border_color(paper_border())
                     .flex()
                     .items_center()
+                    .overflow_hidden()
                     .gap_1p5()
                     .font_family(MONO_FONT)
                     .text_size(TYPE_MICRO)
@@ -2648,7 +2654,7 @@ impl PosthazeApp {
             .child(
                 div()
                     .flex_1()
-                    .min_w(px(120.0))
+                    .min_w_0()
                     .h_full()
                     .px_2()
                     .border_r_1()
@@ -2667,6 +2673,7 @@ impl PosthazeApp {
             .child(
                 div()
                     .w(px(profile.progress_col_width))
+                    .flex_shrink_0()
                     .h_full()
                     .px_2p5()
                     .border_r_1()
@@ -2674,6 +2681,7 @@ impl PosthazeApp {
                     .flex()
                     .flex_col()
                     .justify_center()
+                    .overflow_hidden()
                     .gap_1()
                     .child(
                         div()
@@ -2763,32 +2771,38 @@ impl PosthazeApp {
                     ),
             )
             // Speed
-            .child(
-                div()
-                    .w(px(COL_SPEED))
-                    .h_full()
-                    .px_2()
-                    .border_r_1()
-                    .border_color(paper_border())
-                    .flex()
-                    .items_center()
-                    .font_family(MONO_FONT)
-                    .text_size(TYPE_BODY)
-                    .line_height(px(16.0))
-                    .text_color(carbon_text())
-                    .child(format_speed(row.bytes_per_sec)),
-            )
-            // ETA
-            .when(profile.show_eta, |el| {
+            .when(profile.show_speed, |el| {
                 el.child(
                     div()
-                        .w(px(COL_ETA))
+                        .w(px(COL_SPEED))
+                        .flex_shrink_0()
                         .h_full()
                         .px_2()
                         .border_r_1()
                         .border_color(paper_border())
                         .flex()
                         .items_center()
+                        .overflow_hidden()
+                        .font_family(MONO_FONT)
+                        .text_size(TYPE_BODY)
+                        .line_height(px(16.0))
+                        .text_color(carbon_text())
+                        .child(format_speed(row.bytes_per_sec)),
+                )
+            })
+            // ETA
+            .when(profile.show_eta, |el| {
+                el.child(
+                    div()
+                        .w(px(COL_ETA))
+                        .flex_shrink_0()
+                        .h_full()
+                        .px_2()
+                        .border_r_1()
+                        .border_color(paper_border())
+                        .flex()
+                        .items_center()
+                        .overflow_hidden()
                         .font_family(MONO_FONT)
                         .text_size(TYPE_BODY)
                         .line_height(px(16.0))
@@ -2801,12 +2815,14 @@ impl PosthazeApp {
                 el.child(
                     div()
                         .w(px(COL_SEGS))
+                        .flex_shrink_0()
                         .h_full()
                         .border_r_1()
                         .border_color(paper_border())
                         .flex()
                         .items_center()
                         .justify_center()
+                        .overflow_hidden()
                         .font_family(MONO_FONT)
                         .text_size(TYPE_BODY)
                         .line_height(px(16.0))
@@ -2823,11 +2839,13 @@ impl PosthazeApp {
                 div()
                     .id(SharedString::from(format!("actions-{}", row.id.as_str())))
                     .w(px(COL_ACTIONS))
+                    .flex_shrink_0()
                     .h_full()
                     .pl_2()
                     .flex()
                     .items_center()
                     .justify_end()
+                    .overflow_hidden()
                     .gap_1()
                     .on_click(|_, _, cx| cx.stop_propagation())
                     .when(
