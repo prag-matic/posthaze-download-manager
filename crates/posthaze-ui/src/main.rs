@@ -731,14 +731,17 @@ impl PosthazeApp {
                             .border_color(graphite_border())
                             .child(
                                 div()
-                                    .text_sm()
+                                    .text_size(TYPE_HEADING)
+                                    .line_height(px(20.0))
                                     .font_weight(FontWeight::BOLD)
                                     .text_color(silver_text())
                                     .child("POSTHAZE"),
                             )
                             .child(
                                 div()
-                                    .text_xs()
+                                    .text_size(TYPE_HEADER)
+                                    .line_height(px(14.0))
+                                    .font_weight(FontWeight::MEDIUM)
                                     .text_color(silver_muted())
                                     .child("INTERVAL DOWNLOADER"),
                             ),
@@ -770,7 +773,13 @@ impl PosthazeApp {
                                     } else {
                                         graphite_bg()
                                     })
-                                    .text_xs()
+                                    .text_size(px(12.5))
+                                    .line_height(px(18.0))
+                                    .font_weight(if selected {
+                                        FontWeight::SEMIBOLD
+                                    } else {
+                                        FontWeight::NORMAL
+                                    })
                                     .text_color(if selected {
                                         silver_text()
                                     } else {
@@ -783,7 +792,8 @@ impl PosthazeApp {
                                     .child(tab.label())
                                     .child(
                                         div()
-                                            .font_family("Consolas")
+                                            .font_family(MONO_FONT)
+                                            .text_size(TYPE_BODY)
                                             .text_color(silver_text())
                                             .child(count.to_string()),
                                     )
@@ -812,22 +822,26 @@ impl PosthazeApp {
                             .gap_1()
                             .child(
                                 div()
-                                    .text_xs()
+                                    .text_size(TYPE_HEADER)
+                                    .line_height(px(14.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(silver_muted())
                                     .child("THROUGHPUT"),
                             )
                             .child(
                                 div()
-                                    .font_family("Consolas")
-                                    .text_sm()
+                                    .font_family(MONO_FONT)
+                                    .text_size(TYPE_DISPLAY)
+                                    .line_height(px(24.0))
                                     .font_weight(FontWeight::BOLD)
                                     .text_color(selenium_amber())
                                     .child(format_speed(total_speed)),
                             )
                             .child(
                                 div()
-                                    .font_family("Consolas")
-                                    .text_xs()
+                                    .font_family(MONO_FONT)
+                                    .text_size(TYPE_MICRO)
+                                    .line_height(px(16.0))
                                     .text_color(silver_muted())
                                     .child(format!(
                                         "SLOTS {active_slots} / {}",
@@ -860,7 +874,8 @@ impl PosthazeApp {
             .child(
                 div()
                     .flex_1()
-                    .font_family("Consolas")
+                    .font_family(MONO_FONT)
+                    .text_size(TYPE_BODY)
                     .child(Input::new(&self.url_input)),
             )
             .child(
@@ -911,8 +926,9 @@ impl PosthazeApp {
                 .bg(paper_bg())
                 .child(
                     div()
-                        .text_base()
-                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_size(TYPE_DISPLAY)
+                        .line_height(px(24.0))
+                        .font_weight(FontWeight::BOLD)
                         .text_color(carbon_text())
                         .child(if is_empty_queue {
                             "No Downloads in Queue"
@@ -922,7 +938,10 @@ impl PosthazeApp {
                 )
                 .child(
                     div()
-                        .text_xs()
+                        .max_w(px(440.0))
+                        .text_center()
+                        .text_size(TYPE_BODY)
+                        .line_height(px(18.0))
                         .text_color(carbon_muted())
                         .child(if is_empty_queue {
                             "Enter an HTTP/HTTPS URL above or paste directly from clipboard."
@@ -963,7 +982,8 @@ impl PosthazeApp {
                     .px_4()
                     .border_b_1()
                     .border_color(paper_border())
-                    .text_xs()
+                    .text_size(TYPE_HEADER)
+                    .line_height(px(14.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(carbon_muted())
                     .child(self.header_cell("STATE", Some(COL_STATE), SortColumn::State, cx))
@@ -1036,7 +1056,7 @@ impl PosthazeApp {
 
         div()
             .id(SharedString::from(format!("row-{}", row.id.as_str())))
-            .h(px(36.0))
+            .h(px(40.0))
             .flex()
             .items_center()
             .px_4()
@@ -1061,8 +1081,10 @@ impl PosthazeApp {
                     .flex()
                     .items_center()
                     .gap_1p5()
-                    .font_family("Consolas")
-                    .text_xs()
+                    .font_family(MONO_FONT)
+                    .text_size(TYPE_MICRO)
+                    .line_height(px(16.0))
+                    .font_weight(FontWeight::SEMIBOLD)
                     .text_color(state_color)
                     .child(glyph)
                     .child(if let Some(rank) = row.fifo_rank {
@@ -1081,8 +1103,9 @@ impl PosthazeApp {
                     .flex_1()
                     .min_w(px(120.0))
                     .pr_2()
-                    .text_xs()
-                    .font_weight(FontWeight::MEDIUM)
+                    .text_size(TYPE_ROW_PRIMARY)
+                    .line_height(px(18.0))
+                    .font_weight(FontWeight::SEMIBOLD)
                     .truncate()
                     .child(row.filename.clone()),
             )
@@ -1111,8 +1134,9 @@ impl PosthazeApp {
                     )
                     .child(
                         div()
-                            .font_family("Consolas")
-                            .text_xs()
+                            .font_family(MONO_FONT)
+                            .text_size(TYPE_MICRO)
+                            .line_height(px(14.0))
                             .text_color(carbon_muted())
                             .child(match row.total_bytes {
                                 Some(total) => format!(
@@ -1128,16 +1152,18 @@ impl PosthazeApp {
             .child(
                 div()
                     .w(px(COL_SPEED))
-                    .font_family("Consolas")
-                    .text_xs()
+                    .font_family(MONO_FONT)
+                    .text_size(TYPE_BODY)
+                    .line_height(px(16.0))
                     .child(format_speed(row.bytes_per_sec)),
             )
             // ETA
             .child(
                 div()
                     .w(px(COL_ETA))
-                    .font_family("Consolas")
-                    .text_xs()
+                    .font_family(MONO_FONT)
+                    .text_size(TYPE_BODY)
+                    .line_height(px(16.0))
                     .text_color(carbon_muted())
                     .child(format_eta(row.eta_secs)),
             )
@@ -1145,8 +1171,9 @@ impl PosthazeApp {
             .child(
                 div()
                     .w(px(COL_SEGS))
-                    .font_family("Consolas")
-                    .text_xs()
+                    .font_family(MONO_FONT)
+                    .text_size(TYPE_BODY)
+                    .line_height(px(16.0))
                     .child(if row.segment_count == 0 {
                         "—".to_string()
                     } else {

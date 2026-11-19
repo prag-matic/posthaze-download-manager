@@ -1,6 +1,17 @@
-//! Chronophotographic Interval Plate palette (`seed:a6d67de4e1140bf8`).
+//! Chronophotographic Interval Plate palette & typographic role scale (`seed:a6d67de4e1140bf8`).
 
-use gpui_kit::{Hsla, rgb};
+use gpui_kit::{Hsla, Pixels, px, rgb};
+
+/// Authoritative tabular monospaced font for byte offsets, speeds, ETAs, and HTTP validators.
+pub const MONO_FONT: &str = "Consolas";
+
+/// Role scale sizes (in logical pixels) for Operate-mode hierarchy.
+pub const TYPE_DISPLAY: Pixels = px(18.0);
+pub const TYPE_HEADING: Pixels = px(15.0);
+pub const TYPE_ROW_PRIMARY: Pixels = px(13.5);
+pub const TYPE_BODY: Pixels = px(12.0);
+pub const TYPE_MICRO: Pixels = px(11.0);
+pub const TYPE_HEADER: Pixels = px(10.5);
 
 /// Warm graphite emulsion shell rail & bottom inspector background (`#181715`).
 pub fn graphite_bg() -> Hsla {

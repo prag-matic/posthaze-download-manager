@@ -36,8 +36,9 @@ where
             .justify_center()
             .child(
                 div()
-                    .font_family("Consolas")
-                    .text_xs()
+                    .font_family(MONO_FONT)
+                    .text_size(TYPE_BODY)
+                    .line_height(px(18.0))
                     .text_color(silver_muted())
                     .child("Select a Download row to inspect its Graduated Interval Byte-Map Ruler and HTTP Validators."),
             )
@@ -80,7 +81,8 @@ where
                         .overflow_hidden()
                         .child(
                             div()
-                                .text_sm()
+                                .text_size(TYPE_HEADING)
+                                .line_height(px(20.0))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(silver_text())
                                 .truncate()
@@ -88,8 +90,9 @@ where
                         )
                         .child(
                             div()
-                                .font_family("Consolas")
-                                .text_xs()
+                                .font_family(MONO_FONT)
+                                .text_size(TYPE_MICRO)
+                                .line_height(px(16.0))
                                 .text_color(silver_muted())
                                 .truncate()
                                 .child(row.final_url.as_deref().unwrap_or(&row.url).to_string()),
@@ -143,8 +146,10 @@ where
                     .gap_2()
                     .child(
                         div()
-                            .font_family("Consolas")
-                            .text_xs()
+                            .font_family(MONO_FONT)
+                            .text_size(TYPE_BODY)
+                            .line_height(px(18.0))
+                            .font_weight(FontWeight::MEDIUM)
                             .text_color(silver_text())
                             .child("ERRATA: Remote resource changed since pause — .part preserved safely."),
                     )
@@ -183,8 +188,9 @@ where
                     div()
                         .flex()
                         .items_end()
-                        .font_family("Consolas")
-                        .text_xs()
+                        .font_family(MONO_FONT)
+                        .text_size(TYPE_MICRO)
+                        .line_height(px(14.0))
                         .text_color(silver_muted())
                         .child(ruler_quarter_tick("0 B (0%)", true))
                         .child(ruler_quarter_tick("25%", true))
@@ -271,8 +277,9 @@ where
                         .flex()
                         .items_center()
                         .justify_between()
-                        .font_family("Consolas")
-                        .text_xs()
+                        .font_family(MONO_FONT)
+                        .text_size(TYPE_MICRO)
+                        .line_height(px(16.0))
                         .text_color(silver_muted())
                         .child(format!(
                             "#{:02} [{}..{})",
@@ -310,8 +317,10 @@ fn validator_badge(label: impl Into<SharedString>, bg_color: Hsla) -> impl IntoE
         .bg(bg_color)
         .border_1()
         .border_color(graphite_border())
-        .font_family("Consolas")
-        .text_xs()
+        .font_family(MONO_FONT)
+        .text_size(TYPE_MICRO)
+        .line_height(px(15.0))
+        .font_weight(FontWeight::MEDIUM)
         .text_color(silver_text())
         .child(label.into())
 }

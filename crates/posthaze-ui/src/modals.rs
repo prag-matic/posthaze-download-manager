@@ -91,22 +91,25 @@ where
             .gap_3()
             .child(
                 div()
-                    .text_sm()
+                    .text_size(TYPE_HEADING)
+                    .line_height(px(22.0))
                     .font_weight(FontWeight::BOLD)
                     .text_color(silver_text())
                     .child("PRE-FLIGHT PROBE"),
             )
             .child(
                 div()
-                    .font_family("Consolas")
-                    .text_xs()
+                    .font_family(MONO_FONT)
+                    .text_size(TYPE_BODY)
+                    .line_height(px(18.0))
                     .text_color(selenium_amber())
                     .child("◐ Inspecting HTTP HEAD / Range: bytes=0-0 ..."),
             )
             .child(
                 div()
-                    .font_family("Consolas")
-                    .text_xs()
+                    .font_family(MONO_FONT)
+                    .text_size(TYPE_MICRO)
+                    .line_height(px(16.0))
                     .text_color(silver_muted())
                     .truncate()
                     .child(url.clone()),
@@ -134,22 +137,25 @@ where
                 .gap_3()
                 .child(
                     div()
-                        .text_sm()
+                        .text_size(TYPE_HEADING)
+                        .line_height(px(22.0))
                         .font_weight(FontWeight::BOLD)
                         .text_color(errata_vermilion())
                         .child("PROBE FAILED"),
                 )
                 .child(
                     div()
-                        .font_family("Consolas")
-                        .text_xs()
+                        .font_family(MONO_FONT)
+                        .text_size(TYPE_BODY)
+                        .line_height(px(18.0))
                         .text_color(silver_text())
                         .child(message.clone()),
                 )
                 .child(
                     div()
-                        .font_family("Consolas")
-                        .text_xs()
+                        .font_family(MONO_FONT)
+                        .text_size(TYPE_MICRO)
+                        .line_height(px(16.0))
                         .text_color(silver_muted())
                         .truncate()
                         .child(url.clone()),
@@ -206,7 +212,8 @@ where
                         .justify_between()
                         .child(
                             div()
-                                .text_sm()
+                                .text_size(TYPE_HEADING)
+                                .line_height(px(22.0))
                                 .font_weight(FontWeight::BOLD)
                                 .text_color(silver_text())
                                 .child("CONFIRM DOWNLOAD"),
@@ -221,8 +228,10 @@ where
                                 } else {
                                     graphite_elevated()
                                 })
-                                .font_family("Consolas")
-                                .text_xs()
+                                .font_family(MONO_FONT)
+                                .text_size(TYPE_MICRO)
+                                .line_height(px(15.0))
+                                .font_weight(FontWeight::MEDIUM)
                                 .text_color(silver_text())
                                 .child(if info.supports_ranges {
                                     "206 MULTI-SEGMENT"
@@ -233,32 +242,15 @@ where
                 )
                 .child(
                     div()
-                        .font_family("Consolas")
-                        .text_xs()
+                        .font_family(MONO_FONT)
+                        .text_size(TYPE_MICRO)
+                        .line_height(px(16.0))
                         .text_color(silver_muted())
+                        .truncate()
                         .child(format!("Size: {size_label} · {}", info.final_url)),
                 )
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(div().text_xs().text_color(silver_muted()).child("Filename"))
-                        .child(div().font_family("Consolas").child(Input::new(filename_input))),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(silver_muted())
-                                .child("Destination Directory"),
-                        )
-                        .child(div().font_family("Consolas").child(Input::new(dir_input))),
-                )
+                .child(labeled_input("Filename", filename_input))
+                .child(labeled_input("Destination Directory", dir_input))
                 .child(
                     div()
                         .flex()
@@ -353,7 +345,8 @@ where
         .gap_3()
         .child(
             div()
-                .text_sm()
+                .text_size(TYPE_HEADING)
+                .line_height(px(22.0))
                 .font_weight(FontWeight::BOLD)
                 .text_color(silver_text())
                 .child("ENGINE & QUEUE SETTINGS"),
@@ -364,65 +357,20 @@ where
                     .px_3()
                     .py_1p5()
                     .bg(errata_vermilion())
-                    .font_family("Consolas")
-                    .text_xs()
+                    .font_family(MONO_FONT)
+                    .text_size(TYPE_BODY)
+                    .line_height(px(18.0))
                     .text_color(silver_text())
                     .child(err),
             )
         })
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(silver_muted())
-                        .child("Default Output Directory"),
-                )
-                .child(div().font_family("Consolas").child(Input::new(&state.dir_input))),
-        )
+        .child(labeled_input("Default Output Directory", &state.dir_input))
         .child(
             div()
                 .flex()
                 .gap_3()
-                .child(
-                    div()
-                        .flex_1()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(silver_muted())
-                                .child("Default Workers (1..32)"),
-                        )
-                        .child(
-                            div()
-                                .font_family("Consolas")
-                                .child(Input::new(&state.workers_input)),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(silver_muted())
-                                .child("Max Concurrent Downloads (>= 1)"),
-                        )
-                        .child(
-                            div()
-                                .font_family("Consolas")
-                                .child(Input::new(&state.concurrent_input)),
-                        ),
-                ),
+                .child(div().flex_1().child(labeled_input("Default Workers (1..32)", &state.workers_input)))
+                .child(div().flex_1().child(labeled_input("Max Concurrent Downloads (>= 1)", &state.concurrent_input))),
         )
         .child(
             div()
@@ -464,6 +412,27 @@ where
         );
 
     modal_backdrop(card)
+}
+
+fn labeled_input(label: &'static str, state: &Entity<InputState>) -> impl IntoElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(
+            div()
+                .text_size(TYPE_BODY)
+                .line_height(px(16.0))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(silver_muted())
+                .child(label),
+        )
+        .child(
+            div()
+                .font_family(MONO_FONT)
+                .text_size(TYPE_BODY)
+                .child(Input::new(state)),
+        )
 }
 
 fn modal_backdrop(card: impl IntoElement) -> AnyElement {
