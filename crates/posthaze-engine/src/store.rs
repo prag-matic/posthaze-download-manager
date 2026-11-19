@@ -86,7 +86,9 @@ impl DownloadStore {
             .await?;
 
         sqlx::migrate!("./migrations").run(&pool).await?;
-        Ok(Self { pool })
+        let store = Self { pool };
+        store.reconcile_crashed_downloads().await?;
+        Ok(store)
     }
 
     /// Opens an ephemeral in-memory SQLite database and runs embedded migrations.
@@ -101,7 +103,9 @@ impl DownloadStore {
             .await?;
 
         sqlx::migrate!("./migrations").run(&pool).await?;
-        Ok(Self { pool })
+        let store = Self { pool };
+        store.reconcile_crashed_downloads().await?;
+        Ok(store)
     }
 
     /// Inserts a newly queued `Download` record.
@@ -392,6 +396,82 @@ impl DownloadStore {
         .bind(stolen_start as i64)
         .bind(stolen_start as i64)
         .bind(stolen_end as i64)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Reconciles stale `Active` and `Probing` rows left behind by an ungraceful process exit.
+    pub(crate) async fn reconcile_crashed_downloads(&self) -> Result<(), EngineError> {
+        let now = unix_now();
+        let mut tx = self.pool.begin().await?;
+
+        sqlx::query(
+            "UPDATE downloads SET state = ?, updated_at = ?
+             WHERE state = ? AND supports_ranges = 1",
+        )
+        .bind(DownloadState::Paused.as_str())
+        .bind(now)
+        .bind(DownloadState::Active.as_str())
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            "UPDATE downloads SET state = ?, error_message = ?, updated_at = ?
+             WHERE state = ? OR (state = ? AND supports_ranges = 0)",
+        )
+        .bind(DownloadState::Failed.as_str())
+        .bind("interrupted before completion")
+        .bind(now)
+        .bind(DownloadState::Probing.as_str())
+        .bind(DownloadState::Active.as_str())
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Persists a writer-acknowledged `Checkpoint` without allowing `cursor_offset` to regress.
+    pub(crate) async fn apply_writer_checkpoint(
+        &self,
+        id: &DownloadId,
+        segment_cursors: &[(usize, u64)],
+    ) -> Result<(), EngineError> {
+        if segment_cursors.is_empty() {
+            return Ok(());
+        }
+
+        let mut tx = self.pool.begin().await?;
+        for &(segment_index, cursor) in segment_cursors {
+            sqlx::query(
+                "UPDATE segments
+                 SET cursor_offset = MAX(cursor_offset, ?)
+                 WHERE download_id = ? AND segment_index = ?",
+            )
+            .bind(cursor as i64)
+            .bind(id.as_str())
+            .bind(segment_index as i64)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        sqlx::query(
+            "UPDATE downloads
+             SET bytes_downloaded = (
+                 SELECT COALESCE(SUM(MAX(0, cursor_offset - start_offset)), 0)
+                 FROM segments
+                 WHERE download_id = ?
+             ),
+             updated_at = ?
+             WHERE id = ? AND state = ?",
+        )
+        .bind(id.as_str())
+        .bind(unix_now())
+        .bind(id.as_str())
+        .bind(DownloadState::Active.as_str())
         .execute(&mut *tx)
         .await?;
 

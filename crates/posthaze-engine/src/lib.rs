@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use thiserror::Error;
-use tokio::sync::{Mutex, watch};
+use tokio::sync::{Mutex, mpsc, watch};
 
 use crate::probe::{ProbeResult, probe_url};
 use crate::store::DownloadStore;
@@ -748,6 +748,28 @@ fn validate_resume_probe(
     Ok(())
 }
 
+fn spawn_checkpoint_task(
+    store: &Option<DownloadStore>,
+    id: &DownloadId,
+) -> (
+    Option<crate::writer::CheckpointSender>,
+    Option<tokio::task::JoinHandle<()>>,
+) {
+    let Some(store) = store.clone() else {
+        return (None, None);
+    };
+    let (tx, mut rx) = mpsc::channel::<Vec<(usize, u64)>>(4);
+    let task_id = id.clone();
+    let handle = tokio::spawn(async move {
+        while let Some(cursors) = rx.recv().await {
+            if let Err(err) = store.apply_writer_checkpoint(&task_id, &cursors).await {
+                tracing::warn!(download_id = %task_id, error = %err, "failed to persist writer checkpoint");
+            }
+        }
+    });
+    (Some(tx), Some(handle))
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn finalize_transfer(
     store: &Option<DownloadStore>,
@@ -975,12 +997,17 @@ async fn run_resumed_download(
     }
 
     let transfer_start = Instant::now();
+    let (cp_tx, cp_handle) = spawn_checkpoint_task(&store_opt, &id);
     let writer = match PartFileWriter::spawn_existing_with_sync(
         part_path.clone(),
         record.sync_on_complete,
+        cp_tx,
     ) {
         Ok(writer) => Arc::new(writer),
         Err(err) => {
+            if let Some(h) = cp_handle {
+                h.abort();
+            }
             return Err(fail_download(
                 &store_opt,
                 &progress_tx,
@@ -994,6 +1021,9 @@ async fn run_resumed_download(
     };
 
     if let Err(err) = store.mark_resumed_active(&id, &probe.final_url).await {
+        if let Some(h) = cp_handle {
+            h.abort();
+        }
         return Err(fail_download(
             &None,
             &progress_tx,
@@ -1046,7 +1076,7 @@ async fn run_resumed_download(
         handle.abort();
     }
 
-    finalize_transfer(
+    let out = finalize_transfer(
         &store_opt,
         &progress_tx,
         &id,
@@ -1060,7 +1090,11 @@ async fn run_resumed_download(
         transfer_start,
         total_start,
     )
-    .await
+    .await;
+    if let Some(h) = cp_handle {
+        let _ = h.await;
+    }
+    out
 }
 
 async fn run_download(
@@ -1091,13 +1125,18 @@ async fn run_download(
     let part_path = make_part_path(&final_path);
 
     let transfer_start = Instant::now();
-    let writer = match PartFileWriter::spawn_with_sync(
+    let (cp_tx, cp_handle) = spawn_checkpoint_task(&store, &id);
+    let writer = match PartFileWriter::spawn_with_checkpoint(
         part_path.clone(),
         probe.content_length,
         request.sync_on_complete,
+        cp_tx,
     ) {
         Ok(writer) => Arc::new(writer),
         Err(err) => {
+            if let Some(h) = cp_handle {
+                h.abort();
+            }
             return Err(
                 fail_download(&store, &progress_tx, &id, 0, probe.content_length, err).await,
             );
@@ -1109,6 +1148,9 @@ async fn run_download(
             .record_probed_and_activate(&id, &probe, &final_path, &part_path, request.max_workers)
             .await
     {
+        if let Some(h) = cp_handle {
+            h.abort();
+        }
         return Err(fail_download(&None, &progress_tx, &id, 0, probe.content_length, err).await);
     }
 
@@ -1173,7 +1215,7 @@ async fn run_download(
         handle.abort();
     }
 
-    finalize_transfer(
+    let out = finalize_transfer(
         &store,
         &progress_tx,
         &id,
@@ -1187,7 +1229,11 @@ async fn run_download(
         transfer_start,
         total_start,
     )
-    .await
+    .await;
+    if let Some(h) = cp_handle {
+        let _ = h.await;
+    }
+    out
 }
 
 fn spawn_progress_reporter(

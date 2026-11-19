@@ -602,7 +602,7 @@ async fn run_segment_attempt(
             let block = buffer.split().freeze();
             buffer.reserve(CHUNK_BUFFER_SIZE);
             let block_len = block.len() as u64;
-            writer.write_at(write_offset, block).await?;
+            writer.write_segment_at(seg.id, write_offset, block).await?;
             write_offset += block_len;
         }
 
@@ -613,7 +613,7 @@ async fn run_segment_attempt(
 
     if !buffer.is_empty() {
         let tail = buffer.freeze();
-        writer.write_at(write_offset, tail).await?;
+        writer.write_segment_at(seg.id, write_offset, tail).await?;
     }
 
     if let Some(err) = stream_err {
