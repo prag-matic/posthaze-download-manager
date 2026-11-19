@@ -1,0 +1,479 @@
+//! Pre-Flight Probe Confirmation Modal and Persisted Settings Modal.
+
+use gpui_kit::component::Sizable;
+use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::*;
+use posthaze_engine::{PreflightInfo, Settings};
+
+use crate::theme::*;
+use crate::view_model::format_bytes;
+
+/// Active state of the Pre-Flight Add Download Confirmation Modal.
+pub(crate) enum PreflightModalState {
+    Probing {
+        url: String,
+    },
+    Error {
+        url: String,
+        message: String,
+    },
+    Resolved {
+        info: PreflightInfo,
+        filename_input: Entity<InputState>,
+        dir_input: Entity<InputState>,
+        workers: usize,
+    },
+}
+
+/// Active state of the Persisted Settings Modal.
+pub(crate) struct SettingsModalState {
+    pub dir_input: Entity<InputState>,
+    pub workers_input: Entity<InputState>,
+    pub concurrent_input: Entity<InputState>,
+    pub sync_on_complete: bool,
+    pub error: Option<String>,
+}
+
+impl SettingsModalState {
+    pub fn from_settings(settings: &Settings, window: &mut Window, cx: &mut App) -> Self {
+        let dir_input = cx.new(|cx| {
+            let mut st = InputState::new(window, cx).placeholder("Default output directory");
+            st.set_value(settings.default_output_dir.to_string_lossy().to_string(), window, cx);
+            st
+        });
+        let workers_input = cx.new(|cx| {
+            let mut st = InputState::new(window, cx).placeholder("1..32");
+            st.set_value(settings.max_workers.to_string(), window, cx);
+            st
+        });
+        let concurrent_input = cx.new(|cx| {
+            let mut st = InputState::new(window, cx).placeholder("1+");
+            st.set_value(settings.max_concurrent_downloads.to_string(), window, cx);
+            st
+        });
+        Self {
+            dir_input,
+            workers_input,
+            concurrent_input,
+            sync_on_complete: settings.sync_on_complete,
+            error: None,
+        }
+    }
+}
+
+pub(crate) fn render_preflight_modal<F1, F2, F3, F4, F5>(
+    state: &PreflightModalState,
+    on_close: F1,
+    on_retry: F2,
+    on_worker_delta: F3,
+    on_confirm: F4,
+    on_edit_url: F5,
+) -> AnyElement
+where
+    F1: Fn(&mut Window, &mut App) + 'static,
+    F2: Fn(String, &mut Window, &mut App) + 'static,
+    F3: Fn(isize, &mut Window, &mut App) + Clone + 'static,
+    F4: Fn(bool, &mut Window, &mut App) + Clone + 'static,
+    F5: Fn(String, &mut Window, &mut App) + 'static,
+{
+    let card = match state {
+        PreflightModalState::Probing { url } => div()
+            .w(px(520.0))
+            .p_5()
+            .bg(graphite_bg())
+            .border_1()
+            .border_color(graphite_border())
+            .rounded(px(6.0))
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(silver_text())
+                    .child("PRE-FLIGHT PROBE"),
+            )
+            .child(
+                div()
+                    .font_family("Consolas")
+                    .text_xs()
+                    .text_color(selenium_amber())
+                    .child("◐ Inspecting HTTP HEAD / Range: bytes=0-0 ..."),
+            )
+            .child(
+                div()
+                    .font_family("Consolas")
+                    .text_xs()
+                    .text_color(silver_muted())
+                    .truncate()
+                    .child(url.clone()),
+            )
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .child(Button::new("probe-cancel").small().label("Cancel").on_click(
+                        move |_, window, cx| on_close(window, cx),
+                    )),
+            ),
+        PreflightModalState::Error { url, message } => {
+            let url_retry = url.clone();
+            let url_edit = url.clone();
+            div()
+                .w(px(520.0))
+                .p_5()
+                .bg(graphite_bg())
+                .border_1()
+                .border_color(errata_vermilion())
+                .rounded(px(6.0))
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(errata_vermilion())
+                        .child("PROBE FAILED"),
+                )
+                .child(
+                    div()
+                        .font_family("Consolas")
+                        .text_xs()
+                        .text_color(silver_text())
+                        .child(message.clone()),
+                )
+                .child(
+                    div()
+                        .font_family("Consolas")
+                        .text_xs()
+                        .text_color(silver_muted())
+                        .truncate()
+                        .child(url.clone()),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .justify_end()
+                        .gap_2()
+                        .child(Button::new("probe-edit").small().label("Edit URL").on_click(
+                            move |_, window, cx| on_edit_url(url_edit.clone(), window, cx),
+                        ))
+                        .child(Button::new("probe-close").small().label("Close").on_click(
+                            move |_, window, cx| on_close(window, cx),
+                        ))
+                        .child(
+                            Button::new("probe-retry")
+                                .small()
+                                .primary()
+                                .label("Retry Probe")
+                                .on_click(move |_, window, cx| {
+                                    on_retry(url_retry.clone(), window, cx);
+                                }),
+                        ),
+                )
+        }
+        PreflightModalState::Resolved {
+            info,
+            filename_input,
+            dir_input,
+            workers,
+        } => {
+            let size_label = info
+                .content_length
+                .map(format_bytes)
+                .unwrap_or_else(|| "Unknown Size (Stream)".to_string());
+            let confirm_now = on_confirm.clone();
+            let confirm_queue = on_confirm;
+
+            div()
+                .w(px(560.0))
+                .p_5()
+                .bg(graphite_bg())
+                .border_1()
+                .border_color(graphite_border())
+                .rounded(px(6.0))
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(silver_text())
+                                .child("CONFIRM DOWNLOAD"),
+                        )
+                        .child(
+                            div()
+                                .px_2()
+                                .py_0p5()
+                                .rounded(px(3.0))
+                                .bg(if info.supports_ranges {
+                                    cyanotype_blue()
+                                } else {
+                                    graphite_elevated()
+                                })
+                                .font_family("Consolas")
+                                .text_xs()
+                                .text_color(silver_text())
+                                .child(if info.supports_ranges {
+                                    "206 MULTI-SEGMENT"
+                                } else {
+                                    "200 SINGLE-STREAM"
+                                }),
+                        ),
+                )
+                .child(
+                    div()
+                        .font_family("Consolas")
+                        .text_xs()
+                        .text_color(silver_muted())
+                        .child(format!("Size: {size_label} · {}", info.final_url)),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(div().text_xs().text_color(silver_muted()).child("Filename"))
+                        .child(div().font_family("Consolas").child(Input::new(filename_input))),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(silver_muted())
+                                .child("Destination Directory"),
+                        )
+                        .child(div().font_family("Consolas").child(Input::new(dir_input))),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(silver_muted())
+                                .child(if info.supports_ranges {
+                                    "Concurrent Workers (1..32)"
+                                } else {
+                                    "Concurrent Workers (Locked to 1 for single-stream)"
+                                }),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .when(info.supports_ranges, |el| {
+                                    let dec = on_worker_delta.clone();
+                                    el.child(Button::new("w-dec").xsmall().label("-").on_click(
+                                        move |_, window, cx| dec(-1, window, cx),
+                                    ))
+                                })
+                                .child(
+                                    div()
+                                        .w(px(32.0))
+                                        .text_center()
+                                        .font_family("Consolas")
+                                        .text_xs()
+                                        .text_color(silver_text())
+                                        .child(workers.to_string()),
+                                )
+                                .when(info.supports_ranges, |el| {
+                                    el.child(Button::new("w-inc").xsmall().label("+").on_click(
+                                        move |_, window, cx| on_worker_delta(1, window, cx),
+                                    ))
+                                }),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .justify_end()
+                        .gap_2()
+                        .pt_2()
+                        .child(Button::new("pf-cancel").small().label("Cancel").on_click(
+                            move |_, window, cx| on_close(window, cx),
+                        ))
+                        .child(
+                            Button::new("pf-queue")
+                                .small()
+                                .label("Add to Queue")
+                                .on_click(move |_, window, cx| confirm_queue(false, window, cx)),
+                        )
+                        .child(
+                            Button::new("pf-now")
+                                .small()
+                                .primary()
+                                .label("Download Now")
+                                .on_click(move |_, window, cx| confirm_now(true, window, cx)),
+                        ),
+                )
+        }
+    };
+
+    modal_backdrop(card)
+}
+
+pub(crate) fn render_settings_modal<F1, F2, F3>(
+    state: &SettingsModalState,
+    on_toggle_sync: F1,
+    on_cancel: F2,
+    on_save: F3,
+) -> AnyElement
+where
+    F1: Fn(&mut Window, &mut App) + 'static,
+    F2: Fn(&mut Window, &mut App) + 'static,
+    F3: Fn(&mut Window, &mut App) + 'static,
+{
+    let card = div()
+        .w(px(500.0))
+        .p_5()
+        .bg(graphite_bg())
+        .border_1()
+        .border_color(graphite_border())
+        .rounded(px(6.0))
+        .flex()
+        .flex_col()
+        .gap_3()
+        .child(
+            div()
+                .text_sm()
+                .font_weight(FontWeight::BOLD)
+                .text_color(silver_text())
+                .child("ENGINE & QUEUE SETTINGS"),
+        )
+        .when_some(state.error.clone(), |el, err| {
+            el.child(
+                div()
+                    .px_3()
+                    .py_1p5()
+                    .bg(errata_vermilion())
+                    .font_family("Consolas")
+                    .text_xs()
+                    .text_color(silver_text())
+                    .child(err),
+            )
+        })
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(silver_muted())
+                        .child("Default Output Directory"),
+                )
+                .child(div().font_family("Consolas").child(Input::new(&state.dir_input))),
+        )
+        .child(
+            div()
+                .flex()
+                .gap_3()
+                .child(
+                    div()
+                        .flex_1()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(silver_muted())
+                                .child("Default Workers (1..32)"),
+                        )
+                        .child(
+                            div()
+                                .font_family("Consolas")
+                                .child(Input::new(&state.workers_input)),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(silver_muted())
+                                .child("Max Concurrent Downloads (>= 1)"),
+                        )
+                        .child(
+                            div()
+                                .font_family("Consolas")
+                                .child(Input::new(&state.concurrent_input)),
+                        ),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(silver_muted())
+                        .child("Sync file buffers on completion (FlushFileBuffers)"),
+                )
+                .child(
+                    Button::new("settings-sync")
+                        .xsmall()
+                        .label(if state.sync_on_complete { "ON" } else { "OFF" })
+                        .on_click(move |_, window, cx| on_toggle_sync(window, cx)),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .justify_end()
+                .gap_2()
+                .pt_2()
+                .child(
+                    Button::new("settings-cancel")
+                        .small()
+                        .label("Cancel")
+                        .on_click(move |_, window, cx| on_cancel(window, cx)),
+                )
+                .child(
+                    Button::new("settings-save")
+                        .small()
+                        .primary()
+                        .label("Save Settings")
+                        .on_click(move |_, window, cx| on_save(window, cx)),
+                ),
+        );
+
+    modal_backdrop(card)
+}
+
+fn modal_backdrop(card: impl IntoElement) -> AnyElement {
+    div()
+        .absolute()
+        .inset_0()
+        .bg(rgba(0x141413AA))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(card)
+        .into_any_element()
+}

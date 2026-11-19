@@ -3,7 +3,9 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use posthaze_engine::{DownloadId, DownloadRecord, DownloadState, ProgressSnapshot, SegmentProgress};
+use posthaze_engine::{
+    DownloadId, DownloadRecord, DownloadState, ProgressSnapshot, SegmentProgress, Settings,
+};
 
 /// Sidebar queue filter categories.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,6 +88,7 @@ pub struct DownloadRowView {
     pub active_workers: usize,
     pub segment_count: usize,
     pub supports_ranges: bool,
+    pub sync_on_complete: bool,
     pub etag: Option<String>,
     pub last_modified: Option<String>,
     pub error_message: Option<String>,
@@ -142,6 +145,7 @@ impl DownloadRowView {
             active_workers,
             segment_count: segments.len(),
             supports_ranges: record.supports_ranges,
+            sync_on_complete: record.sync_on_complete,
             etag: record.etag.clone(),
             last_modified: record.last_modified.clone(),
             error_message: record.error_message.clone(),
@@ -311,6 +315,130 @@ pub fn filter_and_sort_rows(
     rows
 }
 
+/// Normalized geometry for rendering a `Segment` inside the **Graduated Interval Byte-Map Ruler**.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ByteMapSegment {
+    pub id: usize,
+    pub start: u64,
+    pub end: Option<u64>,
+    pub width_ratio: f32,
+    pub checkpoint_fill_ratio: f32,
+    pub inflight_fill_ratio: f32,
+    pub completed: bool,
+}
+
+/// Normalizes `SegmentProgress` entries into proportional `[0.0, 1.0]` bar widths and dual-tone fills.
+pub fn normalize_byte_map_segments(
+    segments: &[SegmentProgress],
+    total_bytes: Option<u64>,
+    state: DownloadState,
+) -> Vec<ByteMapSegment> {
+    if total_bytes == Some(0) || (segments.is_empty() && state == DownloadState::Completed) {
+        let done = state == DownloadState::Completed;
+        return vec![ByteMapSegment {
+            id: 0,
+            start: 0,
+            end: total_bytes,
+            width_ratio: 1.0,
+            checkpoint_fill_ratio: if done { 1.0 } else { 0.0 },
+            inflight_fill_ratio: 0.0,
+            completed: done,
+        }];
+    }
+
+    if segments.is_empty() {
+        return Vec::new();
+    }
+
+    let mut ordered = segments.to_vec();
+    ordered.sort_by_key(|s| s.start);
+
+    if let Some(total) = total_bytes
+        && total > 0
+        && ordered.iter().all(|s| s.end.is_some())
+    {
+        return ordered
+            .into_iter()
+            .map(|seg| {
+                let end = seg.end.unwrap_or(total);
+                let raw_span = end.saturating_sub(seg.start);
+                let span = raw_span.max(1);
+                let cp_bytes = if seg.completed || state == DownloadState::Completed {
+                    raw_span
+                } else {
+                    seg.checkpointed_cursor.saturating_sub(seg.start).min(raw_span)
+                };
+                let cur_bytes = if seg.completed || state == DownloadState::Completed {
+                    raw_span
+                } else {
+                    seg.cursor
+                        .saturating_sub(seg.start)
+                        .min(raw_span)
+                        .max(cp_bytes)
+                };
+                ByteMapSegment {
+                    id: seg.id,
+                    start: seg.start,
+                    end: Some(end),
+                    width_ratio: (raw_span as f64 / total as f64).clamp(0.0, 1.0) as f32,
+                    checkpoint_fill_ratio: (cp_bytes as f64 / span as f64).clamp(0.0, 1.0) as f32,
+                    inflight_fill_ratio: ((cur_bytes - cp_bytes) as f64 / span as f64)
+                        .clamp(0.0, 1.0) as f32,
+                    completed: seg.completed || state == DownloadState::Completed,
+                }
+            })
+            .collect();
+    }
+
+    // Unknown total size / single-stream mode.
+    let seg = &ordered[0];
+    let denom = seg.cursor.max(1);
+    let cp = seg.checkpointed_cursor.min(seg.cursor);
+    let inflight = seg.cursor.saturating_sub(cp);
+    vec![ByteMapSegment {
+        id: seg.id,
+        start: seg.start,
+        end: seg.end,
+        width_ratio: 1.0,
+        checkpoint_fill_ratio: (cp as f64 / denom as f64).clamp(0.0, 1.0) as f32,
+        inflight_fill_ratio: (inflight as f64 / denom as f64).clamp(0.0, 1.0) as f32,
+        completed: seg.completed || state == DownloadState::Completed,
+    }]
+}
+
+/// Validates and parses user-edited `Settings` form fields.
+pub fn parse_settings_inputs(
+    default_output_dir: &str,
+    max_workers_str: &str,
+    max_concurrent_str: &str,
+    sync_on_complete: bool,
+) -> Result<Settings, String> {
+    let dir = default_output_dir.trim();
+    if dir.is_empty() {
+        return Err("Default output directory cannot be empty.".to_string());
+    }
+    let max_workers: usize = max_workers_str
+        .trim()
+        .parse()
+        .map_err(|_| "Max workers must be a number between 1 and 32.".to_string())?;
+    if !(1..=32).contains(&max_workers) {
+        return Err("Max workers must be between 1 and 32.".to_string());
+    }
+    let max_concurrent_downloads: usize = max_concurrent_str
+        .trim()
+        .parse()
+        .map_err(|_| "Max concurrent downloads must be at least 1.".to_string())?;
+    if max_concurrent_downloads == 0 {
+        return Err("Max concurrent downloads must be at least 1.".to_string());
+    }
+    Ok(Settings {
+        default_output_dir: PathBuf::from(dir),
+        max_workers,
+        max_concurrent_downloads,
+        sync_on_complete,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -430,5 +558,68 @@ mod tests {
         );
         assert_eq!(sorted[0].filename, "alpha.bin");
         assert_eq!(sorted[1].filename, "zeta.bin");
+    }
+
+    #[test]
+    fn normalizes_byte_map_segments_across_edge_cases() {
+        let zero = normalize_byte_map_segments(&[], Some(0), DownloadState::Completed);
+        assert_eq!(zero.len(), 1);
+        assert!((zero[0].width_ratio - 1.0).abs() < 1e-6);
+        assert!((zero[0].checkpoint_fill_ratio - 1.0).abs() < 1e-6);
+
+        let stream = vec![SegmentProgress {
+            id: 0,
+            start: 0,
+            cursor: 4096,
+            checkpointed_cursor: 2048,
+            end: None,
+            completed: false,
+        }];
+        let unknown = normalize_byte_map_segments(&stream, None, DownloadState::Active);
+        assert_eq!(unknown.len(), 1);
+        assert!((unknown[0].checkpoint_fill_ratio - 0.5).abs() < 1e-6);
+        assert!((unknown[0].inflight_fill_ratio - 0.5).abs() < 1e-6);
+
+        let seg_size = 1024 * 1024u64;
+        let segs_32: Vec<SegmentProgress> = (0..32)
+            .map(|i| SegmentProgress {
+                id: i,
+                start: i as u64 * seg_size,
+                cursor: i as u64 * seg_size + seg_size / 2,
+                checkpointed_cursor: i as u64 * seg_size + seg_size / 4,
+                end: Some((i as u64 + 1) * seg_size),
+                completed: false,
+            })
+            .collect();
+        let norm_32 = normalize_byte_map_segments(
+            &segs_32,
+            Some(32 * seg_size),
+            DownloadState::Active,
+        );
+        assert_eq!(norm_32.len(), 32);
+        assert!((norm_32[0].width_ratio - (1.0 / 32.0)).abs() < 1e-5);
+        assert!((norm_32[0].checkpoint_fill_ratio - 0.25).abs() < 1e-5);
+        assert!((norm_32[0].inflight_fill_ratio - 0.25).abs() < 1e-5);
+    }
+
+    #[test]
+    fn validates_settings_form_bounds() {
+        assert!(parse_settings_inputs("C:\\Downloads", "8", "3", true).is_ok());
+        assert!(parse_settings_inputs("", "8", "3", false).is_err());
+        assert!(parse_settings_inputs("C:\\Downloads", "0", "3", false).is_err());
+        assert!(parse_settings_inputs("C:\\Downloads", "8", "0", false).is_err());
+        assert!(parse_settings_inputs("C:\\Downloads", "64", "3", false).is_err());
+    }
+
+    #[test]
+    fn detects_resource_changed_error_for_errata_recovery() {
+        let mut rec = make_record("rc", "https://example.com/fw.bin", DownloadState::Failed, 1);
+        rec.error_message = Some("remote resource changed: ETag mismatch".to_string());
+        let row = DownloadRowView::from_record(&rec, None, None);
+        assert!(row.is_resource_changed);
+
+        rec.error_message = Some("HTTP error: timeout".to_string());
+        let transient_row = DownloadRowView::from_record(&rec, None, None);
+        assert!(!transient_row.is_resource_changed);
     }
 }

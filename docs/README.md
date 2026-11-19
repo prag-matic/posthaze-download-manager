@@ -7,6 +7,7 @@ Documentation is a first-class part of Posthaze Download Manager.
 - [Architecture Proposal — Windows Download Manager](Architecture%20Proposal%20-%20Windows%20Download%20Manager.md)
 - [Engine & CLI Readiness for GPUI + GPUI Kit Desktop UI (`posthaze-ui`)](engine-gui-readiness.md)
 - [Domain Glossary](../GLOSSARY.md)
+- [Design System (`DESIGN.md`)](../DESIGN.md)
 - [Product Context](../PRODUCT.md)
 - Architecture Decision Records (`docs/adr/`):
   - [0001 — Multi-crate Cargo workspace from day one](adr/0001-multi-crate-cargo-workspace.md)
@@ -28,6 +29,7 @@ Documentation is a first-class part of Posthaze Download Manager.
 - [Ticket 04 — Dynamic `Segment` Splitting (Work Stealing)](ticket-04-dynamic-splitting.md)
 - [Ticket 05 — Transient `Worker` Retry with Exponential Backoff & Jitter](ticket-05-worker-retry.md)
 - [Milestone 02 — Persistence, Pause/Resume, and Crash Recovery (Tickets 01–05)](milestone-02-persistence.md)
+- [Milestone 03 — Queue, Settings, Telemetry & GPUI Desktop UI (Tickets 01–05)](milestone-03-desktop-ui.md)
 
 ## Benchmarks
 

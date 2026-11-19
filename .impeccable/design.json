@@ -1,0 +1,22 @@
+{
+  "world": "Chronophotographic Interval Plate",
+  "seed": "seed:a6d67de4e1140bf8",
+  "mode": "operate",
+  "tokens": {
+    "graphiteBg": "#181715",
+    "graphiteElevated": "#22201D",
+    "graphiteBorder": "#2C2A27",
+    "silverText": "#EAE6DF",
+    "silverMuted": "#9C968B",
+    "paperBg": "#F2EFE9",
+    "paperSelected": "#E6E0D4",
+    "paperHover": "#ECE8DF",
+    "paperBorder": "#DFDBD2",
+    "carbonText": "#141413",
+    "carbonMuted": "#5C5852",
+    "seleniumAmber": "#D97724",
+    "cyanotypeBlue": "#2563EB",
+    "halideEmerald": "#15803D",
+    "errataVermilion": "#DC2626"
+  }
+}
