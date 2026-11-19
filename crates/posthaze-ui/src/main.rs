@@ -82,6 +82,18 @@ fn main() {
                 theme.ring = rgb(0x524E48).into();
                 theme.title_bar = graphite_bg();
                 theme.title_bar_border = graphite_border();
+                theme.tokens.primary.background = selenium_amber().into();
+                theme.tokens.primary_hover.background = rgb(0xD97724).into();
+                theme.tokens.primary_active.background = rgb(0xC2661B).into();
+                theme.tokens.button_primary.background = selenium_amber().into();
+                theme.tokens.button_primary_hover.background = rgb(0xD97724).into();
+                theme.tokens.button_primary_active.background = rgb(0xC2661B).into();
+                theme.tokens.button_secondary.background = graphite_elevated().into();
+                theme.tokens.button_secondary_hover.background = paper_hover().into();
+                theme.tokens.button_secondary_active.background = paper_selected().into();
+                theme.tokens.button.background = graphite_elevated().into();
+                theme.tokens.button_hover.background = paper_hover().into();
+                theme.tokens.button_active.background = paper_selected().into();
             }
 
             let window_options = WindowOptions {
@@ -1321,9 +1333,17 @@ impl PosthazeApp {
             .child(
                 div()
                     .flex_1()
+                    .h(px(32.0))
+                    .px_2p5()
+                    .bg(graphite_bg())
+                    .border_1()
+                    .border_color(paper_border())
+                    .rounded(px(4.0))
+                    .flex()
+                    .items_center()
                     .font_family(MONO_FONT)
                     .text_size(TYPE_BODY)
-                    .child(Input::new(&self.url_input)),
+                    .child(Input::new(&self.url_input).appearance(false)),
             )
             .child(
                 Button::new("paste-probe")
