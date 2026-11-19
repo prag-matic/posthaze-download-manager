@@ -1368,26 +1368,32 @@ impl PosthazeApp {
                 div()
                     .flex_1()
                     .h(px(32.0))
-                    .px_2p5()
+                    .pl_2p5()
+                    .pr_1()
                     .bg(graphite_bg())
                     .border_1()
                     .border_color(paper_border())
                     .rounded(px(4.0))
                     .flex()
                     .items_center()
-                    .font_family(MONO_FONT)
-                    .text_size(TYPE_BODY)
-                    .child(Input::new(&self.url_input).appearance(false)),
-            )
-            .child(
-                Button::new("paste-probe")
-                    .small()
-                    .primary()
-                    .icon(IconName::ClipboardPaste)
-                    .label("Paste & Probe")
-                    .on_click(cx.listener(|app, _, window, cx| {
-                        app.paste_and_probe_from_clipboard(window, cx);
-                    })),
+                    .gap_1p5()
+                    .child(
+                        div()
+                            .flex_1()
+                            .font_family(MONO_FONT)
+                            .text_size(TYPE_BODY)
+                            .child(Input::new(&self.url_input).appearance(false)),
+                    )
+                    .child(
+                        Button::new("paste-probe")
+                            .xsmall()
+                            .primary()
+                            .icon(IconName::ClipboardPaste)
+                            .tooltip("Paste & Probe")
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                app.paste_and_probe_from_clipboard(window, cx);
+                            })),
+                    ),
             )
             .child(
                 Button::new("resume-all")
