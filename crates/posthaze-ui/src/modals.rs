@@ -103,7 +103,7 @@ where
                     .line_height(px(22.0))
                     .font_weight(FontWeight::BOLD)
                     .text_color(silver_text())
-                    .child("PRE-FLIGHT PROBE"),
+                    .child("Checking Download"),
             )
             .child(
                 div()
@@ -121,7 +121,7 @@ where
                             .text_size(TYPE_BODY)
                             .line_height(px(18.0))
                             .text_color(selenium_amber())
-                            .child("Inspecting HTTP HEAD / Range: bytes=0-0 ..."),
+                            .child("Checking file size, filename, and parallel support..."),
                     ),
             )
             .child(
@@ -172,9 +172,9 @@ where
                             div()
                                 .text_size(TYPE_HEADING)
                                 .line_height(px(22.0))
-                                .font_weight(FontWeight::BOLD)
+                                .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(errata_vermilion())
-                                .child("PROBE FAILED"),
+                                .child("Could Not Reach File"),
                         ),
                 )
                 .child(
@@ -259,29 +259,31 @@ where
                             div()
                                 .text_size(TYPE_HEADING)
                                 .line_height(px(22.0))
-                                .font_weight(FontWeight::BOLD)
+                                .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(silver_text())
-                                .child("CONFIRM DOWNLOAD"),
+                                .child("Add Download"),
                         )
                         .child(
                             div()
                                 .px_2()
                                 .py_0p5()
                                 .rounded(px(3.0))
-                                .bg(if info.supports_ranges {
-                                    cyanotype_blue()
-                                } else {
-                                    graphite_elevated()
-                                })
+                                .bg(graphite_elevated())
+                                .border_1()
+                                .border_color(graphite_border())
                                 .font_family(MONO_FONT)
                                 .text_size(TYPE_MICRO)
                                 .line_height(px(15.0))
                                 .font_weight(FontWeight::MEDIUM)
-                                .text_color(silver_text())
-                                .child(if info.supports_ranges {
-                                    "206 MULTI-SEGMENT"
+                                .text_color(if info.supports_ranges {
+                                    silver_text()
                                 } else {
-                                    "200 SINGLE-STREAM"
+                                    silver_muted()
+                                })
+                                .child(if info.supports_ranges {
+                                    "Multi-Segment (HTTP 206)"
+                                } else {
+                                    "Single-Stream (HTTP 200)"
                                 }),
                         ),
                 )
@@ -365,8 +367,8 @@ where
                             Button::new("pf-queue")
                                 .small()
                                 .icon(IconName::Clock)
-                                .label("Add to Queue")
-                                .tooltip("Stage as Paused without starting transfer")
+                                .label("Add Paused")
+                                .tooltip("Save to list in Paused state without starting transfer")
                                 .on_click(move |_, window, cx| confirm_queue(false, window, cx)),
                         )
                         .child(
@@ -410,9 +412,9 @@ where
             div()
                 .text_size(TYPE_HEADING)
                 .line_height(px(22.0))
-                .font_weight(FontWeight::BOLD)
+                .font_weight(FontWeight::SEMIBOLD)
                 .text_color(silver_text())
-                .child("ENGINE & QUEUE SETTINGS"),
+                .child("Settings"),
         )
         .when_some(state.error.clone(), |el, err| {
             el.child(
@@ -510,14 +512,18 @@ where
 {
     let (title, detail, confirm_label) = match action {
         ConfirmAction::DeleteDownload { filename, .. } => (
-            "DELETE DOWNLOAD RECORD",
-            format!("Remove \"{filename}\" from the queue and discard any .part state?"),
-            "Delete Record",
+            "Remove Download",
+            format!(
+                "Remove \"{filename}\" from the list? Partial progress will be discarded; completed files on disk are kept."
+            ),
+            "Remove",
         ),
         ConfirmAction::ClearCompleted { count } => (
-            "CLEAR COMPLETED HISTORY",
-            format!("Remove {count} completed or cancelled download record(s) from the queue?"),
-            "Clear History",
+            "Clear Finished Downloads",
+            format!(
+                "Remove {count} completed or cancelled entry(s) from the list? Downloaded files on disk are kept."
+            ),
+            "Clear List",
         ),
     };
 

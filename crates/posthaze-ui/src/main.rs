@@ -1177,15 +1177,14 @@ impl PosthazeApp {
                             .text_size(TYPE_MICRO)
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(silver_text())
-                            .child("POSTHAZE // v0.3.0-m3"),
+                            .child("POSTHAZE"),
                     )
-                    .child(div().text_color(graphite_border()).child("|"))
                     .child(
                         div()
                             .font_family(MONO_FONT)
                             .text_size(TYPE_HEADER)
                             .text_color(silver_muted())
-                            .child("MULTI-SEGMENT HTTP ENGINE"),
+                            .child("v0.3.0"),
                     ),
             )
     }
@@ -1878,8 +1877,6 @@ impl PosthazeApp {
                     .w(px(COL_STATE))
                     .h_full()
                     .pr_2()
-                    .border_r_1()
-                    .border_color(paper_border())
                     .flex()
                     .items_center()
                     .gap_1p5()
@@ -1916,8 +1913,6 @@ impl PosthazeApp {
                     .min_w(px(120.0))
                     .h_full()
                     .px_2()
-                    .border_r_1()
-                    .border_color(paper_border())
                     .flex()
                     .items_center()
                     .overflow_hidden()
@@ -1934,8 +1929,6 @@ impl PosthazeApp {
                     .w(px(profile.progress_col_width))
                     .h_full()
                     .px_2p5()
-                    .border_r_1()
-                    .border_color(paper_border())
                     .flex()
                     .flex_col()
                     .justify_center()
@@ -2005,8 +1998,6 @@ impl PosthazeApp {
                     .w(px(COL_SPEED))
                     .h_full()
                     .px_2()
-                    .border_r_1()
-                    .border_color(paper_border())
                     .flex()
                     .items_center()
                     .font_family(MONO_FONT)
@@ -2022,8 +2013,6 @@ impl PosthazeApp {
                         .w(px(COL_ETA))
                         .h_full()
                         .px_2()
-                        .border_r_1()
-                        .border_color(paper_border())
                         .flex()
                         .items_center()
                         .font_family(MONO_FONT)
@@ -2039,8 +2028,6 @@ impl PosthazeApp {
                     div()
                         .w(px(COL_SEGS))
                         .h_full()
-                        .border_r_1()
-                        .border_color(paper_border())
                         .flex()
                         .items_center()
                         .justify_center()

@@ -141,7 +141,7 @@ where
                             .text_size(TYPE_BODY)
                             .line_height(px(18.0))
                             .text_color(silver_muted())
-                            .child("Select a Download row to inspect its Graduated Interval Byte-Map Ruler and HTTP Validators."),
+                            .child("Select a download above to inspect its byte-map progress and segments."),
                     ),
             )
             .into_any_element();
@@ -232,11 +232,7 @@ where
                             } else {
                                 "200 SINGLE-STREAM"
                             },
-                            if row.supports_ranges {
-                                cyanotype_blue()
-                            } else {
-                                graphite_elevated()
-                            },
+                            graphite_elevated(),
                         ))
                         .when(row.sync_on_complete, |el| {
                             el.child(validator_badge("SYNC-ON-COMPLETE", graphite_elevated()))
@@ -266,7 +262,7 @@ where
         // Diagnostic & Errata Strip for Failed Downloads
         .when(row.state == DownloadState::Failed, |el| {
             let msg = if row.is_resource_changed {
-                "ERRATA: Remote resource changed since pause — .part preserved safely.".to_string()
+                "File changed on the server since pause. Partial progress is preserved — restart fresh to download the updated file.".to_string()
             } else {
                 format!(
                     "FAILED: {}",
