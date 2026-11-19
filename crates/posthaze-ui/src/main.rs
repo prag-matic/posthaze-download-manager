@@ -1921,17 +1921,11 @@ impl PosthazeApp {
                                     let count =
                                         all_rows.iter().filter(|r| tab.matches(r.state)).count();
                                     let selected = self.filter == tab;
-                                    let (tab_icon, tab_color) = match tab {
-                                        FilterTab::All => (IconName::Folder, silver_text()),
-                                        FilterTab::Active => (IconName::ArrowDown, selenium_amber()),
-                                        FilterTab::Queued => (IconName::Clock, silver_muted()),
-                                        FilterTab::Paused => (IconName::Pause, silver_muted()),
-                                        FilterTab::Completed => {
-                                            (IconName::CircleCheck, halide_emerald())
-                                        }
-                                        FilterTab::Failed => {
-                                            (IconName::TriangleAlert, errata_vermilion())
-                                        }
+                                    let tab_icon = filter_tab_icon(tab);
+                                    let tab_color = if selected {
+                                        selenium_amber()
+                                    } else {
+                                        silver_muted()
                                     };
                                     div()
                                         .id(SharedString::from(format!("rail-{}", tab.label())))
@@ -2031,13 +2025,11 @@ impl PosthazeApp {
                                 let count =
                                     all_rows.iter().filter(|r| tab.matches(r.state)).count();
                                 let selected = self.filter == tab;
-                                let (tab_icon, tab_color) = match tab {
-                                    FilterTab::All => (IconName::Folder, silver_text()),
-                                    FilterTab::Active => (IconName::ArrowDown, selenium_amber()),
-                                    FilterTab::Queued => (IconName::Clock, silver_muted()),
-                                    FilterTab::Paused => (IconName::Pause, silver_muted()),
-                                    FilterTab::Completed => (IconName::CircleCheck, halide_emerald()),
-                                    FilterTab::Failed => (IconName::TriangleAlert, errata_vermilion()),
+                                let tab_icon = filter_tab_icon(tab);
+                                let tab_color = if selected {
+                                    selenium_amber()
+                                } else {
+                                    silver_muted()
                                 };
                                 div()
                                     .id(SharedString::from(format!("filter-{}", tab.label())))
@@ -2943,5 +2935,16 @@ impl PosthazeApp {
                             })),
                     ),
             )
+    }
+}
+
+fn filter_tab_icon(tab: FilterTab) -> IconName {
+    match tab {
+        FilterTab::All => IconName::Folder,
+        FilterTab::Active => IconName::ArrowDown,
+        FilterTab::Queued => IconName::Clock,
+        FilterTab::Paused => IconName::Pause,
+        FilterTab::Completed => IconName::CircleCheck,
+        FilterTab::Failed => IconName::TriangleAlert,
     }
 }
