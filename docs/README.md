@@ -25,6 +25,7 @@ Documentation is a first-class part of Posthaze Download Manager.
 ## Implemented Milestones & Tickets
 
 - [Comprehensive Settings, Custom Headers & Context Menu](settings-and-context-menu.md)
+- [Creating Themes for Posthaze](creating-themes.md)
 
 - [Ticket 01 — Single-Stream HTTP Download Engine & CLI](ticket-01-single-stream-engine.md)
 - [Ticket 02 — `HEAD`-Blocked Range Probe Fallback & Chunked Handling](ticket-02-range-probe-fallback.md)

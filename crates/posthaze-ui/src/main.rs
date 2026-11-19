@@ -21,7 +21,7 @@ use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{
-    Icon, InteractiveElementExt as _, Sizable, Theme, ThemeMode, TitleBar,
+    Icon, InteractiveElementExt as _, Sizable, TitleBar,
 };
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
@@ -65,52 +65,7 @@ fn main() {
         .with_assets(PosthazeAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
-            Theme::change(ThemeMode::Dark, None, cx);
-            {
-                let theme = Theme::global_mut(cx);
-                theme.radius = px(4.0);
-                theme.radius_lg = px(6.0);
-                theme.background = graphite_bg();
-                theme.foreground = silver_text();
-                theme.border = paper_border();
-                theme.input = graphite_bg();
-                theme.muted = graphite_elevated();
-                theme.muted_foreground = silver_muted();
-                theme.secondary = graphite_elevated();
-                theme.secondary_hover = paper_hover();
-                theme.secondary_active = paper_selected();
-                theme.secondary_foreground = silver_text();
-                theme.primary = selenium_amber();
-                theme.primary_hover = rgb(0xD97724).into();
-                theme.primary_active = rgb(0xC2661B).into();
-                theme.primary_foreground = graphite_bg();
-                theme.button_primary = selenium_amber();
-                theme.button_primary_hover = rgb(0xD97724).into();
-                theme.button_primary_active = rgb(0xC2661B).into();
-                theme.button_primary_foreground = graphite_bg();
-                theme.button_secondary = graphite_elevated();
-                theme.button_secondary_hover = paper_hover();
-                theme.button_secondary_active = paper_selected();
-                theme.button_secondary_foreground = silver_text();
-                theme.button_hover = paper_hover();
-                theme.button_active = paper_selected();
-                theme.button_foreground = silver_text();
-                theme.ring = rgb(0x524E48).into();
-                theme.title_bar = graphite_bg();
-                theme.title_bar_border = graphite_border();
-                theme.tokens.primary.background = selenium_amber().into();
-                theme.tokens.primary_hover.background = rgb(0xD97724).into();
-                theme.tokens.primary_active.background = rgb(0xC2661B).into();
-                theme.tokens.button_primary.background = selenium_amber().into();
-                theme.tokens.button_primary_hover.background = rgb(0xD97724).into();
-                theme.tokens.button_primary_active.background = rgb(0xC2661B).into();
-                theme.tokens.button_secondary.background = graphite_elevated().into();
-                theme.tokens.button_secondary_hover.background = paper_hover().into();
-                theme.tokens.button_secondary_active.background = paper_selected().into();
-                theme.tokens.button.background = graphite_elevated().into();
-                theme.tokens.button_hover.background = paper_hover().into();
-                theme.tokens.button_active.background = paper_selected().into();
-            }
+            theme::apply_theme("chronophotographic", None, cx);
 
             let window_options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
@@ -234,6 +189,7 @@ impl PosthazeApp {
                 let _ = this.update(cx, |app, cx| {
                     app.records = records;
                     app.settings = settings;
+                    theme::apply_theme(&app.settings.ui_theme, None, cx);
                     for (id, segs) in all_segments {
                         app.persisted_segments.insert(id, segs);
                     }
@@ -1316,9 +1272,10 @@ impl Render for PosthazeApp {
                 move |action, window, cx| {
                     e_action.update(cx, |app, cx| app.handle_settings_action(action, window, cx));
                 },
-                move |_, cx| {
+                move |window, cx| {
                     e_cancel.update(cx, |app, cx| {
                         app.settings_modal = None;
+                        theme::apply_theme(&app.settings.ui_theme, Some(window), cx);
                         cx.notify();
                     });
                 },
@@ -1416,6 +1373,7 @@ impl Render for PosthazeApp {
                         changed = true;
                     }
                     if app.settings_modal.take().is_some() {
+                        theme::apply_theme(&app.settings.ui_theme, Some(window), cx);
                         changed = true;
                     }
                     if app.file_op_modal.take().is_some() {
@@ -1856,13 +1814,17 @@ impl PosthazeApp {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(
+                    .child(if active_theme().tone == PaletteTone::Light {
+                        svg()
+                            .path(BRAND_APP_ICON_SVG)
+                            .w(px(16.0))
+                            .h(px(16.0))
+                    } else {
                         svg()
                             .path(BRAND_LOGO_SVG)
                             .w(px(16.0))
                             .h(px(14.0))
-                            .text_color(silver_text()),
-                    )
+                    })
                     .child(
                         div()
                             .font_family(MONO_FONT)

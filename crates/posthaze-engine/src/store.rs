@@ -610,7 +610,7 @@ impl DownloadStore {
                     collision_policy, delete_action_default, auto_retry_count,
                     completion_cmd_enabled, completion_cmd_path, completion_cmd_args,
                     notify_on_added, notify_on_completed, notify_on_failed, notify_only_inactive,
-                    ui_click_row_opens_inspector, ui_show_add_paused, ui_zoom_percent
+                    ui_click_row_opens_inspector, ui_show_add_paused, ui_zoom_percent, ui_theme
              FROM settings WHERE id = 1",
         )
         .fetch_one(&self.pool)
@@ -652,6 +652,12 @@ impl DownloadStore {
         let ui_show_add_paused = row.try_get::<i64, _>("ui_show_add_paused")? != 0;
         let ui_zoom_percent =
             u16::try_from(row.try_get::<i64, _>("ui_zoom_percent")?).unwrap_or(100);
+        let ui_theme_raw: String = row.try_get("ui_theme")?;
+        let ui_theme = if ui_theme_raw.trim().is_empty() {
+            defaults.ui_theme.clone()
+        } else {
+            ui_theme_raw
+        };
 
         Ok(Settings {
             default_output_dir: PathBuf::from(dir_str),
@@ -675,6 +681,7 @@ impl DownloadStore {
             ui_click_row_opens_inspector,
             ui_show_add_paused,
             ui_zoom_percent,
+            ui_theme,
         })
     }
 
@@ -702,7 +709,8 @@ impl DownloadStore {
                  notify_only_inactive = ?,
                  ui_click_row_opens_inspector = ?,
                  ui_show_add_paused = ?,
-                 ui_zoom_percent = ?
+                 ui_zoom_percent = ?,
+                 ui_theme = ?
              WHERE id = 1",
         )
         .bind(settings.default_output_dir.to_string_lossy().into_owned())
@@ -726,6 +734,7 @@ impl DownloadStore {
         .bind(i64::from(settings.ui_click_row_opens_inspector))
         .bind(i64::from(settings.ui_show_add_paused))
         .bind(i64::from(settings.ui_zoom_percent))
+        .bind(&settings.ui_theme)
         .execute(&self.pool)
         .await?;
         Ok(())

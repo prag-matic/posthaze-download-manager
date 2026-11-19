@@ -43,6 +43,7 @@ async fn extended_settings_round_trip_and_categorize_helpers() {
         ui_click_row_opens_inspector: false,
         ui_show_add_paused: false,
         ui_zoom_percent: 110,
+        ui_theme: "cyanotype".to_string(),
     };
 
     {

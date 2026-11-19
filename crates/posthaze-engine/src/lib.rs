@@ -384,6 +384,8 @@ pub struct Settings {
     pub ui_show_add_paused: bool,
     /// UI zoom percentage (`90`, `100`, `110`, `125`).
     pub ui_zoom_percent: u16,
+    /// Active UI color theme identifier (e.g. `"chronophotographic"`, `"cyanotype"`, `"archival"`).
+    pub ui_theme: String,
 }
 
 impl Default for Settings {
@@ -410,6 +412,7 @@ impl Default for Settings {
             ui_click_row_opens_inspector: true,
             ui_show_add_paused: true,
             ui_zoom_percent: 100,
+            ui_theme: "chronophotographic".to_string(),
         }
     }
 }

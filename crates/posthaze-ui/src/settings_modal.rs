@@ -97,6 +97,7 @@ pub(crate) struct SettingsModalState {
     pub ui_click_row_opens_inspector: bool,
     pub ui_show_add_paused: bool,
     pub ui_zoom_percent: u16,
+    pub ui_theme: String,
     pub error: Option<String>,
 }
 
@@ -171,6 +172,7 @@ impl SettingsModalState {
             ui_click_row_opens_inspector: settings.ui_click_row_opens_inspector,
             ui_show_add_paused: settings.ui_show_add_paused,
             ui_zoom_percent: settings.ui_zoom_percent,
+            ui_theme: settings.ui_theme.clone(),
             error: None,
         }
     }
@@ -223,9 +225,14 @@ impl SettingsModalState {
             SettingsAction::ToggleShowAddPaused => {
                 self.ui_show_add_paused = !self.ui_show_add_paused;
             }
+            SettingsAction::SetTheme(theme_id) => {
+                let palette = crate::theme::apply_theme(&theme_id, Some(window), cx);
+                self.ui_theme = palette.id.to_string();
+            }
             SettingsAction::ResetToDefaults => {
                 *self = Self::from_settings(&Settings::default(), window, cx);
                 self.active_tab = SettingsTab::Reset;
+                crate::theme::apply_theme(&self.ui_theme, Some(window), cx);
             }
         }
     }
@@ -309,6 +316,7 @@ impl SettingsModalState {
             ui_click_row_opens_inspector: self.ui_click_row_opens_inspector,
             ui_show_add_paused: self.ui_show_add_paused,
             ui_zoom_percent: self.ui_zoom_percent,
+            ui_theme: self.ui_theme.clone(),
         })
     }
 }
@@ -322,6 +330,7 @@ pub(crate) enum SettingsAction {
     SetCollisionPolicy(CollisionPolicy),
     SetDeleteDefault(DeleteDefaultAction),
     SetZoom(u16),
+    SetTheme(String),
     ToggleSyncOnComplete,
     ToggleAutoCategorize,
     ToggleCompletionCmd,
@@ -674,7 +683,103 @@ where
                         SettingsAction::SetZoom(125),
                         on_action.clone(),
                     )),
-            )),
+            ))
+            .child(
+                div()
+                    .pt_3()
+                    .border_t_1()
+                    .border_color(graphite_border())
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(section_heading("Appearance Theme"))
+                    .child(
+                        div()
+                            .text_size(TYPE_MICRO)
+                            .text_color(silver_muted())
+                            .child("Select a color theme (previews immediately; Cancel reverts)."),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap_2()
+                            .children(BUILTIN_THEMES.iter().map(|palette| {
+                                let is_selected = state.ui_theme == palette.id
+                                    || (find_theme(&state.ui_theme).id == palette.id
+                                        && state.ui_theme.is_empty());
+                                let theme_id = palette.id.to_string();
+                                let act = on_action.clone();
+                                let tone_label = match palette.tone {
+                                    PaletteTone::Dark => "DARK",
+                                    PaletteTone::Light => "LIGHT",
+                                };
+                                div()
+                                    .id(SharedString::from(format!("theme-{}", palette.id)))
+                                    .w(px(236.0))
+                                    .px_3()
+                                    .py_2()
+                                    .rounded(px(4.0))
+                                    .cursor_pointer()
+                                    .bg(if is_selected {
+                                        paper_selected()
+                                    } else {
+                                        graphite_elevated()
+                                    })
+                                    .border_1()
+                                    .border_color(if is_selected {
+                                        selenium_amber()
+                                    } else {
+                                        graphite_border()
+                                    })
+                                    .hover(|s| s.bg(paper_hover()))
+                                    .on_click(move |_, window, cx| {
+                                        act(SettingsAction::SetTheme(theme_id.clone()), window, cx);
+                                    })
+                                    .flex()
+                                    .flex_col()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .justify_between()
+                                            .gap_2()
+                                            .child(
+                                                div()
+                                                    .text_size(TYPE_BODY)
+                                                    .font_weight(FontWeight::SEMIBOLD)
+                                                    .text_color(silver_text())
+                                                    .child(palette.name),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex()
+                                                    .items_center()
+                                                    .gap_1()
+                                                    .child(swatch_dot(palette.graphite_bg))
+                                                    .child(swatch_dot(palette.paper_bg))
+                                                    .child(swatch_dot(palette.accent))
+                                                    .child(
+                                                        div()
+                                                            .ml_1()
+                                                            .font_family(MONO_FONT)
+                                                            .text_size(TYPE_HEADER)
+                                                            .text_color(silver_muted())
+                                                            .child(tone_label),
+                                                    ),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(TYPE_MICRO)
+                                            .text_color(silver_muted())
+                                            .truncate()
+                                            .child(palette.description),
+                                    )
+                            })),
+                    ),
+            ),
 
         SettingsTab::Reset => div()
             .flex()
@@ -1064,4 +1169,14 @@ where
         .ghost()
         .label(label)
         .on_click(move |_, window, cx| on_action(action.clone(), window, cx))
+}
+
+fn swatch_dot(hex: u32) -> impl IntoElement {
+    div()
+        .w(px(10.0))
+        .h(px(10.0))
+        .rounded(px(2.0))
+        .bg(rgb(hex))
+        .border_1()
+        .border_color(graphite_border())
 }
