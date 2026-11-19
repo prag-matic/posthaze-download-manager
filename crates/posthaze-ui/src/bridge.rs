@@ -48,6 +48,11 @@ impl EngineBridge {
         self.engine.subscribe_events()
     }
 
+    /// Returns a handle to the background Tokio runtime.
+    pub fn runtime(&self) -> &Arc<Runtime> {
+        &self.runtime
+    }
+
     /// Dispatches an async engine operation onto the background Tokio runtime.
     pub fn dispatch<F, Fut, T>(&self, make_fut: F) -> oneshot::Receiver<T>
     where

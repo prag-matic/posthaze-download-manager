@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Posthaze</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #141311;
+      --surface: #1e1d1a;
+      --border: #2a2825;
+      --text: #eae6df;
+      --muted: #9b968d;
+      --accent: #e58a35;
+      --ok: #22c55e;
+      --err: #ef4444;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      width: 280px;
+      padding: 14px;
+      background: var(--bg);
+      color: var(--text);
+      font: 12px/1.45 "Segoe UI", system-ui, sans-serif;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 12px;
+    }
+    .header img { width: 18px; height: 18px; border-radius: 4px; }
+    .title {
+      font-family: Consolas, monospace;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      font-size: 11px;
+    }
+    .row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 8px 10px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      margin-bottom: 10px;
+    }
+    button {
+      width: 100%;
+      padding: 7px 10px;
+      border: 0;
+      border-radius: 4px;
+      background: var(--accent);
+      color: #141311;
+      font-weight: 600;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    button:hover { filter: brightness(1.06); }
+    .status {
+      margin-top: 10px;
+      padding: 8px 10px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--muted);
+      font-size: 11px;
+      word-break: break-word;
+    }
+    .status.ok { border-color: var(--ok); color: var(--text); }
+    .status.err { border-color: var(--err); color: var(--err); }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <img src="icons/icon-32.png" alt="Posthaze" />
+    <span class="title">POSTHAZE BRIDGE</span>
+  </div>
+
+  <label class="row">
+    <span>Intercept browser downloads</span>
+    <input id="intercept-toggle" type="checkbox" />
+  </label>
+
+  <button id="ping-btn" type="button">Ping Posthaze Host</button>
+
+  <div id="status-box" class="status">Ready.</div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

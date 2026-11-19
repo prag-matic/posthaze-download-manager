@@ -1,5 +1,6 @@
 mod bench_runner;
 mod bench_server;
+mod native_host;
 
 use std::ffi::OsString;
 use std::io::Write;
@@ -162,6 +163,13 @@ enum Commands {
         #[arg(long, value_name = "PATH")]
         report: Option<PathBuf>,
     },
+    /// Chrome/Edge Native Messaging host entrypoint (reads length-prefixed JSON on stdin).
+    #[command(name = "native-host", hide = true)]
+    NativeHost {
+        /// Positional origin / window flags passed by the browser.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        _browser_args: Vec<String>,
+    },
 }
 
 #[derive(Default)]
@@ -239,6 +247,7 @@ async fn main() -> ExitCode {
         } => run_resume(db_path, id, debug || stats_out.is_some(), stats_out).await,
         Commands::Cancel { id } => run_cancel(db_path, id).await,
         Commands::Delete { id, delete_file } => run_delete(db_path, id, delete_file).await,
+        Commands::NativeHost { .. } => native_host::run_native_host(db_path).await,
         Commands::Serve {
             size,
             port,

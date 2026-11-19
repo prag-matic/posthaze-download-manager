@@ -5224,6 +5224,8 @@ version = "0.1.0"
 dependencies = [
  "gpui-kit",
  "posthaze-engine",
+ "serde",
+ "serde_json",
  "tauri-winres",
  "tokio",
 ]

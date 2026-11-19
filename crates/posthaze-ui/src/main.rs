@@ -5,6 +5,7 @@ mod bridge;
 mod context_menu;
 mod curl_parser;
 mod inspector;
+mod ipc;
 mod modals;
 mod motion;
 mod platform_hooks;
@@ -165,6 +166,7 @@ impl PosthazeApp {
 
         app.refresh_from_engine(cx);
         app.start_event_listener(cx);
+        app.start_ipc_listener(cx);
         app
     }
 
@@ -215,6 +217,24 @@ impl PosthazeApp {
                 let _ = this.update(cx, |app, cx| {
                     app.persisted_segments.insert(id, segs);
                     cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn start_ipc_listener(&self, cx: &mut Context<Self>) {
+        let mut rx = ipc::start_named_pipe_server(self.bridge.runtime());
+        let window_handle = self.window_handle;
+        cx.spawn(async move |this, cx| {
+            while let Some(req) = rx.recv().await {
+                let _ = cx.update_window(window_handle, |_, window, cx| {
+                    let _ = this.update(cx, |app, cx| {
+                        app.url_input.update(cx, |state, cx| {
+                            state.set_value(req.url.clone(), window, cx);
+                        });
+                        app.begin_probe(req.url, req.headers, window, cx);
+                    });
                 });
             }
         })
