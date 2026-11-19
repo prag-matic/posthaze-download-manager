@@ -23,12 +23,14 @@ Documentation is a first-class part of Posthaze Download Manager.
 - [Ticket 03 — Multi-`Segment` Concurrent `Download`](ticket-03-multi-segment-download.md)
 - [Ticket 04 — Dynamic `Segment` Splitting (Work Stealing)](ticket-04-dynamic-splitting.md)
 - [Ticket 05 — Transient `Worker` Retry with Exponential Backoff & Jitter](ticket-05-worker-retry.md)
+- [Milestone 02 — Persistence, Pause/Resume, and Crash Recovery (Ticket 01)](milestone-02-persistence.md)
 
 ## Benchmarks
 
 - [Benchmarking & Stress-Testing Guide](benchmarking.md)
 - [Ticket 03 Baseline — Static Multi-`Segment` Scaling (`c=2..32`)](benchmarks/ticket-03-baseline.md)
 - [Ticket 04 Benchmark — Dynamic `Segment` Splitting (`c=2..32`)](benchmarks/ticket-04-work-stealing.md)
+- [Milestone 02 Loopback Baseline — Zero-SQLite `posthaze-cli bench`](benchmarks/milestone-02-loopback-baseline.md)
 
 ## Agent Workflow Configuration
 
