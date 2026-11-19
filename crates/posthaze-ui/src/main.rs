@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use gpui_kit::assets::{AllAssets, IconName};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::{Icon, Sizable, Theme, ThemeMode};
+use gpui_kit::component::{Icon, Sizable, Theme, ThemeMode, TitleBar};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use posthaze_engine::{
@@ -54,21 +54,20 @@ fn main() {
                 theme.primary_active = rgb(0xC2661B).into();
                 theme.primary_foreground = graphite_bg();
                 theme.ring = selenium_amber();
+                theme.title_bar = graphite_bg();
+                theme.title_bar_border = graphite_border();
+                theme.background = graphite_bg();
             }
 
-        let window_options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                None,
-                size(px(1440.0), px(900.0)),
-                cx,
-            ))),
-            window_min_size: Some(size(px(960.0), px(640.0))),
-            titlebar: Some(TitlebarOptions {
-                title: Some("Posthaze Download Manager".into()),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
+            let window_options = WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                    None,
+                    size(px(1440.0), px(900.0)),
+                    cx,
+                ))),
+                window_min_size: Some(size(px(960.0), px(640.0))),
+                ..TitleBar::window_options()
+            };
 
         let bridge = bridge.clone();
         gpui_kit::open_window(window_options, cx, move |window, cx| {
@@ -670,33 +669,42 @@ impl Render for PosthazeApp {
         div()
             .relative()
             .flex()
+            .flex_col()
             .size_full()
             .bg(paper_bg())
             .text_color(carbon_text())
-            // Left Navigation & Filter Rail (220px, #181715)
-            .child(self.render_sidebar(&all_rows, total_speed, active_slots, cx))
-            // Main Right Column: Top Toolbar + Center Table + Bottom 240px Byte-Map Inspector
+            .child(self.render_titlebar())
             .child(
                 div()
-                    .flex()
-                    .flex_col()
                     .flex_1()
-                    .h_full()
+                    .min_h_0()
+                    .flex()
                     .overflow_hidden()
-                    .child(self.render_toolbar(cx))
-                    .when_some(self.status_banner.clone(), |el, msg| {
-                        el.child(
-                            div()
-                                .px_4()
-                                .py_2()
-                                .bg(errata_vermilion())
-                                .text_color(silver_text())
-                                .text_xs()
-                                .child(msg),
-                        )
-                    })
-                    .child(self.render_table(&visible_rows, is_empty_queue, cx))
-                    .child(inspector),
+                    // Left Navigation & Filter Rail (220px, #141311)
+                    .child(self.render_sidebar(&all_rows, total_speed, active_slots, cx))
+                    // Main Right Column: Top Toolbar + Center Table + Bottom 240px Byte-Map Inspector
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .h_full()
+                            .overflow_hidden()
+                            .child(self.render_toolbar(cx))
+                            .when_some(self.status_banner.clone(), |el, msg| {
+                                el.child(
+                                    div()
+                                        .px_4()
+                                        .py_2()
+                                        .bg(errata_vermilion())
+                                        .text_color(silver_text())
+                                        .text_xs()
+                                        .child(msg),
+                                )
+                            })
+                            .child(self.render_table(&visible_rows, is_empty_queue, cx))
+                            .child(inspector),
+                    ),
             )
             .when_some(preflight_overlay, |el, overlay| el.child(overlay))
             .when_some(settings_overlay, |el, overlay| el.child(overlay))
@@ -704,6 +712,44 @@ impl Render for PosthazeApp {
 }
 
 impl PosthazeApp {
+    fn render_titlebar(&self) -> impl IntoElement {
+        TitleBar::new()
+            .bg(graphite_bg())
+            .border_color(graphite_border())
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .w(px(14.0))
+                            .h(px(14.0))
+                            .border_1()
+                            .border_color(silver_muted())
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(div().w(px(6.0)).h(px(6.0)).bg(selenium_amber())),
+                    )
+                    .child(
+                        div()
+                            .font_family(MONO_FONT)
+                            .text_size(TYPE_MICRO)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(silver_text())
+                            .child("POSTHAZE // v0.3.0-m3"),
+                    )
+                    .child(div().text_color(graphite_border()).child("|"))
+                    .child(
+                        div()
+                            .font_family(MONO_FONT)
+                            .text_size(TYPE_HEADER)
+                            .text_color(silver_muted())
+                            .child("GPUI-KIT 0.10.0 · TOKIO-BRIDGE"),
+                    ),
+            )
+    }
     fn render_sidebar(
         &self,
         all_rows: &[DownloadRowView],
