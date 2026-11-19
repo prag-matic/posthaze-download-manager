@@ -1,0 +1,10 @@
+[package]
+name = "posthaze-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gpui-kit = "0.10.0"
+posthaze-engine = { path = "../posthaze-engine" }
+tokio.workspace = true

@@ -2,6 +2,7 @@
 members = [
     "crates/posthaze-engine",
     "crates/posthaze-cli",
+    "crates/posthaze-ui",
 ]
 resolver = "2"
 
