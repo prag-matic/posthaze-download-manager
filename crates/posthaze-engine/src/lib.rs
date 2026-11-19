@@ -498,6 +498,20 @@ impl DownloadEngine {
         })
     }
 
+    /// Signals an active `Download` to pause gracefully, flushing buffered `Chunk`s and saving a `Checkpoint`.
+    pub async fn pause(&self, id: &DownloadId) -> Result<(), EngineError> {
+        let live = {
+            let active = self.active.lock().await;
+            active.get(id).cloned()
+        };
+
+        let Some(ctrl) = live else {
+            return Err(EngineError::NotFound(id.to_string()));
+        };
+        let _ = ctrl.control_tx.send(ControlSignal::Pause);
+        Ok(())
+    }
+
     /// Cancels an active or persisted (`Paused`/`Failed`/`Queued`) `Download`, deleting its `.part` file.
     pub async fn cancel(&self, id: &DownloadId) -> Result<(), EngineError> {
         let live = {

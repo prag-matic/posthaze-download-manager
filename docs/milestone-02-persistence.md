@@ -37,3 +37,12 @@ Implementation documentation for Milestone 02 (`posthaze-engine` and `posthaze-c
 
 - **Writer-Acknowledged `Checkpoint`s (ADR-0007)**: `PartFileWriter` tracks per-`Segment` written offsets inside the blocking writer loop and flushes + emits non-blocking (`try_send`) `Checkpoint`s whenever `>= 8 MiB` have been written or `>= 2 seconds` have elapsed, strictly after `file.write_all` + `file.flush()`. A dedicated async task persists `MAX(cursor_offset, new_cursor)` and recomputes `bytes_downloaded` in SQLite without blocking `Worker`s.
 - **Startup Crash Reconciliation**: `DownloadEngine::open(db_path)` reconciles stale range-capable `Active` rows to `Paused` (resumable) and stale `Probing` or non-range `Active` rows to `Failed`.
+
+## Ticket 05 — CLI Persistence Commands (`list`, `resume`, `cancel`, `--db`, `Ctrl+C` Pause)
+
+- **`--db <path>`**: Global flag on `posthaze-cli` defaulting to `%LOCALAPPDATA%\posthaze\state.db` (creating parent directories if missing).
+- **`Ctrl+C` Graceful Pause**: Pressing `Ctrl+C` during `posthaze-cli download` or `posthaze-cli resume` calls `DownloadEngine::pause(&id)`, flushes buffered `Chunk`s and the final `Checkpoint`, and prints the `DownloadId` with a ready-to-run `posthaze resume <id>` hint.
+- **Subcommands**:
+  - `posthaze-cli list` prints persisted `Download`s (`ID`, `STATE`, `PROGRESS`, `TARGET / URL`).
+  - `posthaze-cli resume <id>` resumes a `Paused` or resumable `Failed` `Download`.
+  - `posthaze-cli cancel <id>` cancels an active or persisted `Download` and deletes its `.part` file.

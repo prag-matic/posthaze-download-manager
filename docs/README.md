@@ -23,7 +23,7 @@ Documentation is a first-class part of Posthaze Download Manager.
 - [Ticket 03 — Multi-`Segment` Concurrent `Download`](ticket-03-multi-segment-download.md)
 - [Ticket 04 — Dynamic `Segment` Splitting (Work Stealing)](ticket-04-dynamic-splitting.md)
 - [Ticket 05 — Transient `Worker` Retry with Exponential Backoff & Jitter](ticket-05-worker-retry.md)
-- [Milestone 02 — Persistence, Pause/Resume, and Crash Recovery (Ticket 01)](milestone-02-persistence.md)
+- [Milestone 02 — Persistence, Pause/Resume, and Crash Recovery (Tickets 01–05)](milestone-02-persistence.md)
 
 ## Benchmarks
 

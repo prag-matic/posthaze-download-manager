@@ -9,10 +9,10 @@ use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand};
 use posthaze_engine::{
-    DownloadEngine, DownloadOutcome, DownloadRequest, DownloadState, ProgressSnapshot,
+    DownloadEngine, DownloadHandle, DownloadId, DownloadOutcome, DownloadRequest, DownloadState,
+    EngineError, ProgressSnapshot,
 };
 use serde::Serialize;
-use tokio::sync::watch;
 
 use crate::bench_runner::{BenchOptions, run_bench};
 use crate::bench_server::{BenchServerConfig, parse_byte_size, start_bench_server};
@@ -20,6 +20,9 @@ use crate::bench_server::{BenchServerConfig, parse_byte_size, start_bench_server
 #[derive(Parser)]
 #[command(name = "posthaze", about = "Posthaze Download Manager CLI")]
 struct Cli {
+    /// Path to the SQLite persistence database (defaults to %LOCALAPPDATA%\posthaze\state.db).
+    #[arg(long, global = true, value_name = "PATH")]
+    db: Option<PathBuf>,
     #[command(subcommand)]
     command: Commands,
 }
@@ -45,6 +48,24 @@ enum Commands {
         /// Custom path for the debug stats JSON file (implies --debug).
         #[arg(long, value_name = "PATH")]
         stats_out: Option<PathBuf>,
+    },
+    /// List persisted downloads from the SQLite database.
+    List,
+    /// Resume a Paused or resumable Failed download by DownloadId.
+    Resume {
+        /// Persistent DownloadId (UUID) to resume.
+        id: String,
+        /// Save detailed JSON download statistics and throughput samples (`<file>.stats.json`).
+        #[arg(long)]
+        debug: bool,
+        /// Custom path for the debug stats JSON file (implies --debug).
+        #[arg(long, value_name = "PATH")]
+        stats_out: Option<PathBuf>,
+    },
+    /// Cancel an active or persisted download by DownloadId and delete its `.part` file.
+    Cancel {
+        /// Persistent DownloadId (UUID) to cancel.
+        id: String,
     },
     /// Run a controlled local HTTP/1.1 range server for repeatable benchmarking.
     Serve {
@@ -177,6 +198,8 @@ struct DebugStatsReport {
 async fn main() -> ExitCode {
     let cli = Cli::parse();
 
+    let db_path = cli.db.unwrap_or_else(default_db_path);
+
     match cli.command {
         Commands::Download {
             url,
@@ -187,6 +210,7 @@ async fn main() -> ExitCode {
             stats_out,
         } => {
             run_download(
+                db_path,
                 url,
                 output,
                 connections,
@@ -196,6 +220,13 @@ async fn main() -> ExitCode {
             )
             .await
         }
+        Commands::List => run_list(db_path).await,
+        Commands::Resume {
+            id,
+            debug,
+            stats_out,
+        } => run_resume(db_path, id, debug || stats_out.is_some(), stats_out).await,
+        Commands::Cancel { id } => run_cancel(db_path, id).await,
         Commands::Serve {
             size,
             port,
@@ -286,7 +317,128 @@ async fn main() -> ExitCode {
     }
 }
 
+fn default_db_path() -> PathBuf {
+    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA")
+        && !local_app_data.is_empty()
+    {
+        return PathBuf::from(local_app_data)
+            .join("posthaze")
+            .join("state.db");
+    }
+    if let Ok(home) = std::env::var("HOME")
+        && !home.is_empty()
+    {
+        return PathBuf::from(home)
+            .join(".local")
+            .join("share")
+            .join("posthaze")
+            .join("state.db");
+    }
+    PathBuf::from("posthaze-state.db")
+}
+
+async fn run_list(db_path: PathBuf) -> ExitCode {
+    let engine = match DownloadEngine::open(&db_path).await {
+        Ok(engine) => engine,
+        Err(err) => {
+            eprintln!("Failed to open database {}: {err}", db_path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let records = match engine.list_downloads().await {
+        Ok(records) => records,
+        Err(err) => {
+            eprintln!("Failed to list downloads: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if records.is_empty() {
+        println!("No downloads recorded in {}", db_path.display());
+        return ExitCode::SUCCESS;
+    }
+
+    println!(
+        "{:<36}  {:<10}  {:<21}  TARGET / URL",
+        "ID", "STATE", "PROGRESS"
+    );
+    for rec in records {
+        let progress = match rec.content_length {
+            Some(total) if total > 0 => format!(
+                "{}/{}",
+                format_bytes(rec.bytes_downloaded),
+                format_bytes(total)
+            ),
+            _ => format_bytes(rec.bytes_downloaded),
+        };
+        let target = rec
+            .output_path
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| rec.url.clone());
+        println!(
+            "{:<36}  {:<10}  {:<21}  {}",
+            rec.id,
+            rec.state.as_str(),
+            progress,
+            target
+        );
+    }
+    ExitCode::SUCCESS
+}
+
+async fn run_cancel(db_path: PathBuf, id: String) -> ExitCode {
+    let engine = match DownloadEngine::open(&db_path).await {
+        Ok(engine) => engine,
+        Err(err) => {
+            eprintln!("Failed to open database {}: {err}", db_path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let id = DownloadId::from(id);
+    match engine.cancel(&id).await {
+        Ok(()) => {
+            println!("Cancelled download {id}");
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("Failed to cancel download {id}: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run_resume(
+    db_path: PathBuf,
+    id: String,
+    record_samples: bool,
+    stats_out: Option<PathBuf>,
+) -> ExitCode {
+    let engine = match DownloadEngine::open(&db_path).await {
+        Ok(engine) => engine,
+        Err(err) => {
+            eprintln!("Failed to open database {}: {err}", db_path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let download_id = DownloadId::from(id);
+    let handle = match engine.resume(&download_id).await {
+        Ok(handle) => handle,
+        Err(err) => {
+            eprintln!("Failed to resume download {download_id}: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let output_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    drive_handle(&engine, handle, None, output_dir, record_samples, stats_out).await
+}
+
 async fn run_download(
+    db_path: PathBuf,
     url: String,
     output: Option<PathBuf>,
     connections: usize,
@@ -294,18 +446,50 @@ async fn run_download(
     record_samples: bool,
     stats_out: Option<PathBuf>,
 ) -> ExitCode {
+    let engine = match DownloadEngine::open(&db_path).await {
+        Ok(engine) => engine,
+        Err(err) => {
+            eprintln!("Failed to open database {}: {err}", db_path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+
     let output_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     let mut request = DownloadRequest::new(url.clone(), output_dir.clone());
     request.output_path = output.clone();
     request.max_workers = connections.max(1);
     request.sync_on_complete = sync_on_complete;
 
-    let (tx, mut rx) = watch::channel(ProgressSnapshot {
-        state: DownloadState::Queued,
-        bytes_downloaded: 0,
-        total_bytes: None,
-        active_workers: 0,
-    });
+    let handle = match engine.start(request).await {
+        Ok(handle) => handle,
+        Err(err) => {
+            eprintln!("Failed to start download: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    println!("Download ID: {}", handle.id());
+    drive_handle(
+        &engine,
+        handle,
+        Some((url, output)),
+        output_dir,
+        record_samples,
+        stats_out,
+    )
+    .await
+}
+
+async fn drive_handle(
+    engine: &DownloadEngine,
+    handle: DownloadHandle,
+    debug_context: Option<(String, Option<PathBuf>)>,
+    output_dir: PathBuf,
+    record_samples: bool,
+    stats_out: Option<PathBuf>,
+) -> ExitCode {
+    let id = handle.id().clone();
+    let mut rx = handle.subscribe();
 
     let start = Instant::now();
     let progress_task = tokio::spawn(async move {
@@ -379,8 +563,19 @@ async fn run_download(
         }
     });
 
-    let engine = DownloadEngine::new();
-    let result = engine.download(request, Some(tx)).await;
+    let wait_fut = handle.wait();
+    tokio::pin!(wait_fut);
+
+    let result = tokio::select! {
+        res = &mut wait_fut => res,
+        sig = tokio::signal::ctrl_c() => {
+            if sig.is_ok() {
+                eprintln!("\nPausing download {id}...");
+                let _ = engine.pause(&id).await;
+            }
+            wait_fut.await
+        }
+    };
     let total_elapsed = start.elapsed();
     let stats = progress_task.await.unwrap_or_default();
 
@@ -398,9 +593,13 @@ async fn run_download(
             }
             ExitCode::SUCCESS
         }
+        Err(EngineError::Paused) => {
+            println!("Paused download {id} (resume with: posthaze resume {id})");
+            ExitCode::SUCCESS
+        }
         Err(err) => {
             eprintln!("Download failed: {err}");
-            if record_samples {
+            if record_samples && let Some((url, output)) = debug_context {
                 let stats_path = stats_out.unwrap_or_else(|| match &output {
                     Some(path) => default_stats_path(path),
                     None => output_dir.join("posthaze-failed.stats.json"),
@@ -514,7 +713,10 @@ fn write_failure_stats(
 fn is_terminal(state: DownloadState) -> bool {
     matches!(
         state,
-        DownloadState::Completed | DownloadState::Failed | DownloadState::Cancelled
+        DownloadState::Completed
+            | DownloadState::Failed
+            | DownloadState::Cancelled
+            | DownloadState::Paused
     )
 }
 
@@ -687,5 +889,28 @@ mod tests {
 
         let table = render_markdown_table(&[row]);
         assert!(table.contains("| clean | posthaze | 64.0 | 8 | 3 | 2.200 | 240.0 | 220.0–260.0 | 1 | 0 |"));
+    }
+
+    #[test]
+    fn parses_persistence_cli_subcommands_and_db_flag() {
+        let list_cli =
+            Cli::try_parse_from(["posthaze", "--db", "custom/state.db", "list"]).unwrap();
+        assert_eq!(list_cli.db.as_deref(), Some(Path::new("custom/state.db")));
+        assert!(matches!(list_cli.command, Commands::List));
+
+        let resume_cli =
+            Cli::try_parse_from(["posthaze", "resume", "abc-123", "--db", "my.db"]).unwrap();
+        assert_eq!(resume_cli.db.as_deref(), Some(Path::new("my.db")));
+        match resume_cli.command {
+            Commands::Resume { id, .. } => assert_eq!(id, "abc-123"),
+            _ => panic!("expected Resume"),
+        }
+
+        let cancel_cli = Cli::try_parse_from(["posthaze", "cancel", "xyz-789"]).unwrap();
+        assert!(cancel_cli.db.is_none());
+        match cancel_cli.command {
+            Commands::Cancel { id } => assert_eq!(id, "xyz-789"),
+            _ => panic!("expected Cancel"),
+        }
     }
 }
