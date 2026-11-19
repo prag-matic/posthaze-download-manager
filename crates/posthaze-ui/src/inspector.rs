@@ -10,38 +10,139 @@ use posthaze_engine::{DownloadId, DownloadState, SegmentProgress};
 use crate::theme::*;
 use crate::view_model::{DownloadRowView, format_bytes, normalize_byte_map_segments};
 
-pub(crate) struct InspectorCallbacks<F1, F2> {
+pub(crate) struct InspectorCallbacks<F1, F2, F3> {
     pub on_restart_fresh: F1,
     pub on_delete: F2,
+    pub on_toggle_collapse: F3,
 }
 
-pub(crate) fn render_inspector<F1, F2>(
+pub(crate) fn render_inspector<F1, F2, F3>(
     selected: Option<&DownloadRowView>,
     segments: &[SegmentProgress],
-    callbacks: InspectorCallbacks<F1, F2>,
+    height: Pixels,
+    collapsed: bool,
+    callbacks: InspectorCallbacks<F1, F2, F3>,
 ) -> AnyElement
 where
     F1: Fn(DownloadId, &mut Window, &mut App) + 'static,
     F2: Fn(DownloadId, &mut Window, &mut App) + 'static,
+    F3: Fn(&mut Window, &mut App) + 'static,
 {
-    let Some(row) = selected else {
+    let on_toggle_collapse = callbacks.on_toggle_collapse;
+
+    if collapsed {
+        let summary = match selected {
+            Some(row) => {
+                let cp_ratio = (row.checkpoint_ratio() * 100.0).clamp(0.0, 100.0);
+                format!(
+                    "{} · Checkpoint: {} ({cp_ratio:.1}%)",
+                    row.filename,
+                    format_bytes(row.checkpointed_bytes)
+                )
+            }
+            None => "No download selected".to_string(),
+        };
+
         return div()
-            .h(px(240.0))
+            .h(px(28.0))
             .w_full()
             .bg(graphite_bg())
             .border_t_1()
             .border_color(graphite_border())
-            .p_4()
+            .px_4()
             .flex()
             .items_center()
-            .justify_center()
+            .justify_between()
+            .gap_3()
             .child(
                 div()
-                    .font_family(MONO_FONT)
-                    .text_size(TYPE_BODY)
-                    .line_height(px(18.0))
-                    .text_color(silver_muted())
-                    .child("Select a Download row to inspect its Graduated Interval Byte-Map Ruler and HTTP Validators."),
+                    .flex_1()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .px_1p5()
+                            .py_0p5()
+                            .bg(graphite_elevated())
+                            .border_1()
+                            .border_color(graphite_border())
+                            .font_family(MONO_FONT)
+                            .text_size(TYPE_HEADER)
+                            .text_color(silver_muted())
+                            .child("INSPECTOR"),
+                    )
+                    .child(
+                        div()
+                            .font_family(MONO_FONT)
+                            .text_size(TYPE_MICRO)
+                            .text_color(silver_muted())
+                            .truncate()
+                            .child(summary),
+                    ),
+            )
+            .child(
+                Button::new("inspector-expand")
+                    .xsmall()
+                    .ghost()
+                    .icon(IconName::PanelBottomOpen)
+                    .label("Expand")
+                    .tooltip("Expand Inspector")
+                    .on_click(move |_, window, cx| on_toggle_collapse(window, cx)),
+            )
+            .into_any_element();
+    }
+
+    let Some(row) = selected else {
+        return div()
+            .h(height)
+            .w_full()
+            .bg(graphite_bg())
+            .border_t_1()
+            .border_color(graphite_border())
+            .px_4()
+            .py_2p5()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .pb_2()
+                    .border_b_1()
+                    .border_color(graphite_border())
+                    .child(
+                        div()
+                            .font_family(MONO_FONT)
+                            .text_size(TYPE_HEADER)
+                            .text_color(silver_muted())
+                            .child("BYTE-MAP INSPECTOR"),
+                    )
+                    .child(
+                        Button::new("inspector-collapse-empty")
+                            .xsmall()
+                            .ghost()
+                            .icon(IconName::PanelBottomClose)
+                            .tooltip("Collapse Inspector")
+                            .on_click(move |_, window, cx| on_toggle_collapse(window, cx)),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .font_family(MONO_FONT)
+                            .text_size(TYPE_BODY)
+                            .line_height(px(18.0))
+                            .text_color(silver_muted())
+                            .child("Select a Download row to inspect its Graduated Interval Byte-Map Ruler and HTTP Validators."),
+                    ),
             )
             .into_any_element();
     };
@@ -60,7 +161,7 @@ where
     let id_delete = row.id.clone();
 
     div()
-        .h(px(240.0))
+        .h(height)
         .w_full()
         .bg(graphite_bg())
         .border_t_1()
@@ -151,7 +252,15 @@ where
                                 format!("LM {}", truncate_badge(&lm, 18)),
                                 graphite_elevated(),
                             ))
-                        }),
+                        })
+                        .child(
+                            Button::new("inspector-collapse")
+                                .xsmall()
+                                .ghost()
+                                .icon(IconName::PanelBottomClose)
+                                .tooltip("Collapse Inspector")
+                                .on_click(move |_, window, cx| on_toggle_collapse(window, cx)),
+                        ),
                 ),
         )
         // Errata Recovery Strip on ResourceChanged

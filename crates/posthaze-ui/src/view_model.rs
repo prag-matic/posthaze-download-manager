@@ -8,6 +8,30 @@ use posthaze_engine::{
     DownloadId, DownloadRecord, DownloadState, ProgressSnapshot, SegmentProgress, Settings,
 };
 
+/// Default width (in logical pixels) of the left filter & telemetry rail.
+pub const DEFAULT_SIDEBAR_WIDTH: f32 = 220.0;
+/// Minimum allowed width (in logical pixels) of the left filter & telemetry rail.
+pub const MIN_SIDEBAR_WIDTH: f32 = 180.0;
+/// Maximum allowed width (in logical pixels) of the left filter & telemetry rail.
+pub const MAX_SIDEBAR_WIDTH: f32 = 380.0;
+
+/// Default height (in logical pixels) of the bottom selected-download inspector.
+pub const DEFAULT_INSPECTOR_HEIGHT: f32 = 240.0;
+/// Minimum allowed height (in logical pixels) of the bottom selected-download inspector.
+pub const MIN_INSPECTOR_HEIGHT: f32 = 150.0;
+/// Maximum allowed height (in logical pixels) of the bottom selected-download inspector.
+pub const MAX_INSPECTOR_HEIGHT: f32 = 460.0;
+
+/// Clamps the left sidebar width to `[MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH]`.
+pub fn clamp_sidebar_width(width: f32) -> f32 {
+    width.clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH)
+}
+
+/// Clamps the bottom inspector height to `[MIN_INSPECTOR_HEIGHT, MAX_INSPECTOR_HEIGHT]`.
+pub fn clamp_inspector_height(height: f32) -> f32 {
+    height.clamp(MIN_INSPECTOR_HEIGHT, MAX_INSPECTOR_HEIGHT)
+}
+
 /// Sidebar queue filter categories.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FilterTab {
@@ -633,5 +657,16 @@ mod tests {
         assert_eq!(state_icon(DownloadState::Completed).1, "DONE");
         assert_eq!(state_icon(DownloadState::Failed).1, "FAILED");
         assert_eq!(state_icon(DownloadState::Cancelled).1, "CANCELLED");
+    }
+
+    #[test]
+    fn clamps_panel_dimensions_within_bounds() {
+        assert_eq!(clamp_sidebar_width(50.0), MIN_SIDEBAR_WIDTH);
+        assert_eq!(clamp_sidebar_width(260.0), 260.0);
+        assert_eq!(clamp_sidebar_width(900.0), MAX_SIDEBAR_WIDTH);
+
+        assert_eq!(clamp_inspector_height(40.0), MIN_INSPECTOR_HEIGHT);
+        assert_eq!(clamp_inspector_height(310.0), 310.0);
+        assert_eq!(clamp_inspector_height(800.0), MAX_INSPECTOR_HEIGHT);
     }
 }

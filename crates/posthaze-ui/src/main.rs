@@ -12,7 +12,10 @@ use std::path::PathBuf;
 use gpui_kit::assets::{AllAssets, IconName};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::{Icon, Sizable, Theme, ThemeMode, TitleBar};
+use gpui_kit::component::resizable::resize_handle;
+use gpui_kit::component::{
+    Icon, InteractiveElementExt as _, Sizable, Theme, ThemeMode, TitleBar,
+};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use posthaze_engine::{
@@ -27,7 +30,8 @@ use crate::modals::{
 };
 use crate::theme::*;
 use crate::view_model::{
-    DownloadRowView, FilterTab, SortColumn, SortDirection, compute_fifo_ranks,
+    DEFAULT_INSPECTOR_HEIGHT, DEFAULT_SIDEBAR_WIDTH, DownloadRowView, FilterTab, SortColumn,
+    SortDirection, clamp_inspector_height, clamp_sidebar_width, compute_fifo_ranks,
     filter_and_sort_rows, format_bytes, format_eta, format_speed, parse_settings_inputs,
     state_icon,
 };
@@ -77,6 +81,30 @@ fn main() {
     });
 }
 
+#[derive(Clone)]
+struct ResizeSidebar {
+    start_x: Pixels,
+    start_width: f32,
+}
+
+impl Render for ResizeSidebar {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+    }
+}
+
+#[derive(Clone)]
+struct ResizeInspector {
+    start_y: Pixels,
+    start_height: f32,
+}
+
+impl Render for ResizeInspector {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+    }
+}
+
 struct PosthazeApp {
     bridge: EngineBridge,
     url_input: Entity<InputState>,
@@ -91,6 +119,10 @@ struct PosthazeApp {
     status_banner: Option<String>,
     preflight_modal: Option<PreflightModalState>,
     settings_modal: Option<SettingsModalState>,
+    sidebar_width: f32,
+    sidebar_collapsed: bool,
+    inspector_height: f32,
+    inspector_collapsed: bool,
 }
 
 impl PosthazeApp {
@@ -123,6 +155,10 @@ impl PosthazeApp {
             status_banner: None,
             preflight_modal: None,
             settings_modal: None,
+            sidebar_width: DEFAULT_SIDEBAR_WIDTH,
+            sidebar_collapsed: false,
+            inspector_height: DEFAULT_INSPECTOR_HEIGHT,
+            inspector_collapsed: false,
         };
 
         app.refresh_from_engine(cx);
@@ -584,15 +620,24 @@ impl Render for PosthazeApp {
 
         let entity_restart = cx.entity().clone();
         let entity_delete = cx.entity().clone();
+        let entity_inspector_toggle = cx.entity().clone();
         let inspector = render_inspector(
             selected_row,
             &selected_segments,
+            px(self.inspector_height),
+            self.inspector_collapsed,
             InspectorCallbacks {
                 on_restart_fresh: move |id: DownloadId, _: &mut Window, cx: &mut App| {
                     entity_restart.update(cx, |app, cx| app.restart_fresh_download(id, cx));
                 },
                 on_delete: move |id: DownloadId, _: &mut Window, cx: &mut App| {
                     entity_delete.update(cx, |app, cx| app.delete_download(id, cx));
+                },
+                on_toggle_collapse: move |_: &mut Window, cx: &mut App| {
+                    entity_inspector_toggle.update(cx, |app, cx| {
+                        app.inspector_collapsed = !app.inspector_collapsed;
+                        cx.notify();
+                    });
                 },
             },
         );
@@ -666,6 +711,9 @@ impl Render for PosthazeApp {
             )
         });
 
+        let sidebar_width = self.sidebar_width;
+        let inspector_height = self.inspector_height;
+
         div()
             .relative()
             .flex()
@@ -673,6 +721,18 @@ impl Render for PosthazeApp {
             .size_full()
             .bg(paper_bg())
             .text_color(carbon_text())
+            .on_drag_move(cx.listener(|app, event: &DragMoveEvent<ResizeSidebar>, _, cx| {
+                let drag = event.drag(cx);
+                let delta = f32::from(event.event.position.x - drag.start_x);
+                app.sidebar_width = clamp_sidebar_width(drag.start_width + delta);
+                cx.notify();
+            }))
+            .on_drag_move(cx.listener(|app, event: &DragMoveEvent<ResizeInspector>, _, cx| {
+                let drag = event.drag(cx);
+                let delta = f32::from(drag.start_y - event.event.position.y);
+                app.inspector_height = clamp_inspector_height(drag.start_height + delta);
+                cx.notify();
+            }))
             .child(self.render_titlebar())
             .child(
                 div()
@@ -680,9 +740,35 @@ impl Render for PosthazeApp {
                     .min_h_0()
                     .flex()
                     .overflow_hidden()
-                    // Left Navigation & Filter Rail (220px, #141311)
-                    .child(self.render_sidebar(&all_rows, total_speed, active_slots, cx))
-                    // Main Right Column: Top Toolbar + Center Table + Bottom 240px Byte-Map Inspector
+                    // Collapsible & resizable Left Navigation & Filter Rail (#141311)
+                    .when(!self.sidebar_collapsed, |el| {
+                        el.child(self.render_sidebar(&all_rows, total_speed, active_slots, cx))
+                            .child(
+                                resize_handle::<ResizeSidebar, ResizeSidebar>(
+                                    "sidebar-resize",
+                                    Axis::Horizontal,
+                                )
+                                .on_drag(
+                                    ResizeSidebar {
+                                        start_x: px(0.0),
+                                        start_width: sidebar_width,
+                                    },
+                                    |drag, point, _, cx| {
+                                        let start_x = point.x;
+                                        let start_width = drag.start_width;
+                                        cx.new(|_| ResizeSidebar {
+                                            start_x,
+                                            start_width,
+                                        })
+                                    },
+                                )
+                                .on_double_click(cx.listener(|app, _, _, cx| {
+                                    app.sidebar_width = DEFAULT_SIDEBAR_WIDTH;
+                                    cx.notify();
+                                })),
+                            )
+                    })
+                    // Main Right Column: Top Toolbar + Center Table + Collapsible & Resizable Bottom Inspector
                     .child(
                         div()
                             .flex()
@@ -703,6 +789,32 @@ impl Render for PosthazeApp {
                                 )
                             })
                             .child(self.render_table(&visible_rows, is_empty_queue, cx))
+                            .when(!self.inspector_collapsed, |el| {
+                                el.child(
+                                    resize_handle::<ResizeInspector, ResizeInspector>(
+                                        "inspector-resize",
+                                        Axis::Vertical,
+                                    )
+                                    .on_drag(
+                                        ResizeInspector {
+                                            start_y: px(0.0),
+                                            start_height: inspector_height,
+                                        },
+                                        |drag, point, _, cx| {
+                                            let start_y = point.y;
+                                            let start_height = drag.start_height;
+                                            cx.new(|_| ResizeInspector {
+                                                start_y,
+                                                start_height,
+                                            })
+                                        },
+                                    )
+                                    .on_double_click(cx.listener(|app, _, _, cx| {
+                                        app.inspector_height = DEFAULT_INSPECTOR_HEIGHT;
+                                        cx.notify();
+                                    })),
+                                )
+                            })
                             .child(inspector),
                     ),
             )
@@ -767,14 +879,12 @@ impl PosthazeApp {
         ];
 
         div()
-            .w(px(220.0))
+            .w(px(self.sidebar_width))
             .h_full()
             .flex()
             .flex_col()
             .justify_between()
             .bg(graphite_bg())
-            .border_r_1()
-            .border_color(graphite_border())
             .p_3()
             .child(
                 div()
@@ -791,19 +901,37 @@ impl PosthazeApp {
                                 div()
                                     .flex()
                                     .items_center()
+                                    .justify_between()
                                     .gap_2()
                                     .child(
-                                        Icon::new(IconName::Download)
-                                            .size(px(15.0))
-                                            .text_color(selenium_amber()),
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap_2()
+                                            .child(
+                                                Icon::new(IconName::Download)
+                                                    .size(px(15.0))
+                                                    .text_color(selenium_amber()),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_size(TYPE_HEADING)
+                                                    .line_height(px(20.0))
+                                                    .font_weight(FontWeight::BOLD)
+                                                    .text_color(silver_text())
+                                                    .child("POSTHAZE"),
+                                            ),
                                     )
                                     .child(
-                                        div()
-                                            .text_size(TYPE_HEADING)
-                                            .line_height(px(20.0))
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(silver_text())
-                                            .child("POSTHAZE"),
+                                        Button::new("sidebar-collapse")
+                                            .xsmall()
+                                            .ghost()
+                                            .icon(IconName::PanelLeftClose)
+                                            .tooltip("Collapse Sidebar")
+                                            .on_click(cx.listener(|app, _, _, cx| {
+                                                app.sidebar_collapsed = true;
+                                                cx.notify();
+                                            })),
                                     ),
                             )
                             .child(
@@ -1020,6 +1148,25 @@ impl PosthazeApp {
             .bg(paper_bg())
             .border_b_1()
             .border_color(paper_border())
+            .child(
+                Button::new("toggle-sidebar")
+                    .small()
+                    .ghost()
+                    .icon(if self.sidebar_collapsed {
+                        IconName::PanelLeftOpen
+                    } else {
+                        IconName::PanelLeftClose
+                    })
+                    .tooltip(if self.sidebar_collapsed {
+                        "Expand Sidebar"
+                    } else {
+                        "Collapse Sidebar"
+                    })
+                    .on_click(cx.listener(|app, _, _, cx| {
+                        app.sidebar_collapsed = !app.sidebar_collapsed;
+                        cx.notify();
+                    })),
+            )
             .child(
                 div()
                     .flex_1()
