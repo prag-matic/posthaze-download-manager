@@ -6,10 +6,16 @@ use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{Icon, Sizable};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
-use posthaze_engine::{PreflightInfo, Settings};
+use posthaze_engine::{DownloadId, PreflightInfo, Settings};
 
 use crate::theme::*;
 use crate::view_model::format_bytes;
+
+/// Active confirmation prompt for destructive queue/record actions.
+pub(crate) enum ConfirmAction {
+    DeleteDownload { id: DownloadId, filename: String },
+    ClearCompleted { count: usize },
+}
 
 /// Active state of the Pre-Flight Add Download Confirmation Modal.
 pub(crate) enum PreflightModalState {
@@ -73,12 +79,13 @@ pub(crate) fn render_preflight_modal<F1, F2, F3, F4, F5>(
     on_edit_url: F5,
 ) -> AnyElement
 where
-    F1: Fn(&mut Window, &mut App) + 'static,
+    F1: Fn(&mut Window, &mut App) + Clone + 'static,
     F2: Fn(String, &mut Window, &mut App) + 'static,
     F3: Fn(isize, &mut Window, &mut App) + Clone + 'static,
     F4: Fn(bool, &mut Window, &mut App) + Clone + 'static,
     F5: Fn(String, &mut Window, &mut App) + 'static,
 {
+    let on_backdrop_close = on_close.clone();
     let card = match state {
         PreflightModalState::Probing { url } => div()
             .w(px(520.0))
@@ -374,7 +381,7 @@ where
         }
     };
 
-    modal_backdrop(card)
+    modal_backdrop(card, on_backdrop_close)
 }
 
 pub(crate) fn render_settings_modal<F1, F2, F3>(
@@ -385,9 +392,10 @@ pub(crate) fn render_settings_modal<F1, F2, F3>(
 ) -> AnyElement
 where
     F1: Fn(&mut Window, &mut App) + 'static,
-    F2: Fn(&mut Window, &mut App) + 'static,
+    F2: Fn(&mut Window, &mut App) + Clone + 'static,
     F3: Fn(&mut Window, &mut App) + 'static,
 {
+    let on_backdrop_close = on_cancel.clone();
     let card = div()
         .w(px(500.0))
         .p_5()
@@ -473,7 +481,92 @@ where
                 ),
         );
 
-    modal_backdrop(card)
+    modal_backdrop(card, on_backdrop_close)
+}
+
+pub(crate) fn render_confirm_modal<F1, F2>(
+    action: &ConfirmAction,
+    on_cancel: F1,
+    on_confirm: F2,
+) -> AnyElement
+where
+    F1: Fn(&mut Window, &mut App) + Clone + 'static,
+    F2: Fn(&mut Window, &mut App) + 'static,
+{
+    let (title, detail, confirm_label) = match action {
+        ConfirmAction::DeleteDownload { filename, .. } => (
+            "DELETE DOWNLOAD RECORD",
+            format!("Remove \"{filename}\" from the queue and discard any .part state?"),
+            "Delete Record",
+        ),
+        ConfirmAction::ClearCompleted { count } => (
+            "CLEAR COMPLETED HISTORY",
+            format!("Remove {count} completed or cancelled download record(s) from the queue?"),
+            "Clear History",
+        ),
+    };
+
+    let on_backdrop_close = on_cancel.clone();
+    let card = div()
+        .w(px(440.0))
+        .p_5()
+        .bg(graphite_bg())
+        .border_1()
+        .border_color(errata_vermilion())
+        .rounded(px(6.0))
+        .flex()
+        .flex_col()
+        .gap_3()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(
+                    Icon::new(IconName::TriangleAlert)
+                        .size(px(16.0))
+                        .text_color(errata_vermilion()),
+                )
+                .child(
+                    div()
+                        .text_size(TYPE_HEADING)
+                        .line_height(px(22.0))
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(silver_text())
+                        .child(title),
+                ),
+        )
+        .child(
+            div()
+                .text_size(TYPE_BODY)
+                .line_height(px(18.0))
+                .text_color(silver_muted())
+                .child(detail),
+        )
+        .child(
+            div()
+                .flex()
+                .justify_end()
+                .gap_2()
+                .pt_2()
+                .child(
+                    Button::new("confirm-cancel")
+                        .small()
+                        .icon(IconName::X)
+                        .label("Cancel")
+                        .on_click(move |_, window, cx| on_cancel(window, cx)),
+                )
+                .child(
+                    Button::new("confirm-proceed")
+                        .small()
+                        .danger()
+                        .icon(IconName::Trash)
+                        .label(confirm_label)
+                        .on_click(move |_, window, cx| on_confirm(window, cx)),
+                ),
+        );
+
+    modal_backdrop(card, on_backdrop_close)
 }
 
 fn labeled_input(label: &'static str, state: &Entity<InputState>) -> impl IntoElement {
@@ -497,14 +590,25 @@ fn labeled_input(label: &'static str, state: &Entity<InputState>) -> impl IntoEl
         )
 }
 
-fn modal_backdrop(card: impl IntoElement) -> AnyElement {
+fn modal_backdrop<F>(card: impl IntoElement, on_close: F) -> AnyElement
+where
+    F: Fn(&mut Window, &mut App) + 'static,
+{
     div()
+        .id("modal-backdrop")
         .absolute()
         .inset_0()
         .bg(rgba(0x141413AA))
         .flex()
         .items_center()
         .justify_center()
-        .child(card)
+        .on_click(move |_, window, cx| on_close(window, cx))
+        .child(
+            div()
+                .id("modal-card-stop")
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(|_, _, cx| cx.stop_propagation())
+                .child(card),
+        )
         .into_any_element()
 }

@@ -26,7 +26,8 @@ use posthaze_engine::{
 use crate::bridge::{EngineBridge, default_db_path};
 use crate::inspector::{InspectorCallbacks, render_inspector};
 use crate::modals::{
-    PreflightModalState, SettingsModalState, render_preflight_modal, render_settings_modal,
+    ConfirmAction, PreflightModalState, SettingsModalState, render_confirm_modal,
+    render_preflight_modal, render_settings_modal,
 };
 use crate::theme::*;
 use crate::view_model::{
@@ -135,6 +136,7 @@ struct PosthazeApp {
     status_banner: Option<String>,
     preflight_modal: Option<PreflightModalState>,
     settings_modal: Option<SettingsModalState>,
+    confirm_modal: Option<ConfirmAction>,
     sidebar_width: f32,
     sidebar_collapsed: bool,
     inspector_height: f32,
@@ -172,6 +174,7 @@ impl PosthazeApp {
             status_banner: None,
             preflight_modal: None,
             settings_modal: None,
+            confirm_modal: None,
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
             sidebar_collapsed: true,
             inspector_height: DEFAULT_INSPECTOR_HEIGHT,
@@ -505,11 +508,69 @@ impl PosthazeApp {
         self.run_unit_action(rx, cx);
     }
 
+    fn request_delete_download(&mut self, id: DownloadId, filename: String, cx: &mut Context<Self>) {
+        self.confirm_modal = Some(ConfirmAction::DeleteDownload { id, filename });
+        cx.notify();
+    }
+
     fn delete_download(&mut self, id: DownloadId, cx: &mut Context<Self>) {
         let rx = self
             .bridge
             .dispatch(move |engine| async move { engine.delete(&id, false).await });
         self.run_unit_action(rx, cx);
+    }
+
+    fn request_clear_completed(&mut self, cx: &mut Context<Self>) {
+        let count = self
+            .records
+            .iter()
+            .filter(|r| matches!(r.state, DownloadState::Completed | DownloadState::Cancelled))
+            .count();
+        if count == 0 {
+            return;
+        }
+        self.confirm_modal = Some(ConfirmAction::ClearCompleted { count });
+        cx.notify();
+    }
+
+    fn execute_confirmed_action(&mut self, cx: &mut Context<Self>) {
+        let Some(action) = self.confirm_modal.take() else {
+            return;
+        };
+        match action {
+            ConfirmAction::DeleteDownload { id, .. } => self.delete_download(id, cx),
+            ConfirmAction::ClearCompleted { .. } => self.clear_completed(cx),
+        }
+    }
+
+    fn open_download_folder(&mut self, output_path: Option<PathBuf>, cx: &mut Context<Self>) {
+        let Some(path) = output_path else {
+            self.status_banner = Some("No output path recorded for this download.".to_string());
+            cx.notify();
+            return;
+        };
+        #[cfg(target_os = "windows")]
+        let spawn_res = if path.exists() {
+            std::process::Command::new("explorer.exe")
+                .arg(format!("/select,{}", path.display()))
+                .spawn()
+        } else if let Some(parent) = path.parent().filter(|p| p.exists()) {
+            std::process::Command::new("explorer.exe").arg(parent).spawn()
+        } else {
+            self.status_banner = Some(format!("Folder not found: {}", path.display()));
+            cx.notify();
+            return;
+        };
+        #[cfg(not(target_os = "windows"))]
+        let spawn_res: std::io::Result<std::process::Child> = Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "Open Folder is only supported on Windows",
+        ));
+
+        if let Err(err) = spawn_res {
+            self.status_banner = Some(format!("Could not open folder: {err}"));
+            cx.notify();
+        }
     }
 
     fn resume_all(&mut self, cx: &mut Context<Self>) {
@@ -663,7 +724,18 @@ impl Render for PosthazeApp {
                     entity_restart.update(cx, |app, cx| app.restart_fresh_download(id, cx));
                 },
                 on_delete: move |id: DownloadId, _: &mut Window, cx: &mut App| {
-                    entity_delete.update(cx, |app, cx| app.delete_download(id, cx));
+                    entity_delete.update(cx, |app, cx| {
+                        let filename = app
+                            .records
+                            .iter()
+                            .find(|r| r.id == id)
+                            .map(|r| r.url.as_str())
+                            .and_then(|u| u.rsplit('/').next())
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or("download")
+                            .to_string();
+                        app.request_delete_download(id, filename, cx);
+                    });
                 },
                 on_toggle_collapse: move |_: &mut Window, cx: &mut App| {
                     entity_inspector_toggle.update(cx, |app, cx| {
@@ -743,6 +815,23 @@ impl Render for PosthazeApp {
             )
         });
 
+        let confirm_overlay = self.confirm_modal.as_ref().map(|action| {
+            let e_cancel = cx.entity().clone();
+            let e_confirm = cx.entity().clone();
+            render_confirm_modal(
+                action,
+                move |_, cx| {
+                    e_cancel.update(cx, |app, cx| {
+                        app.confirm_modal = None;
+                        cx.notify();
+                    });
+                },
+                move |_, cx| {
+                    e_confirm.update(cx, |app, cx| app.execute_confirmed_action(cx));
+                },
+            )
+        });
+
         let active_resize = self.active_resize;
         let resizing_sidebar = matches!(active_resize, Some(ActiveResize::Sidebar { .. }));
         let resizing_inspector = matches!(active_resize, Some(ActiveResize::Inspector { .. }));
@@ -754,6 +843,23 @@ impl Render for PosthazeApp {
             .size_full()
             .bg(paper_bg())
             .text_color(carbon_text())
+            .on_key_down(cx.listener(|app, event: &KeyDownEvent, _, cx| {
+                if event.keystroke.key == "escape" {
+                    let mut changed = false;
+                    if app.confirm_modal.take().is_some() {
+                        changed = true;
+                    }
+                    if app.preflight_modal.take().is_some() {
+                        changed = true;
+                    }
+                    if app.settings_modal.take().is_some() {
+                        changed = true;
+                    }
+                    if changed {
+                        cx.notify();
+                    }
+                }
+            }))
             .when(resizing_sidebar, |el| el.cursor_col_resize())
             .when(resizing_inspector, |el| el.cursor_row_resize())
             .on_mouse_move(cx.listener(|app, event: &MouseMoveEvent, _, cx| {
@@ -943,6 +1049,7 @@ impl Render for PosthazeApp {
             )
             .when_some(preflight_overlay, |el, overlay| el.child(overlay))
             .when_some(settings_overlay, |el, overlay| el.child(overlay))
+            .when_some(confirm_overlay, |el, overlay| el.child(overlay))
     }
 }
 
@@ -1405,7 +1512,7 @@ impl PosthazeApp {
                     .icon(IconName::Trash)
                     .label("Clear Completed")
                     .on_click(cx.listener(|app, _, _, cx| {
-                        app.clear_completed(cx);
+                        app.request_clear_completed(cx);
                     })),
             )
     }
@@ -1601,6 +1708,8 @@ impl PosthazeApp {
         let id_resume = row.id.clone();
         let id_cancel = row.id.clone();
         let id_delete = row.id.clone();
+        let filename_del = row.filename.clone();
+        let output_path = row.output_path.clone();
 
         let failed_tooltip = (row.state == DownloadState::Failed)
             .then(|| row.error_message.clone())
@@ -1903,6 +2012,18 @@ impl PosthazeApp {
                             )
                         },
                     )
+                    .when(row.state == DownloadState::Completed, |el| {
+                        el.child(
+                            Button::new(SharedString::from(format!("open-dir-{}", row.id.as_str())))
+                                .xsmall()
+                                .ghost()
+                                .icon(IconName::FolderOpen)
+                                .tooltip("Open Folder")
+                                .on_click(cx.listener(move |app, _, _, cx| {
+                                    app.open_download_folder(output_path.clone(), cx);
+                                })),
+                        )
+                    })
                     .child(
                         Button::new(SharedString::from(format!("del-{}", row.id.as_str())))
                             .xsmall()
@@ -1910,7 +2031,11 @@ impl PosthazeApp {
                             .icon(IconName::Trash)
                             .tooltip("Delete")
                             .on_click(cx.listener(move |app, _, _, cx| {
-                                app.delete_download(id_delete.clone(), cx);
+                                app.request_delete_download(
+                                    id_delete.clone(),
+                                    filename_del.clone(),
+                                    cx,
+                                );
                             })),
                     ),
             )
