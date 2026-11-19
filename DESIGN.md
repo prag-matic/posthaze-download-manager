@@ -1,49 +1,205 @@
 ---
+name: "Posthaze Download Manager"
+description: "Calibrated Chronophotographic Interval Plate desktop download manager built on GPUI and GPUI Kit."
 world: "Chronophotographic Interval Plate"
-seed: "seed:a6d67de4e1140bf8"
-mode: "operate"
-platform: "windows"
+colors:
+  selenium-amber: "#d97724"
+  cyanotype-blue: "#2563eb"
+  halide-emerald: "#15803d"
+  errata-vermilion: "#dc2626"
+  graphite-bg: "#181715"
+  graphite-elevated: "#22201d"
+  graphite-border: "#2c2a27"
+  silver-text: "#eae6df"
+  silver-muted: "#9c968b"
+  paper-bg: "#f2efe9"
+  paper-selected: "#e6e0d4"
+  paper-hover: "#ece8df"
+  paper-border: "#dfdbd2"
+  carbon-text: "#141413"
+  carbon-muted: "#5c5852"
+typography:
+  display:
+    fontFamily: "Consolas, monospace"
+    fontSize: "18px"
+    fontWeight: 700
+    lineHeight: 1.33
+    letterSpacing: "0em"
+  headline:
+    fontFamily: "Segoe UI, system-ui, sans-serif"
+    fontSize: "15px"
+    fontWeight: 700
+    lineHeight: 1.33
+    letterSpacing: "0em"
+  title:
+    fontFamily: "Segoe UI, system-ui, sans-serif"
+    fontSize: "13.5px"
+    fontWeight: 600
+    lineHeight: 1.33
+    letterSpacing: "0em"
+  body:
+    fontFamily: "Segoe UI, system-ui, sans-serif"
+    fontSize: "12px"
+    fontWeight: 400
+    lineHeight: 1.33
+    letterSpacing: "0em"
+  label:
+    fontFamily: "Segoe UI, system-ui, sans-serif"
+    fontSize: "10.5px"
+    fontWeight: 600
+    lineHeight: 1.33
+    letterSpacing: "0.02em"
+  mono-micro:
+    fontFamily: "Consolas, monospace"
+    fontSize: "11px"
+    fontWeight: 400
+    lineHeight: 1.27
+    letterSpacing: "0em"
+rounded:
+  badge: "3px"
+  control: "4px"
+  modal: "6px"
+spacing:
+  xs: "4px"
+  sm: "8px"
+  md: "12px"
+  lg: "16px"
+  xl: "20px"
+components:
+  filter-tab-active:
+    backgroundColor: "{colors.graphite-elevated}"
+    textColor: "{colors.silver-text}"
+    rounded: "{rounded.control}"
+    padding: "6px 10px"
+  url-input:
+    backgroundColor: "{colors.paper-bg}"
+    textColor: "{colors.carbon-text}"
+    rounded: "{rounded.control}"
+    padding: "8px 12px"
+  modal-plate:
+    backgroundColor: "{colors.graphite-bg}"
+    textColor: "{colors.silver-text}"
+    rounded: "{rounded.modal}"
+    padding: "20px"
+  inspector-deck:
+    backgroundColor: "{colors.graphite-bg}"
+    textColor: "{colors.silver-text}"
+    height: "240px"
+    padding: "12px 16px"
 ---
 
-# Posthaze Design System (`DESIGN.md`)
+# Design System: Posthaze Download Manager
 
-**Visual World:** Chronophotographic Interval Plate (`seed:a6d67de4e1140bf8`)  
-**Implementation:** `crates/posthaze-ui` (`gpui-kit = "0.10.0"`, `src/theme.rs`, `src/main.rs`, `src/inspector.rs`, `src/modals.rs`)
+## Overview
 
-## Color Tokens
+**Creative North Star: "Chronophotographic Interval Plate"**
 
-| Role | Hex | Usage |
-| :--- | :--- | :--- |
-| `graphite-bg` | `#181715` | Left filter rail, bottom inspector deck, modal plates |
-| `graphite-elevated` | `#22201D` | Active filter pill, telemetry readout card, byte-map track |
-| `graphite-border` | `#2C2A27` | Hairline dividers on dark graphite surfaces |
-| `silver-text` | `#EAE6DF` | Primary text on dark graphite surfaces |
-| `silver-muted` | `#9C968B` | Secondary labels and byte offsets on dark graphite |
-| `paper-bg` | `#F2EFE9` | Center `Downloads` table work surface and top dispatch toolbar |
-| `paper-selected` | `#E6E0D4` | Selected `Download` row fill |
-| `paper-hover` | `#ECE8DF` | Hovered `Download` row fill |
-| `paper-border` | `#DFDBD2` | Hairline table row & header rules |
-| `carbon-text` | `#141413` | Primary ink on silver-halide paper |
-| `carbon-muted` | `#5C5852` | Secondary metadata on silver-halide paper |
-| `selenium-amber` | `#D97724` | Active state mark, aggregate speed, in-flight `Chunk` bar fill |
-| `cyanotype-blue` | `#2563EB` | Writer-acknowledged disk `Checkpoint` bar fill, `206` range badge |
-| `halide-emerald` | `#15803D` | `Completed` state mark and finished `Segment` bar fill |
-| `errata-vermilion` | `#DC2626` | `Failed` state mark and `ResourceChanged` errata recovery strip |
+Posthaze Download Manager pairs a warm graphite emulsion shell (`#181715`) with a high-legibility silver-halide paper work surface (`#F2EFE9`) so power users can scan dozens of concurrent HTTP/HTTPS `Download`s without visual fatigue while reading exact byte-range `Checkpoint` telemetry at a glance. Rather than mimicking dark-neon cyber downloaders or cramped 2000s shareware grids, every surface separates structural chrome from live transfer evidence through calibrated contrast and tabular precision.
 
-## Typography & Density
+Implemented in pure Rust (`crates/posthaze-ui`) with GPUI and GPUI Kit `0.10.0`, the system enforces an instrument-grade hierarchy: dark graphite owns navigation, confirmation modals, and the selected `Download` byte-map deck, while warm paper owns the sortable `Downloads` table.
 
-- **UI Sans**: System Windows UI stack (`Segoe UI` / DirectWrite) for navigation, filenames, modal headers, and controls.
-- **Tabular Telemetry Mono**: `Consolas` (`theme::MONO_FONT`) for byte intervals `[start..end)`, speeds, ETAs, FIFO `#1 NEXT` / `#N` badges, and HTTP `Validator`s (`ETag`, `Last-Modified`).
-- **Role Scale (`theme::TYPE_*`)**:
-  - `TYPE_DISPLAY` (`18px / 24px`, `Bold`): Empty-state title and sidebar aggregate `THROUGHPUT` readout.
-  - `TYPE_HEADING` (`15px / 20–22px`, `Bold`/`Semibold`): Brand plate `POSTHAZE`, modal headings, selected inspector filename.
-  - `TYPE_ROW_PRIMARY` (`13.5px / 18px`, `Semibold`): Table `filename` cells.
-  - `TYPE_BODY` (`12px / 16–18px`): Speed, ETA, segment count, modal field labels and inputs (with `18px` line-height compensation on `#181715` dark surfaces).
-  - `TYPE_MICRO` (`11px / 14–16px`): Byte progress sub-line, ruler ticks, `Validator` badges, `Segment` grid cells.
-  - `TYPE_HEADER` (`10.5px / 14px`, `Semibold`): Uppercase table column headers and sidebar section kickers.
-- **Row Cadence**: `40px` table rows, `32px` sortable headers, `220px` left rail, `56px` toolbar, `240px` bottom inspector (`1440×900` default, `960×640` minimum).
+**Key Characteristics:**
+- Dual-ground contrast separating dark graphite instrument rails from warm silver-halide table paper.
+- Two-tier transfer honesty distinguishing writer-acknowledged disk `Checkpoint`s (Cyanotype Blue) from in-flight `Chunk`s (Selenium Amber).
+- Tabular monospaced telemetry (`Consolas`) paired with Windows system UI sans (`Segoe UI`).
+- Hairline `1px` borders with flat elevation and crisp 90ms two-frame state snaps.
 
-## Signature Move & State Grammar
+## Colors
 
-- **Graduated Interval Byte-Map Ruler**: Proportional `[0..total_bytes)` horizontal bar with `0% / 25% / 50% / 75% / 100%` ticks, Cyanotype Blue disk `Checkpoint` fills, Selenium Amber in-flight fills, and `1px` vertical work-steal split dividers.
-- **Fixed-Cell Geometric State Marks**: `◌` (`Queued`), `◐` (`Probing`), `●` (`Active`), `❚❚` (`Paused`), `✓` (`Completed`), `✕` (`Failed` / `Cancelled`).
+A restrained dual-ground palette where warm neutrals carry 90% of the viewport and four semantic telemetry hues encode live engine state.
+
+### Primary
+- **Selenium Amber** (`#D97724`): Active `Download` state mark, sidebar aggregate `THROUGHPUT` readout, active filter pill border, and in-flight `Segment` bar fill ahead of the last disk `Checkpoint`.
+
+### Secondary
+- **Cyanotype Blue** (`#2563EB`): Writer-acknowledged disk `Checkpoint` bar fill, `206 MULTI-SEGMENT` capability badge, and `Probing`/`Queued` state marks.
+
+### Tertiary
+- **Halide Emerald** (`#15803D`): `Completed` state mark and finished `Segment` fill inside the byte-map ruler.
+- **Errata Vermilion** (`#DC2626`): `Failed` state mark, probe error border, status banner, and the inline `ResourceChanged` errata recovery strip.
+
+### Neutral
+- **Graphite Emulsion** (`#181715`): Left filter rail, bottom `240px` inspector deck, and modal plates.
+- **Graphite Elevated** (`#22201D`): Selected filter pill background, throughput readout card, and byte-map ruler track.
+- **Graphite Rule** (`#2C2A27`): `1px` structural dividers on dark graphite surfaces.
+- **Silver Halide Ink** (`#EAE6DF`): Primary text on dark graphite surfaces.
+- **Silver Muted** (`#9C968B`): Secondary metadata, labels, and ruler tick text on dark graphite.
+- **Silver Halide Paper** (`#F2EFE9`): Center `Downloads` table work surface and top dispatch toolbar.
+- **Paper Selected / Hover** (`#E6E0D4` / `#ECE8DF`): Selected and hovered `Download` row fills.
+- **Paper Rule** (`#DFDBD2`): `1px` row dividers and empty progress bar tracks.
+- **Carbon Ink / Muted** (`#141413` / `#5C5852`): Primary filenames and secondary byte counters on warm paper.
+
+### Named Rules
+**The Dual-Ground Truth Rule.** Never paint active telemetry colors onto decorative backgrounds; Selenium Amber (`#D97724`) and Cyanotype Blue (`#2563EB`) exclusively signify live bytes in flight versus flushed bytes on disk.
+
+## Typography
+
+**Display Font:** Consolas (with monospace fallback) for aggregate speed readouts
+**Body Font:** Segoe UI (Windows system UI sans) for filenames, navigation, and actions
+**Label/Mono Font:** Consolas for byte intervals, ETAs, FIFO rank badges, and HTTP `Validator`s
+
+**Character:** System sans carries navigation and filenames cleanly at desktop DPI, while `Consolas` guarantees tabular alignment across rapidly updating speeds, byte offsets, and `[start..end)` `Segment` ranges on both Windows 10 and Windows 11.
+
+### Hierarchy
+- **Display** (`700`, `18px`, `1.33`): Empty-state title and sidebar aggregate `THROUGHPUT` readout.
+- **Headline** (`700`, `15px`, `1.33`): Brand plate `POSTHAZE`, modal headings, and selected inspector filename.
+- **Title** (`600`, `13.5px`, `1.33`): Table `filename` cells inside `40px` rows.
+- **Body** (`400`, `12px`, `1.33`): Speed, ETA, segment count, and modal field labels (`18px` leading on `#181715` dark surfaces).
+- **Mono Micro** (`400`, `11px`, `1.27`): Progress byte counters, ruler quarter ticks, `Validator` badges, and `Segment` grid cells.
+- **Label** (`600`, `10.5px`, `1.33`, uppercase): Table column headers and sidebar section kickers.
+
+### Named Rules
+**The Light-on-Dark Compensation Rule.** Text rendered on `#181715` graphite surfaces steps up line height (`18px` for `12px` body, `16px` for `11px` micro) so silver ink stays legible without glare.
+
+## Layout
+
+Single-window desktop shell (`1440×900` default, resizable down to `960×640`):
+- **Left Filter Rail**: Fixed `220px` width on `#181715` graphite with `12px` padding.
+- **Top URL Dispatch Toolbar**: Fixed `56px` height on `#F2EFE9` paper with `16px` horizontal padding and `8px` control gaps.
+- **Center `Downloads` Table**: `flex-1` scrollable region with `32px` sortable header row and `40px` data rows using shared column width stops (`104px` state, `flex-1 min 120px` filename, `176px` progress, `90px` speed, `64px` ETA, `48px` segments, `160px` actions).
+- **Bottom Selected Download Inspector**: Fixed `240px` height on `#181715` graphite.
+
+## Elevation & Depth
+
+Flat tonal layering separated by `1px` hairline borders (`#2C2A27` on dark graphite, `#DFDBD2` on warm paper). No drop shadows or blur-based elevation are used at rest; modal overlays isolate focus via a translucent carbon scrim (`#141413AA`) behind a `1px`-bordered `#181715` plate.
+
+### Named Rules
+**The Hairline Partition Rule.** Depth comes from ground contrast (`#181715` vs `#F2EFE9`) and `1px` structural rules—never soft shadows or glowing halos.
+
+## Shapes
+
+Sharp, instrument-calibrated corners across the entire shell: `3px` on `Validator` badges, `4px` on filter pills and action buttons, `6px` on modal confirmation plates, and `0px` square ends on table progress bars and the **Graduated Interval Byte-Map Ruler** so byte boundaries read cleanly without rounded-cap distortion.
+
+## Components
+
+### Buttons
+- **Shape:** Subtle `4px` radius (`rounded.control`), compact `small` / `xsmall` sizing in toolbars and table rows.
+- **Primary:** `gpui-kit` primary variant for `Paste & Probe`, `Download Now`, `Save Settings`, and `Restart Fresh`.
+- **Secondary:** `gpui-kit` default button for `Resume All`, `Pause All`, `Clear Completed`, `Add to Queue`, and inline row controls.
+
+### Cards / Containers
+- **Corner Style:** `4px` for sidebar telemetry card (`#22201D`), `6px` for modal plates (`#181715`).
+- **Border:** `1px` `#2C2A27` (`#DC2626` on probe error plates).
+- **Internal Padding:** `10px` on telemetry cards, `20px` on modals.
+
+### Inputs / Fields
+- **Style:** `gpui-kit` `Input` wrapped in `Consolas` (`12px`) with `1px` border.
+- **Focus:** Auto-focused on URL dispatch bar when the queue is empty; `Enter` triggers `DownloadEngine::probe`.
+
+### Navigation
+- **Left Filter Rail:** Vertical stack of six filter pills (`All Transfers`, `Active`, `Queued`, `Paused`, `Completed`, `Failed`) with live tabular counts; selected pill switches to `#22201D` fill with a `1px` `#D97724` Selenium Amber border.
+
+### Graduated Interval Byte-Map Ruler
+- Full-width `18px` horizontal bar framed by engraved `0 B (0%)`, `25%`, `50%`, `75%`, and `100%` quarter tick marks, rendering proportional `[start, end)` `Segment` cells with `1px` `#181715` work-steal split dividers, Cyanotype Blue (`#2563EB`) `Checkpoint` fill, and Selenium Amber (`#D97724`) in-flight fill.
+
+## Do's and Don'ts
+
+### Do:
+- **Do** compute all `Segment` ratios and formatting in pure Rust (`crates/posthaze-ui/src/view_model.rs`) with unit tests.
+- **Do** keep `crates/posthaze-ui` strictly decoupled from HTTP, SQLite, and `.part` files via `EngineBridge`.
+- **Do** surface `EngineError::ResourceChanged` inline with `Restart Fresh` and `Delete` actions.
+
+### Don't:
+- **Don't** round the ends of the **Graduated Interval Byte-Map Ruler** or progress bars (`0px` radius keeps byte ratios exact).
+- **Don't** block GPUI's render thread with `DownloadEngine` calls; dispatch via `EngineBridge` on the background Tokio runtime.
+- **Don't** invent placeholder data or skip `probe()` before starting a URL from the UI.

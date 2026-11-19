@@ -1,22 +1,130 @@
 {
-  "world": "Chronophotographic Interval Plate",
-  "seed": "seed:a6d67de4e1140bf8",
-  "mode": "operate",
-  "tokens": {
-    "graphiteBg": "#181715",
-    "graphiteElevated": "#22201D",
-    "graphiteBorder": "#2C2A27",
-    "silverText": "#EAE6DF",
-    "silverMuted": "#9C968B",
-    "paperBg": "#F2EFE9",
-    "paperSelected": "#E6E0D4",
-    "paperHover": "#ECE8DF",
-    "paperBorder": "#DFDBD2",
-    "carbonText": "#141413",
-    "carbonMuted": "#5C5852",
-    "seleniumAmber": "#D97724",
-    "cyanotypeBlue": "#2563EB",
-    "halideEmerald": "#15803D",
-    "errataVermilion": "#DC2626"
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-19T17:34:00+05:30",
+  "title": "Design System: Posthaze Download Manager",
+  "extensions": {
+    "colorMeta": {
+      "selenium-amber": {
+        "role": "primary",
+        "displayName": "Selenium Amber",
+        "canonical": "#d97724",
+        "tonalRamp": ["#2d1604", "#4d2608", "#753b0d", "#9e5113", "#c4681b", "#d97724", "#e89854", "#f5cfa9"]
+      },
+      "cyanotype-blue": {
+        "role": "secondary",
+        "displayName": "Cyanotype Blue",
+        "canonical": "#2563eb",
+        "tonalRamp": ["#0c1a3d", "#132963", "#1a398a", "#1f49b5", "#2563eb", "#4c83f0", "#89aef5", "#c9dafc"]
+      },
+      "halide-emerald": {
+        "role": "tertiary",
+        "displayName": "Halide Emerald",
+        "canonical": "#15803d",
+        "tonalRamp": ["#062110", "#0a381b", "#0f5228", "#126932", "#15803d", "#2ca056", "#67c288", "#b3e3c4"]
+      },
+      "errata-vermilion": {
+        "role": "tertiary",
+        "displayName": "Errata Vermilion",
+        "canonical": "#dc2626",
+        "tonalRamp": ["#330909", "#570f0f", "#801515", "#ad1d1d", "#dc2626", "#e65353", "#f08d8d", "#f9c9c9"]
+      },
+      "graphite-bg": {
+        "role": "neutral",
+        "displayName": "Graphite Emulsion",
+        "canonical": "#181715",
+        "tonalRamp": ["#0d0c0b", "#181715", "#22201d", "#2c2a27", "#423f3b", "#635f59", "#9c968b", "#eae6df"]
+      },
+      "paper-bg": {
+        "role": "neutral",
+        "displayName": "Silver Halide Paper",
+        "canonical": "#f2efe9",
+        "tonalRamp": ["#141413", "#383632", "#5c5852", "#8a857c", "#b8b2a7", "#dfdbd2", "#e6e0d4", "#f2efe9"]
+      }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display / Throughput", "purpose": "Empty-state title and sidebar aggregate throughput readout." },
+      "headline": { "displayName": "Panel / Modal Heading", "purpose": "Brand plate, modal headings, and selected inspector filename." },
+      "title": { "displayName": "Primary Row Title", "purpose": "Table filename cells inside 40px rows." },
+      "body": { "displayName": "Data & Form Body", "purpose": "Speed, ETA, segment count, and modal field labels/inputs." },
+      "mono-micro": { "displayName": "Micro Telemetry", "purpose": "Byte progress counters, ruler ticks, validator badges, and segment cells." },
+      "label": { "displayName": "Column Header / Kicker", "purpose": "Uppercase table headers and sidebar section labels." }
+    },
+    "shadows": [
+      { "name": "none-flat", "value": "none", "purpose": "Surfaces remain flat and rely on 1px hairline borders and ground contrast." }
+    ],
+    "motion": [
+      { "name": "state-snap", "value": "90ms steps(2, end)", "purpose": "Crisp two-frame state snaps for modal openings and row state changes." }
+    ],
+    "breakpoints": [
+      { "name": "min-window", "value": "960px" },
+      { "name": "default-window", "value": "1440px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Filter Tab (Active)",
+      "kind": "nav",
+      "refersTo": "filter-tab-active",
+      "description": "Selected queue filter pill in the 220px left graphite rail.",
+      "html": "<button class=\"ds-filter-tab\"><span>All Transfers</span><span class=\"ds-count\">12</span></button>",
+      "css": ".ds-filter-tab { display: flex; align-items: center; justify-content: space-between; width: 196px; padding: 6px 10px; background: #22201d; color: #eae6df; border: 1px solid #d97724; border-radius: 4px; font-family: 'Segoe UI', sans-serif; font-size: 12.5px; font-weight: 600; cursor: pointer; } .ds-filter-tab .ds-count { font-family: Consolas, monospace; font-size: 12px; }"
+    },
+    {
+      "name": "Primary Action Button",
+      "kind": "button",
+      "refersTo": "url-input",
+      "description": "Primary action trigger for Paste & Probe, Download Now, and Restart Fresh.",
+      "html": "<button class=\"ds-btn-primary\">Paste &amp; Probe</button>",
+      "css": ".ds-btn-primary { background: #2563eb; color: #eae6df; border: 1px solid #2563eb; border-radius: 4px; padding: 6px 12px; font-family: 'Segoe UI', sans-serif; font-size: 12px; font-weight: 600; cursor: pointer; } .ds-btn-primary:hover { background: #1d4ed8; }"
+    },
+    {
+      "name": "URL Dispatch Input",
+      "kind": "input",
+      "refersTo": "url-input",
+      "description": "Monospaced HTTP/HTTPS URL input field in the 56px top toolbar.",
+      "html": "<input class=\"ds-url-input\" type=\"text\" value=\"https://example.com/model.gguf\" />",
+      "css": ".ds-url-input { width: 100%; background: #f2efe9; color: #141413; border: 1px solid #dfdbd2; border-radius: 4px; padding: 7px 12px; font-family: Consolas, monospace; font-size: 12px; outline: none; } .ds-url-input:focus-visible { border-color: #2563eb; }"
+    },
+    {
+      "name": "Validator Badge",
+      "kind": "chip",
+      "refersTo": "inspector-deck",
+      "description": "Stamped HTTP capability or validator badge in the bottom inspector.",
+      "html": "<span class=\"ds-validator-badge\">206 MULTI-SEGMENT</span>",
+      "css": ".ds-validator-badge { display: inline-block; padding: 2px 8px; background: #2563eb; color: #eae6df; border: 1px solid #2c2a27; border-radius: 3px; font-family: Consolas, monospace; font-size: 11px; font-weight: 500; }"
+    },
+    {
+      "name": "Graduated Interval Byte-Map Ruler",
+      "kind": "custom",
+      "refersTo": "inspector-deck",
+      "description": "Signature proportional [0..total_bytes) bar showing disk Checkpoints vs in-flight Segment chunks.",
+      "html": "<div class=\"ds-ruler\"><div class=\"ds-seg\"><div class=\"ds-cp\" style=\"width:55%\"></div><div class=\"ds-fly\" style=\"width:20%\"></div></div><div class=\"ds-seg\"><div class=\"ds-cp\" style=\"width:80%\"></div><div class=\"ds-fly\" style=\"width:10%\"></div></div></div>",
+      "css": ".ds-ruler { display: flex; width: 100%; height: 18px; background: #22201d; border: 1px solid #2c2a27; } .ds-seg { display: flex; flex: 1; height: 100%; } .ds-seg + .ds-seg { border-left: 1px solid #181715; } .ds-cp { background: #2563eb; height: 100%; } .ds-fly { background: #d97724; height: 100%; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "Chronophotographic Interval Plate",
+    "overview": "Posthaze Download Manager pairs a warm graphite emulsion shell (#181715) with a high-legibility silver-halide paper work surface (#F2EFE9) so power users can scan dozens of concurrent HTTP/HTTPS Downloads without visual fatigue while reading exact byte-range Checkpoint telemetry at a glance.",
+    "keyCharacteristics": [
+      "Dual-ground contrast separating dark graphite instrument rails from warm silver-halide table paper.",
+      "Two-tier transfer honesty distinguishing writer-acknowledged disk Checkpoints (Cyanotype Blue) from in-flight Chunks (Selenium Amber).",
+      "Tabular monospaced telemetry (Consolas) paired with Windows system UI sans (Segoe UI).",
+      "Hairline 1px borders with flat elevation and crisp 90ms two-frame state snaps."
+    ],
+    "rules": [
+      { "name": "The Dual-Ground Truth Rule", "body": "Never paint active telemetry colors onto decorative backgrounds; Selenium Amber (#D97724) and Cyanotype Blue (#2563EB) exclusively signify live bytes in flight versus flushed bytes on disk.", "section": "colors" },
+      { "name": "The Light-on-Dark Compensation Rule", "body": "Text rendered on #181715 graphite surfaces steps up line height (18px for 12px body, 16px for 11px micro) so silver ink stays legible without glare.", "section": "typography" },
+      { "name": "The Hairline Partition Rule", "body": "Depth comes from ground contrast (#181715 vs #F2EFE9) and 1px structural rules—never soft shadows or glowing halos.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do compute all Segment ratios and formatting in pure Rust (crates/posthaze-ui/src/view_model.rs) with unit tests.",
+      "Do keep crates/posthaze-ui strictly decoupled from HTTP, SQLite, and .part files via EngineBridge.",
+      "Do surface EngineError::ResourceChanged inline with Restart Fresh and Delete actions."
+    ],
+    "donts": [
+      "Don't round the ends of the Graduated Interval Byte-Map Ruler or progress bars (0px radius keeps byte ratios exact).",
+      "Don't block GPUI's render thread with DownloadEngine calls; dispatch via EngineBridge on the background Tokio runtime.",
+      "Don't invent placeholder data or skip probe() before starting a URL from the UI."
+    ]
   }
 }
