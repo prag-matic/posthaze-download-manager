@@ -36,7 +36,7 @@ use crate::view_model::{
 };
 
 const COL_STATE: f32 = 104.0;
-const COL_PROGRESS: f32 = 176.0;
+const COL_PROGRESS: f32 = 210.0;
 const COL_SPEED: f32 = 90.0;
 const COL_ETA: f32 = 64.0;
 const COL_SEGS: f32 = 48.0;
@@ -172,9 +172,9 @@ impl PosthazeApp {
             preflight_modal: None,
             settings_modal: None,
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
-            sidebar_collapsed: false,
+            sidebar_collapsed: true,
             inspector_height: DEFAULT_INSPECTOR_HEIGHT,
-            inspector_collapsed: false,
+            inspector_collapsed: true,
             active_resize: None,
         };
 
@@ -1696,6 +1696,7 @@ impl PosthazeApp {
                     .border_color(paper_border())
                     .flex()
                     .items_center()
+                    .overflow_hidden()
                     .text_size(TYPE_ROW_PRIMARY)
                     .line_height(px(18.0))
                     .font_weight(FontWeight::MEDIUM)
@@ -1720,6 +1721,7 @@ impl PosthazeApp {
                             .flex()
                             .items_center()
                             .justify_between()
+                            .gap_2()
                             .font_family(MONO_FONT)
                             .text_size(TYPE_MICRO)
                             .line_height(px(13.0))
