@@ -359,6 +359,7 @@ where
                                 .small()
                                 .icon(IconName::Clock)
                                 .label("Add to Queue")
+                                .tooltip("Stage as Paused without starting transfer")
                                 .on_click(move |_, window, cx| confirm_queue(false, window, cx)),
                         )
                         .child(

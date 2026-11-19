@@ -343,3 +343,69 @@ async fn engine_restart_fresh_clears_stale_part_and_recovers_from_resource_chang
         blake3::hash(&v2)
     );
 }
+
+#[tokio::test]
+async fn enqueue_paused_stages_download_without_transfer_until_resumed() {
+    let dir = tempdir().unwrap();
+    let engine = DownloadEngine::in_memory().await.unwrap();
+
+    let payload = vec![0x42u8; 32 * 1024];
+    let payload_srv = Arc::new(payload.clone());
+    let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hits_srv = Arc::clone(&hits);
+
+    let base_url = common::spawn_raw_server(move |method, _path, range, mut write_half| {
+        let payload_srv = Arc::clone(&payload_srv);
+        let hits_srv = Arc::clone(&hits_srv);
+        async move {
+            hits_srv.fetch_add(1, Ordering::SeqCst);
+            if method == "HEAD" {
+                let hdr = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nAccept-Ranges: bytes\r\nETag: \"staged\"\r\nConnection: close\r\n\r\n",
+                    payload_srv.len()
+                );
+                let _ = write_half.write_all(hdr.as_bytes()).await;
+                let _ = write_half.shutdown().await;
+                return;
+            }
+            let (start, end) = range
+                .as_deref()
+                .map(|r| common::parse_byte_range(r, payload_srv.len()))
+                .unwrap_or((0, payload_srv.len() - 1));
+            let slice = &payload_srv[start..=end];
+            let hdr = format!(
+                "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes {start}-{end}/{}\r\nAccept-Ranges: bytes\r\nETag: \"staged\"\r\nConnection: close\r\n\r\n",
+                slice.len(),
+                payload_srv.len()
+            );
+            let _ = write_half.write_all(hdr.as_bytes()).await;
+            let _ = write_half.write_all(slice).await;
+            let _ = write_half.shutdown().await;
+        }
+    })
+    .await;
+
+    let mut req = DownloadRequest::new(format!("{base_url}/staged.bin"), dir.path());
+    req.output_path = Some(dir.path().join("staged (1).bin"));
+    req.max_workers = 4;
+
+    let id = engine.enqueue_paused(req).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Staging must not touch the network and must persist Paused state.
+    assert_eq!(hits.load(Ordering::SeqCst), 0);
+    let rec = engine.get_download(&id).await.unwrap().unwrap();
+    assert_eq!(rec.state, DownloadState::Paused);
+    assert_eq!(rec.bytes_downloaded, 0);
+    assert_eq!(rec.max_workers, 4);
+    assert_eq!(rec.output_path.unwrap(), dir.path().join("staged (1).bin"));
+
+    // Resuming later executes the full download and verifies BLAKE3.
+    let mut handle = engine.resume(&id).await.unwrap();
+    let outcome = handle.wait().await.unwrap();
+    assert!(hits.load(Ordering::SeqCst) > 0);
+    assert_eq!(
+        blake3::hash(&std::fs::read(&outcome.final_path).unwrap()),
+        blake3::hash(&payload)
+    );
+}

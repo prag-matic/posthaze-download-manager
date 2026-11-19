@@ -119,6 +119,26 @@ impl DownloadStore {
         id: &DownloadId,
         request: &DownloadRequest,
     ) -> Result<(), EngineError> {
+        self.insert_with_state(id, request, DownloadState::Queued)
+            .await
+    }
+
+    /// Inserts a newly staged `Paused` `Download` record without starting transfer.
+    pub(crate) async fn insert_paused(
+        &self,
+        id: &DownloadId,
+        request: &DownloadRequest,
+    ) -> Result<(), EngineError> {
+        self.insert_with_state(id, request, DownloadState::Paused)
+            .await
+    }
+
+    async fn insert_with_state(
+        &self,
+        id: &DownloadId,
+        request: &DownloadRequest,
+        state: DownloadState,
+    ) -> Result<(), EngineError> {
         let now = unix_now();
         let output_dir = request.output_dir.to_string_lossy().into_owned();
         let output_path = request
@@ -135,7 +155,7 @@ impl DownloadStore {
         .bind(&request.url)
         .bind(output_dir)
         .bind(output_path)
-        .bind(DownloadState::Queued.as_str())
+        .bind(state.as_str())
         .bind(request.max_workers as i64)
         .bind(i64::from(request.sync_on_complete))
         .bind(now)

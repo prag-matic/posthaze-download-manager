@@ -377,7 +377,12 @@ impl PosthazeApp {
         .detach();
     }
 
-    fn confirm_preflight(&mut self, focus_new: bool, window: &mut Window, cx: &mut Context<Self>) {
+    fn confirm_preflight(
+        &mut self,
+        start_immediately: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(PreflightModalState::Resolved {
             info,
             filename_input,
@@ -407,15 +412,19 @@ impl PosthazeApp {
             state.set_value(String::new(), window, cx);
         });
 
-        let rx = self
-            .bridge
-            .dispatch(move |engine| async move { engine.start(req).await.map(|h| h.id().clone()) });
+        let rx = self.bridge.dispatch(move |engine| async move {
+            if start_immediately {
+                engine.start(req).await.map(|h| h.id().clone())
+            } else {
+                engine.enqueue_paused(req).await
+            }
+        });
         cx.spawn(async move |this, cx| {
             let res = rx.await;
             let _ = this.update(cx, |app, cx| {
                 match res {
                     Ok(Ok(id)) => {
-                        if focus_new || app.selected_id.is_none() {
+                        if start_immediately || app.selected_id.is_none() {
                             app.selected_id = Some(id);
                         }
                         app.status_banner = None;

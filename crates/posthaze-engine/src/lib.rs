@@ -538,6 +538,26 @@ impl DownloadEngine {
         Ok(self.spawn_fresh_download(id, request).await)
     }
 
+    /// Stages a new `Download` in [`DownloadState::Paused`] without starting network transfer.
+    ///
+    /// The staged record can be started later via [`Self::resume`].
+    pub async fn enqueue_paused(&self, request: DownloadRequest) -> Result<DownloadId, EngineError> {
+        let Some(store) = &self.store else {
+            return Err(EngineError::InvalidState(
+                "cannot stage paused download without persistence".to_string(),
+            ));
+        };
+        let id = DownloadId::new();
+        store.insert_paused(&id, &request).await?;
+        let _ = self.event_tx.send(EngineEvent::StateChanged {
+            id: id.clone(),
+            state: DownloadState::Paused,
+            error: None,
+        });
+        let _ = self.event_tx.send(EngineEvent::QueueUpdated);
+        Ok(id)
+    }
+
     async fn spawn_fresh_download(&self, id: DownloadId, request: DownloadRequest) -> DownloadHandle {
         let (progress_tx, progress_rx) = watch::channel(ProgressSnapshot::status(
             DownloadState::Queued,
