@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -6,6 +6,7 @@ use bytes::BytesMut;
 use futures_util::StreamExt;
 use reqwest::StatusCode;
 use reqwest::header::RANGE;
+use tokio::sync::watch;
 use tokio::task::JoinSet;
 
 use crate::EngineError;
@@ -16,6 +17,28 @@ pub const CHUNK_BUFFER_SIZE: usize = 512 * 1024;
 const MAX_SEGMENT_RETRIES: u32 = 5;
 const BASE_BACKOFF_MS: u64 = 100;
 const MAX_BACKOFF_MS: u64 = 5_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ControlSignal {
+    Run,
+    Pause,
+    Cancel,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SegmentCheckpoint {
+    pub segment_index: usize,
+    pub start: u64,
+    pub cursor: u64,
+    pub end: Option<u64>,
+    pub completed: bool,
+}
+
+#[derive(Debug)]
+pub(crate) struct TransferFailure {
+    pub error: EngineError,
+    pub segments: Vec<SegmentCheckpoint>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SegmentSpec {
@@ -29,6 +52,7 @@ struct ActiveSegment {
     start: u64,
     cursor: AtomicU64,
     end: AtomicU64,
+    completed: AtomicBool,
 }
 
 impl ActiveSegment {
@@ -38,6 +62,7 @@ impl ActiveSegment {
             start,
             cursor: AtomicU64::new(start),
             end: AtomicU64::new(end),
+            completed: AtomicBool::new(false),
         })
     }
 
@@ -74,9 +99,21 @@ pub async fn execute_single_stream(
     writer: &PartFileWriter,
     downloaded: &AtomicU64,
     active_workers: &AtomicUsize,
+    mut control_rx: watch::Receiver<ControlSignal>,
 ) -> Result<u64, EngineError> {
+    if let Some(sig_err) = check_control_signal(&control_rx) {
+        return Err(sig_err);
+    }
+
     active_workers.store(1, Ordering::Relaxed);
-    let resp = client.get(url).send().await?;
+    let resp = tokio::select! {
+        biased;
+        _ = control_rx.changed() => {
+            active_workers.store(0, Ordering::Relaxed);
+            return Err(signal_to_error(*control_rx.borrow()));
+        }
+        res = client.get(url).send() => res?,
+    };
     let status = resp.status();
     if !status.is_success() {
         active_workers.store(0, Ordering::Relaxed);
@@ -86,7 +123,7 @@ pub async fn execute_single_stream(
         });
     }
 
-    let result = stream_unbounded_to_writer(resp, writer, downloaded).await;
+    let result = stream_unbounded_to_writer(resp, writer, downloaded, control_rx).await;
     active_workers.store(0, Ordering::Relaxed);
     result
 }
@@ -100,7 +137,7 @@ pub struct MultiSegmentResult {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn execute_multi_segment(
+pub(crate) async fn execute_multi_segment(
     client: &reqwest::Client,
     url: &str,
     total_bytes: u64,
@@ -108,7 +145,8 @@ pub async fn execute_multi_segment(
     writer: &Arc<PartFileWriter>,
     downloaded: &Arc<AtomicU64>,
     active_workers: &Arc<AtomicUsize>,
-) -> Result<MultiSegmentResult, EngineError> {
+    control_rx: watch::Receiver<ControlSignal>,
+) -> Result<MultiSegmentResult, TransferFailure> {
     let initial_specs = plan_segments(total_bytes, max_workers);
     if initial_specs.is_empty() {
         return Ok(MultiSegmentResult {
@@ -147,6 +185,7 @@ pub async fn execute_multi_segment(
         let next_id = Arc::clone(&next_id);
         let splits_performed = Arc::clone(&splits_performed);
         let retries_performed = Arc::clone(&retries_performed);
+        let control_rx = control_rx.clone();
 
         join_set.spawn(async move {
             active_workers.fetch_add(1, Ordering::Relaxed);
@@ -161,6 +200,7 @@ pub async fn execute_multi_segment(
                 &next_id,
                 &splits_performed,
                 &retries_performed,
+                control_rx,
             )
             .await;
             active_workers.fetch_sub(1, Ordering::Relaxed);
@@ -173,14 +213,24 @@ pub async fn execute_multi_segment(
         match joined {
             Ok(Ok(bytes)) => total_written += bytes,
             Ok(Err(err)) => {
-                join_set.abort_all();
-                return Err(err);
+                if matches!(err, EngineError::Paused) {
+                    while join_set.join_next().await.is_some() {}
+                } else {
+                    join_set.abort_all();
+                    while join_set.join_next().await.is_some() {}
+                }
+                return Err(TransferFailure {
+                    error: err,
+                    segments: snapshot_segments(&active_segments),
+                });
             }
             Err(join_err) => {
                 join_set.abort_all();
-                return Err(EngineError::Writer(format!(
-                    "worker task failed: {join_err}"
-                )));
+                while join_set.join_next().await.is_some() {}
+                return Err(TransferFailure {
+                    error: EngineError::Writer(format!("worker task failed: {join_err}")),
+                    segments: snapshot_segments(&active_segments),
+                });
             }
         }
     }
@@ -191,6 +241,27 @@ pub async fn execute_multi_segment(
         splits_performed: splits_performed.load(Ordering::Relaxed),
         retries_performed: retries_performed.load(Ordering::Relaxed),
     })
+}
+
+fn snapshot_segments(active_segments: &Mutex<Vec<Arc<ActiveSegment>>>) -> Vec<SegmentCheckpoint> {
+    let guard = active_segments.lock().expect("active_segments poisoned");
+    let mut out: Vec<SegmentCheckpoint> = guard
+        .iter()
+        .map(|seg| {
+            let cursor = seg.cursor.load(Ordering::Acquire);
+            let end = seg.end.load(Ordering::Acquire);
+            let completed = seg.completed.load(Ordering::Acquire) || cursor >= end;
+            SegmentCheckpoint {
+                segment_index: seg.id,
+                start: seg.start,
+                cursor,
+                end: Some(end),
+                completed,
+            }
+        })
+        .collect();
+    out.sort_by_key(|s| s.segment_index);
+    out
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -205,6 +276,7 @@ async fn run_worker_loop(
     next_id: &AtomicUsize,
     splits_performed: &AtomicUsize,
     retries_performed: &AtomicUsize,
+    mut control_rx: watch::Receiver<ControlSignal>,
 ) -> Result<u64, EngineError> {
     let mut worker_total = 0u64;
 
@@ -217,11 +289,12 @@ async fn run_worker_loop(
             writer,
             downloaded,
             retries_performed,
+            &mut control_rx,
         )
         .await?;
         worker_total += seg_bytes;
 
-        remove_active_segment(active_segments, current_seg.id);
+        current_seg.completed.store(true, Ordering::Release);
         match steal_largest_segment(active_segments, next_id) {
             Some(stolen) => {
                 splits_performed.fetch_add(1, Ordering::Relaxed);
@@ -232,11 +305,6 @@ async fn run_worker_loop(
     }
 
     Ok(worker_total)
-}
-
-fn remove_active_segment(active_segments: &Mutex<Vec<Arc<ActiveSegment>>>, seg_id: usize) {
-    let mut guard = active_segments.lock().expect("active_segments poisoned");
-    guard.retain(|s| s.id != seg_id);
 }
 
 fn steal_largest_segment(
@@ -278,6 +346,7 @@ fn steal_largest_segment(
     Some(new_seg)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_segment_worker(
     client: &reqwest::Client,
     url: &str,
@@ -286,10 +355,15 @@ async fn run_segment_worker(
     writer: &PartFileWriter,
     downloaded: &AtomicU64,
     retries_performed: &AtomicUsize,
+    control_rx: &mut watch::Receiver<ControlSignal>,
 ) -> Result<u64, EngineError> {
     let mut retries = 0u32;
 
     loop {
+        if let Some(sig_err) = check_control_signal(control_rx) {
+            return Err(sig_err);
+        }
+
         let attempt_start = seg.cursor.load(Ordering::Acquire);
         let end_snapshot = seg.end.load(Ordering::Acquire);
         if attempt_start >= end_snapshot {
@@ -305,6 +379,7 @@ async fn run_segment_worker(
             allow_full_200,
             writer,
             downloaded,
+            control_rx,
         )
         .await
         {
@@ -313,6 +388,10 @@ async fn run_segment_worker(
                 return Ok(final_cur.saturating_sub(seg.start));
             }
             Err(err) => {
+                if matches!(err, EngineError::Paused | EngineError::Cancelled) {
+                    return Err(err);
+                }
+
                 let made_progress = seg.cursor.load(Ordering::Acquire) > attempt_start;
                 if made_progress {
                     retries = 0;
@@ -325,7 +404,16 @@ async fn run_segment_worker(
                 }
 
                 retries_performed.fetch_add(1, Ordering::Relaxed);
-                tokio::time::sleep(backoff_with_jitter(retries.saturating_sub(1))).await;
+                let delay = backoff_with_jitter(retries.saturating_sub(1));
+                tokio::select! {
+                    biased;
+                    _ = control_rx.changed() => {
+                        if let Some(sig_err) = check_control_signal(control_rx) {
+                            return Err(sig_err);
+                        }
+                    }
+                    _ = tokio::time::sleep(delay) => {}
+                }
             }
         }
     }
@@ -341,9 +429,19 @@ async fn run_segment_attempt(
     allow_full_200: bool,
     writer: &PartFileWriter,
     downloaded: &AtomicU64,
+    control_rx: &mut watch::Receiver<ControlSignal>,
 ) -> Result<(), EngineError> {
     let range_header = format!("bytes={attempt_start}-{}", end_snapshot - 1);
-    let resp = client.get(url).header(RANGE, range_header).send().await?;
+    let resp = tokio::select! {
+        biased;
+        _ = control_rx.changed() => {
+            if let Some(sig_err) = check_control_signal(control_rx) {
+                return Err(sig_err);
+            }
+            unreachable!("Run signal does not trigger abort");
+        }
+        res = client.get(url).header(RANGE, range_header).send() => res?,
+    };
     let status = resp.status();
 
     if !(status == StatusCode::PARTIAL_CONTENT || (allow_full_200 && status == StatusCode::OK)) {
@@ -359,7 +457,26 @@ async fn run_segment_attempt(
     let mut stream = resp.bytes_stream();
     let mut stream_err: Option<EngineError> = None;
 
-    while let Some(item) = stream.next().await {
+    loop {
+        let next_item = tokio::select! {
+            biased;
+            _ = control_rx.changed() => {
+                match *control_rx.borrow() {
+                    ControlSignal::Run => continue,
+                    ControlSignal::Pause => {
+                        stream_err = Some(EngineError::Paused);
+                        break;
+                    }
+                    ControlSignal::Cancel => return Err(EngineError::Cancelled),
+                }
+            }
+            item = stream.next() => item,
+        };
+
+        let Some(item) = next_item else {
+            break;
+        };
+
         let chunk = match item {
             Ok(chunk) => chunk,
             Err(err) => {
@@ -431,7 +548,25 @@ fn is_transient_error(err: &EngineError) -> bool {
         | EngineError::Database(_)
         | EngineError::Migration(_)
         | EngineError::InvalidState(_)
+        | EngineError::NotFound(_)
+        | EngineError::Paused
+        | EngineError::Cancelled
         | EngineError::TaskJoin(_) => false,
+    }
+}
+
+fn check_control_signal(control_rx: &watch::Receiver<ControlSignal>) -> Option<EngineError> {
+    match *control_rx.borrow() {
+        ControlSignal::Run => None,
+        sig => Some(signal_to_error(sig)),
+    }
+}
+
+fn signal_to_error(sig: ControlSignal) -> EngineError {
+    match sig {
+        ControlSignal::Run => unreachable!("Run is not an interruption"),
+        ControlSignal::Pause => EngineError::Paused,
+        ControlSignal::Cancel => EngineError::Cancelled,
     }
 }
 
@@ -450,13 +585,34 @@ async fn stream_unbounded_to_writer(
     resp: reqwest::Response,
     writer: &PartFileWriter,
     downloaded: &AtomicU64,
+    mut control_rx: watch::Receiver<ControlSignal>,
 ) -> Result<u64, EngineError> {
     let mut written = 0u64;
     let mut write_offset = 0u64;
     let mut buffer = BytesMut::with_capacity(CHUNK_BUFFER_SIZE * 2);
     let mut stream = resp.bytes_stream();
+    let mut interrupted: Option<EngineError> = None;
 
-    while let Some(item) = stream.next().await {
+    loop {
+        let next_item = tokio::select! {
+            biased;
+            _ = control_rx.changed() => {
+                match *control_rx.borrow() {
+                    ControlSignal::Run => continue,
+                    ControlSignal::Pause => {
+                        interrupted = Some(EngineError::Paused);
+                        break;
+                    }
+                    ControlSignal::Cancel => return Err(EngineError::Cancelled),
+                }
+            }
+            item = stream.next() => item,
+        };
+
+        let Some(item) = next_item else {
+            break;
+        };
+
         let chunk = item?;
         let len = chunk.len() as u64;
         written += len;
@@ -475,6 +631,10 @@ async fn stream_unbounded_to_writer(
     if !buffer.is_empty() {
         let tail = buffer.freeze();
         writer.write_at(write_offset, tail).await?;
+    }
+
+    if let Some(err) = interrupted {
+        return Err(err);
     }
 
     Ok(written)

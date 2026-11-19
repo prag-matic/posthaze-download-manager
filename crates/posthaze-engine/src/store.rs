@@ -11,7 +11,7 @@ use sqlx::sqlite::{
 };
 
 use crate::probe::ProbeResult;
-use crate::transfer::plan_segments;
+use crate::transfer::{SegmentCheckpoint, plan_segments};
 use crate::{DownloadId, DownloadRequest, DownloadState, EngineError};
 
 const DOWNLOAD_SELECT_COLUMNS: &str = "
@@ -253,13 +253,57 @@ impl DownloadStore {
         Ok(())
     }
 
-    /// Marks a `Download` as `Failed` with an error message.
+    /// Marks a `Download` as `Failed` with an error message, optionally persisting `Segment` `Checkpoint`s.
     pub(crate) async fn mark_failed(
         &self,
         id: &DownloadId,
         bytes_downloaded: u64,
         error_message: &str,
     ) -> Result<(), EngineError> {
+        self.save_failed_with_segments(id, bytes_downloaded, error_message, &[])
+            .await
+    }
+
+    /// Marks a `Download` as `Failed` and replaces `Segment` `Checkpoint`s if `segments` is non-empty.
+    pub(crate) async fn save_failed_with_segments(
+        &self,
+        id: &DownloadId,
+        bytes_downloaded: u64,
+        error_message: &str,
+        segments: &[SegmentCheckpoint],
+    ) -> Result<(), EngineError> {
+        self.save_state_with_segments(
+            id,
+            DownloadState::Failed,
+            bytes_downloaded,
+            Some(error_message),
+            segments,
+        )
+        .await
+    }
+
+    /// Transitions a `Download` to `Paused` and persists exact `Segment` `Checkpoint`s.
+    pub(crate) async fn save_paused(
+        &self,
+        id: &DownloadId,
+        bytes_downloaded: u64,
+        segments: &[SegmentCheckpoint],
+    ) -> Result<(), EngineError> {
+        self.save_state_with_segments(id, DownloadState::Paused, bytes_downloaded, None, segments)
+            .await
+    }
+
+    async fn save_state_with_segments(
+        &self,
+        id: &DownloadId,
+        state: DownloadState,
+        bytes_downloaded: u64,
+        error_message: Option<&str>,
+        segments: &[SegmentCheckpoint],
+    ) -> Result<(), EngineError> {
+        let mut tx = self.pool.begin().await?;
+        let now = unix_now();
+
         sqlx::query(
             "UPDATE downloads SET
                 state = ?,
@@ -268,13 +312,30 @@ impl DownloadStore {
                 updated_at = ?
              WHERE id = ?",
         )
-        .bind(DownloadState::Failed.as_str())
+        .bind(state.as_str())
         .bind(bytes_downloaded as i64)
         .bind(error_message)
-        .bind(unix_now())
+        .bind(now)
         .bind(id.as_str())
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+
+        if !segments.is_empty() {
+            replace_segments_tx(&mut tx, id, segments).await?;
+        }
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Marks a `Download` as `Cancelled` in SQLite.
+    pub(crate) async fn mark_cancelled(&self, id: &DownloadId) -> Result<(), EngineError> {
+        sqlx::query("UPDATE downloads SET state = ?, updated_at = ? WHERE id = ?")
+            .bind(DownloadState::Cancelled.as_str())
+            .bind(unix_now())
+            .bind(id.as_str())
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
@@ -339,4 +400,33 @@ fn unix_now() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+async fn replace_segments_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    id: &DownloadId,
+    segments: &[SegmentCheckpoint],
+) -> Result<(), EngineError> {
+    sqlx::query("DELETE FROM segments WHERE download_id = ?")
+        .bind(id.as_str())
+        .execute(&mut **tx)
+        .await?;
+
+    for seg in segments {
+        sqlx::query(
+            "INSERT INTO segments (
+                download_id, segment_index, start_offset, cursor_offset, end_offset, completed
+             ) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(id.as_str())
+        .bind(seg.segment_index as i64)
+        .bind(seg.start as i64)
+        .bind(seg.cursor as i64)
+        .bind(seg.end.map(|v| v as i64))
+        .bind(i64::from(seg.completed))
+        .execute(&mut **tx)
+        .await?;
+    }
+
+    Ok(())
 }

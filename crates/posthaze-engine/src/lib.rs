@@ -8,6 +8,7 @@ mod transfer;
 /// Dedicated blocking `.part` file writer used by `DownloadEngine` and benchmarks.
 pub mod writer;
 
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -17,11 +18,11 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use thiserror::Error;
-use tokio::sync::watch;
+use tokio::sync::{Mutex, watch};
 
 use crate::probe::probe_url;
 use crate::store::DownloadStore;
-use crate::transfer::{execute_multi_segment, execute_single_stream};
+use crate::transfer::{ControlSignal, TransferFailure, execute_multi_segment, execute_single_stream};
 use crate::writer::PartFileWriter;
 
 pub use crate::store::DownloadRecord;
@@ -155,6 +156,18 @@ pub enum EngineError {
     #[error("invalid download state: {0}")]
     InvalidState(String),
 
+    /// No `Download` record exists for the requested [`DownloadId`].
+    #[error("download not found: {0}")]
+    NotFound(String),
+
+    /// `Download` was paused before completion.
+    #[error("download paused")]
+    Paused,
+
+    /// `Download` was cancelled before completion.
+    #[error("download cancelled")]
+    Cancelled,
+
     /// Background `Download` task failed to join.
     #[error("download task join error: {0}")]
     TaskJoin(String),
@@ -244,10 +257,17 @@ impl DownloadOutcome {
     }
 }
 
+#[derive(Debug, Clone)]
+struct ActiveControl {
+    control_tx: watch::Sender<ControlSignal>,
+    done_rx: watch::Receiver<bool>,
+}
+
 /// Control and observation handle for an active `Download`.
 #[derive(Debug)]
 pub struct DownloadHandle {
     id: DownloadId,
+    control_tx: watch::Sender<ControlSignal>,
     progress_rx: watch::Receiver<ProgressSnapshot>,
     join_handle: tokio::task::JoinHandle<Result<DownloadOutcome, EngineError>>,
 }
@@ -256,6 +276,16 @@ impl DownloadHandle {
     /// Returns the persistent [`DownloadId`] for this `Download`.
     pub fn id(&self) -> &DownloadId {
         &self.id
+    }
+
+    /// Signals this `Download` to pause gracefully, flushing buffered `Chunk`s and saving a `Checkpoint`.
+    pub fn pause(&self) {
+        let _ = self.control_tx.send(ControlSignal::Pause);
+    }
+
+    /// Signals this `Download` to cancel immediately and delete its `.part` file.
+    pub fn cancel(&self) {
+        let _ = self.control_tx.send(ControlSignal::Cancel);
     }
 
     /// Subscribes to live [`ProgressSnapshot`] updates for this `Download`.
@@ -276,6 +306,7 @@ impl DownloadHandle {
 pub struct DownloadEngine {
     client: reqwest::Client,
     store: Option<DownloadStore>,
+    active: Arc<Mutex<HashMap<DownloadId, ActiveControl>>>,
 }
 
 impl Default for DownloadEngine {
@@ -290,6 +321,7 @@ impl DownloadEngine {
         Self {
             client: build_http_client(),
             store: None,
+            active: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -299,6 +331,7 @@ impl DownloadEngine {
         Ok(Self {
             client: build_http_client(),
             store: Some(store),
+            active: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -308,6 +341,7 @@ impl DownloadEngine {
         Ok(Self {
             client: build_http_client(),
             store: Some(store),
+            active: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -324,20 +358,90 @@ impl DownloadEngine {
             total_bytes: None,
             active_workers: 0,
         });
+        let (control_tx, control_rx) = watch::channel(ControlSignal::Run);
+        let (done_tx, done_rx) = watch::channel(false);
+
+        {
+            let mut active = self.active.lock().await;
+            active.insert(
+                id.clone(),
+                ActiveControl {
+                    control_tx: control_tx.clone(),
+                    done_rx,
+                },
+            );
+        }
 
         let client = self.client.clone();
         let store = self.store.clone();
+        let active_map = Arc::clone(&self.active);
         let task_id = id.clone();
 
         let join_handle = tokio::spawn(async move {
-            run_download(client, store, task_id, request, Some(progress_tx)).await
+            let res = run_download(
+                client,
+                store,
+                task_id.clone(),
+                request,
+                Some(progress_tx),
+                control_rx,
+            )
+            .await;
+            active_map.lock().await.remove(&task_id);
+            let _ = done_tx.send(true);
+            res
         });
 
         Ok(DownloadHandle {
             id,
+            control_tx,
             progress_rx,
             join_handle,
         })
+    }
+
+    /// Cancels an active or persisted (`Paused`/`Failed`/`Queued`) `Download`, deleting its `.part` file.
+    pub async fn cancel(&self, id: &DownloadId) -> Result<(), EngineError> {
+        let live = {
+            let active = self.active.lock().await;
+            active.get(id).cloned()
+        };
+
+        if let Some(ctrl) = live {
+            let _ = ctrl.control_tx.send(ControlSignal::Cancel);
+            let mut done_rx = ctrl.done_rx;
+            let _ = done_rx.wait_for(|&done| done).await;
+            return Ok(());
+        }
+
+        let Some(store) = &self.store else {
+            return Err(EngineError::NotFound(id.to_string()));
+        };
+
+        let record = store
+            .get_download(id)
+            .await?
+            .ok_or_else(|| EngineError::NotFound(id.to_string()))?;
+
+        match record.state {
+            DownloadState::Completed => {
+                return Err(EngineError::InvalidState(
+                    "cannot cancel a completed download".to_string(),
+                ));
+            }
+            DownloadState::Cancelled => return Ok(()),
+            DownloadState::Queued
+            | DownloadState::Probing
+            | DownloadState::Active
+            | DownloadState::Paused
+            | DownloadState::Failed => {}
+        }
+
+        if let Some(part_path) = record.part_path {
+            remove_part_file(&part_path).await?;
+        }
+        store.mark_cancelled(id).await?;
+        Ok(())
     }
 
     /// Lists all persisted `DownloadRecord`s ordered newest-first.
@@ -366,12 +470,14 @@ impl DownloadEngine {
         if let Some(store) = &self.store {
             store.insert_queued(&id, &request).await?;
         }
+        let (_control_tx, control_rx) = watch::channel(ControlSignal::Run);
         run_download(
             self.client.clone(),
             self.store.clone(),
             id,
             request,
             progress_tx,
+            control_rx,
         )
         .await
     }
@@ -384,6 +490,14 @@ fn build_http_client() -> reqwest::Client {
         .tcp_nodelay(true)
         .build()
         .unwrap_or_default()
+}
+
+async fn remove_part_file(part_path: &Path) -> Result<(), EngineError> {
+    match tokio::fs::remove_file(part_path).await {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(EngineError::Io(err)),
+    }
 }
 
 async fn fail_download(
@@ -407,6 +521,7 @@ async fn run_download(
     id: DownloadId,
     request: DownloadRequest,
     progress_tx: Option<watch::Sender<ProgressSnapshot>>,
+    mut control_rx: watch::Receiver<ControlSignal>,
 ) -> Result<DownloadOutcome, EngineError> {
     let total_start = Instant::now();
     if let Some(store) = &store
@@ -424,10 +539,65 @@ async fn run_download(
         },
     );
 
+    if *control_rx.borrow() == ControlSignal::Cancel {
+        if let Some(store) = &store {
+            let _ = store.mark_cancelled(&id).await;
+        }
+        emit_progress(
+            &progress_tx,
+            ProgressSnapshot {
+                state: DownloadState::Cancelled,
+                bytes_downloaded: 0,
+                total_bytes: None,
+                active_workers: 0,
+            },
+        );
+        return Err(EngineError::Cancelled);
+    }
+
     let probe_start = Instant::now();
-    let probe = match probe_url(&client, &request.url).await {
-        Ok(probe) => probe,
-        Err(err) => return Err(fail_download(&store, &progress_tx, &id, 0, None, err).await),
+    let probe = tokio::select! {
+        biased;
+        _ = control_rx.changed() => {
+            let sig = *control_rx.borrow();
+            match sig {
+                ControlSignal::Cancel => {
+                    if let Some(store) = &store {
+                        let _ = store.mark_cancelled(&id).await;
+                    }
+                    emit_progress(
+                        &progress_tx,
+                        ProgressSnapshot {
+                            state: DownloadState::Cancelled,
+                            bytes_downloaded: 0,
+                            total_bytes: None,
+                            active_workers: 0,
+                        },
+                    );
+                    return Err(EngineError::Cancelled);
+                }
+                ControlSignal::Pause => {
+                    if let Some(store) = &store {
+                        let _ = store.save_paused(&id, 0, &[]).await;
+                    }
+                    emit_progress(
+                        &progress_tx,
+                        ProgressSnapshot {
+                            state: DownloadState::Paused,
+                            bytes_downloaded: 0,
+                            total_bytes: None,
+                            active_workers: 0,
+                        },
+                    );
+                    return Err(EngineError::Paused);
+                }
+                ControlSignal::Run => unreachable!("Run does not wake select as interruption"),
+            }
+        }
+        res = probe_url(&client, &request.url) => match res {
+            Ok(probe) => probe,
+            Err(err) => return Err(fail_download(&store, &progress_tx, &id, 0, None, err).await),
+        }
     };
     let probe_duration = probe_start.elapsed();
 
@@ -488,6 +658,7 @@ async fn run_download(
                 &writer,
                 &downloaded,
                 &active_workers,
+                control_rx,
             )
             .await
         }
@@ -497,6 +668,7 @@ async fn run_download(
             &writer,
             &downloaded,
             &active_workers,
+            control_rx,
         )
         .await
         .map(|bytes| crate::transfer::MultiSegmentResult {
@@ -504,6 +676,10 @@ async fn run_download(
             workers_used: 1,
             splits_performed: 0,
             retries_performed: 0,
+        })
+        .map_err(|error| TransferFailure {
+            error,
+            segments: Vec::new(),
         }),
     };
 
@@ -513,17 +689,96 @@ async fn run_download(
 
     let res = match transfer_result {
         Ok(res) => res,
-        Err(err) => {
+        Err(failure) => {
             let bytes = downloaded.load(Ordering::Relaxed);
-            return Err(fail_download(
-                &store,
-                &progress_tx,
-                &id,
-                bytes,
-                probe.content_length,
-                err,
-            )
-            .await);
+            match failure.error {
+                EngineError::Paused => {
+                    match Arc::try_unwrap(writer) {
+                        Ok(w) => {
+                            if let Err(flush_err) = w.flush_and_close().await {
+                                return Err(fail_download(
+                                    &store,
+                                    &progress_tx,
+                                    &id,
+                                    bytes,
+                                    probe.content_length,
+                                    flush_err,
+                                )
+                                .await);
+                            }
+                        }
+                        Err(_) => {
+                            return Err(fail_download(
+                                &store,
+                                &progress_tx,
+                                &id,
+                                bytes,
+                                probe.content_length,
+                                EngineError::Writer(
+                                    "writer handle still referenced on pause".to_string(),
+                                ),
+                            )
+                            .await);
+                        }
+                    }
+                    if let Some(store) = &store {
+                        store.save_paused(&id, bytes, &failure.segments).await?;
+                    }
+                    emit_progress(
+                        &progress_tx,
+                        ProgressSnapshot {
+                            state: DownloadState::Paused,
+                            bytes_downloaded: bytes,
+                            total_bytes: probe.content_length,
+                            active_workers: 0,
+                        },
+                    );
+                    return Err(EngineError::Paused);
+                }
+                EngineError::Cancelled => {
+                    if let Ok(w) = Arc::try_unwrap(writer) {
+                        w.abort().await;
+                    }
+                    let _ = remove_part_file(&part_path).await;
+                    if let Some(store) = &store {
+                        let _ = store.mark_cancelled(&id).await;
+                    }
+                    emit_progress(
+                        &progress_tx,
+                        ProgressSnapshot {
+                            state: DownloadState::Cancelled,
+                            bytes_downloaded: bytes,
+                            total_bytes: probe.content_length,
+                            active_workers: 0,
+                        },
+                    );
+                    return Err(EngineError::Cancelled);
+                }
+                err => {
+                    let mut segments_to_save = failure.segments;
+                    if probe.supports_ranges {
+                        if let Ok(w) = Arc::try_unwrap(writer) {
+                            if w.flush_and_close().await.is_err() {
+                                segments_to_save.clear();
+                            }
+                        } else {
+                            segments_to_save.clear();
+                        }
+                    }
+                    if let Some(store) = &store {
+                        let _ = store
+                            .save_failed_with_segments(
+                                &id,
+                                bytes,
+                                &err.to_string(),
+                                &segments_to_save,
+                            )
+                            .await;
+                    }
+                    emit_failed(&progress_tx, bytes, probe.content_length);
+                    return Err(err);
+                }
+            }
         }
     };
 

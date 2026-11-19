@@ -20,3 +20,9 @@ Implementation documentation for Milestone 02 (`posthaze-engine` and `posthaze-c
 - `DownloadEngine::new()`: Remains available as a synchronous ephemeral constructor without SQLite persistence.
 - `DownloadEngine::list_downloads()` and `DownloadEngine::get_download(id)`: Query persisted `DownloadRecord`s.
 - `DownloadEngine::download(request, progress_tx)`: Preserved as a convenience wrapper sharing the same `run_download` lifecycle (`Queued` → `Probing` → `Active` → `Completed`/`Failed`).
+
+## Ticket 02 — Graceful `pause()`, Immediate `cancel()`, and Persisted `cancel(id)`
+
+- **`DownloadHandle::pause()`**: Signals active `Worker`s (and `Probing`) via `ControlSignal::Pause`, flushes all buffered `Chunk`s in `PartFileWriter::flush_and_close()` without renaming `.part`, writes exact `Segment` `[start, cursor, end, completed]` `Checkpoint`s to SQLite, and transitions the `Download` to `Paused` (`EngineError::Paused`).
+- **`DownloadHandle::cancel()` & `DownloadEngine::cancel(id)`**: Aborts active `Worker`s and `PartFileWriter` immediately without draining (`PartFileWriter::abort()`), deletes the `.part` file if present, and marks the SQLite record `Cancelled` (`EngineError::Cancelled`). `DownloadEngine::cancel(id)` works uniformly for both live active transfers and persisted `Paused`, `Failed`, or `Queued` records.
+- **Resumable `Failed` retention**: Range-capable `Download`s that fail flush their buffered `Chunk`s, persist `Segment` `Checkpoint`s, and retain `.part` on disk.

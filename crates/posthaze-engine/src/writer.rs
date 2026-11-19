@@ -86,13 +86,27 @@ impl PartFileWriter {
 
     /// Closes the writer channel, waits for flush/sync, and atomically renames `.part` to `final_path`.
     pub async fn finish(self, final_path: &Path) -> Result<(), EngineError> {
+        let part_path = self.part_path.clone();
+        self.flush_and_close().await?;
+        tokio::fs::rename(&part_path, final_path).await?;
+        Ok(())
+    }
+
+    /// Drains and flushes all buffered `Chunk`s to `.part` without renaming it.
+    pub(crate) async fn flush_and_close(self) -> Result<(), EngineError> {
         drop(self.tx);
         let write_result = self
             .handle
             .await
             .map_err(|err| EngineError::Writer(format!("writer task panicked: {err}")))?;
         write_result?;
-        tokio::fs::rename(&self.part_path, final_path).await?;
         Ok(())
+    }
+
+    /// Aborts the writer task immediately without draining buffered `Chunk`s.
+    pub(crate) async fn abort(self) {
+        self.handle.abort();
+        drop(self.tx);
+        let _ = self.handle.await;
     }
 }
