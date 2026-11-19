@@ -2190,6 +2190,8 @@ impl PosthazeApp {
         let id_delete = row.id.clone();
         let filename_del = row.filename.clone();
         let output_path = row.output_path.clone();
+        let open_path = row.output_path.clone();
+        let row_state = row.state;
 
         let failed_tooltip = (row.state == DownloadState::Failed)
             .then(|| row.error_message.clone())
@@ -2213,7 +2215,18 @@ impl PosthazeApp {
             .on_click(cx.listener(move |app, _, _, cx| {
                 app.selected_id = Some(id_select.clone());
                 app.load_segments_for(id_select.clone(), cx);
+                if app.inspector_collapsed {
+                    app.inspector_collapsed = false;
+                    app.motion
+                        .animate_inspector(COLLAPSED_INSPECTOR_HEIGHT, app.inspector_height);
+                    app.ensure_motion_loop(cx);
+                }
                 cx.notify();
+            }))
+            .on_double_click(cx.listener(move |app, _, _, cx| {
+                if row_state == DownloadState::Completed {
+                    app.open_downloaded_file(open_path.clone(), cx);
+                }
             }))
             .on_mouse_down(
                 MouseButton::Right,
