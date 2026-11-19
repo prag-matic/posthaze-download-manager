@@ -20,9 +20,12 @@ use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::sync::{Mutex, watch};
 
-use crate::probe::probe_url;
+use crate::probe::{ProbeResult, probe_url};
 use crate::store::DownloadStore;
-use crate::transfer::{ControlSignal, TransferFailure, execute_multi_segment, execute_single_stream};
+use crate::transfer::{
+    ControlSignal, MultiSegmentResult, SegmentCheckpoint, TransferFailure, execute_multi_segment,
+    execute_multi_segment_from_checkpoints, execute_single_stream,
+};
 use crate::writer::PartFileWriter;
 
 pub use crate::store::DownloadRecord;
@@ -159,6 +162,10 @@ pub enum EngineError {
     /// No `Download` record exists for the requested [`DownloadId`].
     #[error("download not found: {0}")]
     NotFound(String),
+
+    /// Server `Validator` or `Content-Length` changed since the `Download` was paused.
+    #[error("remote resource changed: {0}")]
+    ResourceChanged(String),
 
     /// `Download` was paused before completion.
     #[error("download paused")]
@@ -400,6 +407,97 @@ impl DownloadEngine {
         })
     }
 
+    /// Resumes a persisted `Paused` or resumable `Failed` `Download` by [`DownloadId`].
+    pub async fn resume(&self, id: &DownloadId) -> Result<DownloadHandle, EngineError> {
+        {
+            let active = self.active.lock().await;
+            if active.contains_key(id) {
+                return Err(EngineError::InvalidState(format!(
+                    "download {id} is already active"
+                )));
+            }
+        }
+
+        let Some(store) = &self.store else {
+            return Err(EngineError::NotFound(id.to_string()));
+        };
+
+        let record = store
+            .get_download(id)
+            .await?
+            .ok_or_else(|| EngineError::NotFound(id.to_string()))?;
+
+        match record.state {
+            DownloadState::Paused => {}
+            DownloadState::Failed if record.supports_ranges || record.part_path.is_none() => {}
+            other => {
+                return Err(EngineError::InvalidState(format!(
+                    "cannot resume download in {} state",
+                    other.as_str()
+                )));
+            }
+        }
+
+        if let Some(part_path) = &record.part_path
+            && !part_path.exists()
+        {
+            return Err(EngineError::InvalidState(format!(
+                "missing .part file for resume: {}",
+                part_path.display()
+            )));
+        }
+
+        let segments = store.get_segments(id).await?;
+
+        let (progress_tx, progress_rx) = watch::channel(ProgressSnapshot {
+            state: DownloadState::Queued,
+            bytes_downloaded: record.bytes_downloaded,
+            total_bytes: record.content_length,
+            active_workers: 0,
+        });
+        let (control_tx, control_rx) = watch::channel(ControlSignal::Run);
+        let (done_tx, done_rx) = watch::channel(false);
+
+        {
+            let mut active = self.active.lock().await;
+            active.insert(
+                id.clone(),
+                ActiveControl {
+                    control_tx: control_tx.clone(),
+                    done_rx,
+                },
+            );
+        }
+
+        let client = self.client.clone();
+        let store = store.clone();
+        let active_map = Arc::clone(&self.active);
+        let task_id = id.clone();
+
+        let join_handle = tokio::spawn(async move {
+            let res = run_resumed_download(
+                client,
+                store,
+                task_id.clone(),
+                record,
+                segments,
+                Some(progress_tx),
+                control_rx,
+            )
+            .await;
+            active_map.lock().await.remove(&task_id);
+            let _ = done_tx.send(true);
+            res
+        });
+
+        Ok(DownloadHandle {
+            id: id.clone(),
+            control_tx,
+            progress_rx,
+            join_handle,
+        })
+    }
+
     /// Cancels an active or persisted (`Paused`/`Failed`/`Queued`) `Download`, deleting its `.part` file.
     pub async fn cancel(&self, id: &DownloadId) -> Result<(), EngineError> {
         let live = {
@@ -515,6 +613,456 @@ async fn fail_download(
     err
 }
 
+async fn probe_with_control(
+    client: &reqwest::Client,
+    store: &Option<DownloadStore>,
+    progress_tx: &Option<watch::Sender<ProgressSnapshot>>,
+    control_rx: &mut watch::Receiver<ControlSignal>,
+    id: &DownloadId,
+    url: &str,
+    (initial_bytes, initial_total): (u64, Option<u64>),
+) -> Result<ProbeResult, EngineError> {
+    if let Some(store) = store
+        && let Err(err) = store.set_state(id, DownloadState::Probing).await
+    {
+        return Err(fail_download(&None, progress_tx, id, initial_bytes, initial_total, err).await);
+    }
+    emit_progress(
+        progress_tx,
+        ProgressSnapshot {
+            state: DownloadState::Probing,
+            bytes_downloaded: initial_bytes,
+            total_bytes: initial_total,
+            active_workers: 0,
+        },
+    );
+
+    if *control_rx.borrow() == ControlSignal::Cancel {
+        if let Some(store) = store {
+            let _ = store.mark_cancelled(id).await;
+        }
+        emit_progress(
+            progress_tx,
+            ProgressSnapshot {
+                state: DownloadState::Cancelled,
+                bytes_downloaded: initial_bytes,
+                total_bytes: initial_total,
+                active_workers: 0,
+            },
+        );
+        return Err(EngineError::Cancelled);
+    }
+
+    tokio::select! {
+        biased;
+        _ = control_rx.changed() => {
+            let sig = *control_rx.borrow();
+            match sig {
+                ControlSignal::Cancel => {
+                    if let Some(store) = store {
+                        let _ = store.mark_cancelled(id).await;
+                    }
+                    emit_progress(
+                        progress_tx,
+                        ProgressSnapshot {
+                            state: DownloadState::Cancelled,
+                            bytes_downloaded: initial_bytes,
+                            total_bytes: initial_total,
+                            active_workers: 0,
+                        },
+                    );
+                    Err(EngineError::Cancelled)
+                }
+                ControlSignal::Pause => {
+                    if let Some(store) = store {
+                        let _ = store.save_paused(id, initial_bytes, &[]).await;
+                    }
+                    emit_progress(
+                        progress_tx,
+                        ProgressSnapshot {
+                            state: DownloadState::Paused,
+                            bytes_downloaded: initial_bytes,
+                            total_bytes: initial_total,
+                            active_workers: 0,
+                        },
+                    );
+                    Err(EngineError::Paused)
+                }
+                ControlSignal::Run => unreachable!("Run does not wake select as interruption"),
+            }
+        }
+        res = probe_url(client, url) => match res {
+            Ok(probe) => Ok(probe),
+            Err(err) => Err(fail_download(store, progress_tx, id, initial_bytes, initial_total, err).await),
+        }
+    }
+}
+
+fn validate_resume_probe(
+    id: &DownloadId,
+    record: &DownloadRecord,
+    probe: &ProbeResult,
+) -> Result<(), EngineError> {
+    if record.content_length != probe.content_length {
+        return Err(EngineError::ResourceChanged(format!(
+            "Content-Length changed from {:?} to {:?}",
+            record.content_length, probe.content_length
+        )));
+    }
+
+    if let Some(prev_etag) = &record.etag
+        && probe.etag.as_deref() != Some(prev_etag.as_str())
+    {
+        return Err(EngineError::ResourceChanged(format!(
+            "ETag changed from {prev_etag} to {:?}",
+            probe.etag
+        )));
+    }
+
+    if let Some(prev_lm) = &record.last_modified
+        && probe.last_modified.as_deref() != Some(prev_lm.as_str())
+    {
+        return Err(EngineError::ResourceChanged(format!(
+            "Last-Modified changed from {prev_lm} to {:?}",
+            probe.last_modified
+        )));
+    }
+
+    if record.etag.is_none()
+        && record.last_modified.is_none()
+        && probe.etag.is_none()
+        && probe.last_modified.is_none()
+    {
+        tracing::warn!(
+            download_id = %id,
+            "resuming download without ETag or Last-Modified validator; relying on Content-Length match"
+        );
+    }
+
+    if !probe.supports_ranges {
+        return Err(EngineError::InvalidState(
+            "server no longer supports byte ranges for resume".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn finalize_transfer(
+    store: &Option<DownloadStore>,
+    progress_tx: &Option<watch::Sender<ProgressSnapshot>>,
+    id: &DownloadId,
+    probe: &ProbeResult,
+    final_path: PathBuf,
+    part_path: &Path,
+    writer: Arc<PartFileWriter>,
+    downloaded: &AtomicU64,
+    transfer_result: Result<MultiSegmentResult, TransferFailure>,
+    probe_duration: Duration,
+    transfer_start: Instant,
+    total_start: Instant,
+) -> Result<DownloadOutcome, EngineError> {
+    let res = match transfer_result {
+        Ok(res) => res,
+        Err(failure) => {
+            let bytes = downloaded.load(Ordering::Relaxed);
+            match failure.error {
+                EngineError::Paused => {
+                    match Arc::try_unwrap(writer) {
+                        Ok(w) => {
+                            if let Err(flush_err) = w.flush_and_close().await {
+                                return Err(fail_download(
+                                    store,
+                                    progress_tx,
+                                    id,
+                                    bytes,
+                                    probe.content_length,
+                                    flush_err,
+                                )
+                                .await);
+                            }
+                        }
+                        Err(_) => {
+                            return Err(fail_download(
+                                store,
+                                progress_tx,
+                                id,
+                                bytes,
+                                probe.content_length,
+                                EngineError::Writer(
+                                    "writer handle still referenced on pause".to_string(),
+                                ),
+                            )
+                            .await);
+                        }
+                    }
+                    if let Some(store) = store {
+                        store.save_paused(id, bytes, &failure.segments).await?;
+                    }
+                    emit_progress(
+                        progress_tx,
+                        ProgressSnapshot {
+                            state: DownloadState::Paused,
+                            bytes_downloaded: bytes,
+                            total_bytes: probe.content_length,
+                            active_workers: 0,
+                        },
+                    );
+                    return Err(EngineError::Paused);
+                }
+                EngineError::Cancelled => {
+                    if let Ok(w) = Arc::try_unwrap(writer) {
+                        w.abort().await;
+                    }
+                    let _ = remove_part_file(part_path).await;
+                    if let Some(store) = store {
+                        let _ = store.mark_cancelled(id).await;
+                    }
+                    emit_progress(
+                        progress_tx,
+                        ProgressSnapshot {
+                            state: DownloadState::Cancelled,
+                            bytes_downloaded: bytes,
+                            total_bytes: probe.content_length,
+                            active_workers: 0,
+                        },
+                    );
+                    return Err(EngineError::Cancelled);
+                }
+                err => {
+                    let mut segments_to_save = failure.segments;
+                    if probe.supports_ranges {
+                        if let Ok(w) = Arc::try_unwrap(writer) {
+                            if w.flush_and_close().await.is_err() {
+                                segments_to_save.clear();
+                            }
+                        } else {
+                            segments_to_save.clear();
+                        }
+                    }
+                    if let Some(store) = store {
+                        let _ = store
+                            .save_failed_with_segments(
+                                id,
+                                bytes,
+                                &err.to_string(),
+                                &segments_to_save,
+                            )
+                            .await;
+                    }
+                    emit_failed(progress_tx, bytes, probe.content_length);
+                    return Err(err);
+                }
+            }
+        }
+    };
+
+    let writer = match Arc::try_unwrap(writer) {
+        Ok(writer) => writer,
+        Err(_) => {
+            return Err(fail_download(
+                store,
+                progress_tx,
+                id,
+                res.bytes_written,
+                probe.content_length,
+                EngineError::Writer(
+                    "writer handle still referenced after workers exited".to_string(),
+                ),
+            )
+            .await);
+        }
+    };
+
+    if let Err(err) = writer.finish(&final_path).await {
+        return Err(fail_download(
+            store,
+            progress_tx,
+            id,
+            res.bytes_written,
+            probe.content_length,
+            err,
+        )
+        .await);
+    }
+
+    if let Some(store) = store {
+        store.mark_completed(id, res.bytes_written).await?;
+    }
+
+    let transfer_duration = transfer_start.elapsed();
+    let total_duration = total_start.elapsed();
+
+    emit_progress(
+        progress_tx,
+        ProgressSnapshot {
+            state: DownloadState::Completed,
+            bytes_downloaded: res.bytes_written,
+            total_bytes: probe.content_length.or(Some(res.bytes_written)),
+            active_workers: 0,
+        },
+    );
+
+    Ok(DownloadOutcome {
+        final_path,
+        bytes_downloaded: res.bytes_written,
+        content_length: probe.content_length,
+        supports_ranges: probe.supports_ranges,
+        workers_used: res.workers_used,
+        splits_performed: res.splits_performed,
+        retries_performed: res.retries_performed,
+        probe_duration,
+        transfer_duration,
+        total_duration,
+        etag: probe.etag.clone(),
+        last_modified: probe.last_modified.clone(),
+        final_url: probe.final_url.clone(),
+    })
+}
+
+async fn run_resumed_download(
+    client: reqwest::Client,
+    store: DownloadStore,
+    id: DownloadId,
+    record: DownloadRecord,
+    segments: Vec<SegmentCheckpoint>,
+    progress_tx: Option<watch::Sender<ProgressSnapshot>>,
+    mut control_rx: watch::Receiver<ControlSignal>,
+) -> Result<DownloadOutcome, EngineError> {
+    let (Some(final_path), Some(part_path)) = (record.output_path.clone(), record.part_path.clone())
+    else {
+        let mut req = DownloadRequest::new(record.url, PathBuf::from("."));
+        req.output_path = record.output_path;
+        req.max_workers = record.max_workers;
+        req.sync_on_complete = record.sync_on_complete;
+        return run_download(client, Some(store), id, req, progress_tx, control_rx).await;
+    };
+
+    if segments.is_empty() {
+        let mut req = DownloadRequest::new(record.url, PathBuf::from("."));
+        req.output_path = Some(final_path);
+        req.max_workers = record.max_workers;
+        req.sync_on_complete = record.sync_on_complete;
+        return run_download(client, Some(store), id, req, progress_tx, control_rx).await;
+    }
+
+    let total_start = Instant::now();
+    let store_opt = Some(store.clone());
+    let probe_start = Instant::now();
+    let probe = probe_with_control(
+        &client,
+        &store_opt,
+        &progress_tx,
+        &mut control_rx,
+        &id,
+        &record.url,
+        (record.bytes_downloaded, record.content_length),
+    )
+    .await?;
+    let probe_duration = probe_start.elapsed();
+
+    if let Err(err) = validate_resume_probe(&id, &record, &probe) {
+        return Err(fail_download(
+            &store_opt,
+            &progress_tx,
+            &id,
+            record.bytes_downloaded,
+            record.content_length,
+            err,
+        )
+        .await);
+    }
+
+    let transfer_start = Instant::now();
+    let writer = match PartFileWriter::spawn_existing_with_sync(
+        part_path.clone(),
+        record.sync_on_complete,
+    ) {
+        Ok(writer) => Arc::new(writer),
+        Err(err) => {
+            return Err(fail_download(
+                &store_opt,
+                &progress_tx,
+                &id,
+                record.bytes_downloaded,
+                probe.content_length,
+                err,
+            )
+            .await);
+        }
+    };
+
+    if let Err(err) = store.mark_resumed_active(&id, &probe.final_url).await {
+        return Err(fail_download(
+            &None,
+            &progress_tx,
+            &id,
+            record.bytes_downloaded,
+            probe.content_length,
+            err,
+        )
+        .await);
+    }
+
+    let initial_bytes: u64 = segments
+        .iter()
+        .map(|s| s.cursor.saturating_sub(s.start))
+        .sum();
+    let downloaded = Arc::new(AtomicU64::new(initial_bytes));
+    let active_workers = Arc::new(AtomicUsize::new(0));
+
+    emit_progress(
+        &progress_tx,
+        ProgressSnapshot {
+            state: DownloadState::Active,
+            bytes_downloaded: initial_bytes,
+            total_bytes: probe.content_length,
+            active_workers: 0,
+        },
+    );
+
+    let reporter = spawn_progress_reporter(
+        progress_tx.clone(),
+        Arc::clone(&downloaded),
+        Arc::clone(&active_workers),
+        probe.content_length,
+    );
+
+    let transfer_result = execute_multi_segment_from_checkpoints(
+        &client,
+        &probe.final_url,
+        segments,
+        record.max_workers,
+        &writer,
+        &downloaded,
+        &active_workers,
+        control_rx,
+        Some((id.clone(), store.clone())),
+    )
+    .await;
+
+    if let Some(handle) = reporter {
+        handle.abort();
+    }
+
+    finalize_transfer(
+        &store_opt,
+        &progress_tx,
+        &id,
+        &probe,
+        final_path,
+        &part_path,
+        writer,
+        &downloaded,
+        transfer_result,
+        probe_duration,
+        transfer_start,
+        total_start,
+    )
+    .await
+}
+
 async fn run_download(
     client: reqwest::Client,
     store: Option<DownloadStore>,
@@ -524,81 +1072,17 @@ async fn run_download(
     mut control_rx: watch::Receiver<ControlSignal>,
 ) -> Result<DownloadOutcome, EngineError> {
     let total_start = Instant::now();
-    if let Some(store) = &store
-        && let Err(err) = store.set_state(&id, DownloadState::Probing).await
-    {
-        return Err(fail_download(&None, &progress_tx, &id, 0, None, err).await);
-    }
-    emit_progress(
-        &progress_tx,
-        ProgressSnapshot {
-            state: DownloadState::Probing,
-            bytes_downloaded: 0,
-            total_bytes: None,
-            active_workers: 0,
-        },
-    );
-
-    if *control_rx.borrow() == ControlSignal::Cancel {
-        if let Some(store) = &store {
-            let _ = store.mark_cancelled(&id).await;
-        }
-        emit_progress(
-            &progress_tx,
-            ProgressSnapshot {
-                state: DownloadState::Cancelled,
-                bytes_downloaded: 0,
-                total_bytes: None,
-                active_workers: 0,
-            },
-        );
-        return Err(EngineError::Cancelled);
-    }
-
     let probe_start = Instant::now();
-    let probe = tokio::select! {
-        biased;
-        _ = control_rx.changed() => {
-            let sig = *control_rx.borrow();
-            match sig {
-                ControlSignal::Cancel => {
-                    if let Some(store) = &store {
-                        let _ = store.mark_cancelled(&id).await;
-                    }
-                    emit_progress(
-                        &progress_tx,
-                        ProgressSnapshot {
-                            state: DownloadState::Cancelled,
-                            bytes_downloaded: 0,
-                            total_bytes: None,
-                            active_workers: 0,
-                        },
-                    );
-                    return Err(EngineError::Cancelled);
-                }
-                ControlSignal::Pause => {
-                    if let Some(store) = &store {
-                        let _ = store.save_paused(&id, 0, &[]).await;
-                    }
-                    emit_progress(
-                        &progress_tx,
-                        ProgressSnapshot {
-                            state: DownloadState::Paused,
-                            bytes_downloaded: 0,
-                            total_bytes: None,
-                            active_workers: 0,
-                        },
-                    );
-                    return Err(EngineError::Paused);
-                }
-                ControlSignal::Run => unreachable!("Run does not wake select as interruption"),
-            }
-        }
-        res = probe_url(&client, &request.url) => match res {
-            Ok(probe) => probe,
-            Err(err) => return Err(fail_download(&store, &progress_tx, &id, 0, None, err).await),
-        }
-    };
+    let probe = probe_with_control(
+        &client,
+        &store,
+        &progress_tx,
+        &mut control_rx,
+        &id,
+        &request.url,
+        (0, None),
+    )
+    .await?;
     let probe_duration = probe_start.elapsed();
 
     let final_path = request
@@ -648,6 +1132,7 @@ async fn run_download(
         probe.content_length,
     );
 
+    let persist = store.as_ref().map(|s| (id.clone(), s.clone()));
     let transfer_result = match (probe.supports_ranges, probe.content_length) {
         (true, Some(total_bytes)) => {
             execute_multi_segment(
@@ -659,6 +1144,7 @@ async fn run_download(
                 &downloaded,
                 &active_workers,
                 control_rx,
+                persist,
             )
             .await
         }
@@ -671,7 +1157,7 @@ async fn run_download(
             control_rx,
         )
         .await
-        .map(|bytes| crate::transfer::MultiSegmentResult {
+        .map(|bytes| MultiSegmentResult {
             bytes_written: bytes,
             workers_used: 1,
             splits_performed: 0,
@@ -687,162 +1173,21 @@ async fn run_download(
         handle.abort();
     }
 
-    let res = match transfer_result {
-        Ok(res) => res,
-        Err(failure) => {
-            let bytes = downloaded.load(Ordering::Relaxed);
-            match failure.error {
-                EngineError::Paused => {
-                    match Arc::try_unwrap(writer) {
-                        Ok(w) => {
-                            if let Err(flush_err) = w.flush_and_close().await {
-                                return Err(fail_download(
-                                    &store,
-                                    &progress_tx,
-                                    &id,
-                                    bytes,
-                                    probe.content_length,
-                                    flush_err,
-                                )
-                                .await);
-                            }
-                        }
-                        Err(_) => {
-                            return Err(fail_download(
-                                &store,
-                                &progress_tx,
-                                &id,
-                                bytes,
-                                probe.content_length,
-                                EngineError::Writer(
-                                    "writer handle still referenced on pause".to_string(),
-                                ),
-                            )
-                            .await);
-                        }
-                    }
-                    if let Some(store) = &store {
-                        store.save_paused(&id, bytes, &failure.segments).await?;
-                    }
-                    emit_progress(
-                        &progress_tx,
-                        ProgressSnapshot {
-                            state: DownloadState::Paused,
-                            bytes_downloaded: bytes,
-                            total_bytes: probe.content_length,
-                            active_workers: 0,
-                        },
-                    );
-                    return Err(EngineError::Paused);
-                }
-                EngineError::Cancelled => {
-                    if let Ok(w) = Arc::try_unwrap(writer) {
-                        w.abort().await;
-                    }
-                    let _ = remove_part_file(&part_path).await;
-                    if let Some(store) = &store {
-                        let _ = store.mark_cancelled(&id).await;
-                    }
-                    emit_progress(
-                        &progress_tx,
-                        ProgressSnapshot {
-                            state: DownloadState::Cancelled,
-                            bytes_downloaded: bytes,
-                            total_bytes: probe.content_length,
-                            active_workers: 0,
-                        },
-                    );
-                    return Err(EngineError::Cancelled);
-                }
-                err => {
-                    let mut segments_to_save = failure.segments;
-                    if probe.supports_ranges {
-                        if let Ok(w) = Arc::try_unwrap(writer) {
-                            if w.flush_and_close().await.is_err() {
-                                segments_to_save.clear();
-                            }
-                        } else {
-                            segments_to_save.clear();
-                        }
-                    }
-                    if let Some(store) = &store {
-                        let _ = store
-                            .save_failed_with_segments(
-                                &id,
-                                bytes,
-                                &err.to_string(),
-                                &segments_to_save,
-                            )
-                            .await;
-                    }
-                    emit_failed(&progress_tx, bytes, probe.content_length);
-                    return Err(err);
-                }
-            }
-        }
-    };
-
-    let writer = match Arc::try_unwrap(writer) {
-        Ok(writer) => writer,
-        Err(_) => {
-            return Err(fail_download(
-                &store,
-                &progress_tx,
-                &id,
-                res.bytes_written,
-                probe.content_length,
-                EngineError::Writer(
-                    "writer handle still referenced after workers exited".to_string(),
-                ),
-            )
-            .await);
-        }
-    };
-
-    if let Err(err) = writer.finish(&final_path).await {
-        return Err(fail_download(
-            &store,
-            &progress_tx,
-            &id,
-            res.bytes_written,
-            probe.content_length,
-            err,
-        )
-        .await);
-    }
-
-    if let Some(store) = &store {
-        store.mark_completed(&id, res.bytes_written).await?;
-    }
-
-    let transfer_duration = transfer_start.elapsed();
-    let total_duration = total_start.elapsed();
-
-    emit_progress(
+    finalize_transfer(
+        &store,
         &progress_tx,
-        ProgressSnapshot {
-            state: DownloadState::Completed,
-            bytes_downloaded: res.bytes_written,
-            total_bytes: probe.content_length.or(Some(res.bytes_written)),
-            active_workers: 0,
-        },
-    );
-
-    Ok(DownloadOutcome {
+        &id,
+        &probe,
         final_path,
-        bytes_downloaded: res.bytes_written,
-        content_length: probe.content_length,
-        supports_ranges: probe.supports_ranges,
-        workers_used: res.workers_used,
-        splits_performed: res.splits_performed,
-        retries_performed: res.retries_performed,
+        &part_path,
+        writer,
+        &downloaded,
+        transfer_result,
         probe_duration,
-        transfer_duration,
-        total_duration,
-        etag: probe.etag,
-        last_modified: probe.last_modified,
-        final_url: probe.final_url,
-    })
+        transfer_start,
+        total_start,
+    )
+    .await
 }
 
 fn spawn_progress_reporter(

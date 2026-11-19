@@ -41,7 +41,7 @@ impl PartFileWriter {
             std::fs::create_dir_all(parent)?;
         }
 
-        let mut file = OpenOptions::new()
+        let file = OpenOptions::new()
             .create(true)
             .write(true)
             .truncate(true)
@@ -51,6 +51,23 @@ impl PartFileWriter {
             file.set_len(len)?;
         }
 
+        Ok(Self::from_open_file(part_path, file, sync_on_complete))
+    }
+
+    /// Opens an existing `.part` file without truncating and spawns the writer task.
+    pub(crate) fn spawn_existing_with_sync(
+        part_path: PathBuf,
+        sync_on_complete: bool,
+    ) -> Result<Self, EngineError> {
+        let file = OpenOptions::new().write(true).open(&part_path)?;
+        Ok(Self::from_open_file(part_path, file, sync_on_complete))
+    }
+
+    fn from_open_file(
+        part_path: PathBuf,
+        mut file: std::fs::File,
+        sync_on_complete: bool,
+    ) -> Self {
         let (tx, mut rx) = mpsc::channel::<WriteChunk>(WRITER_CHANNEL_CAPACITY);
         let handle = tokio::task::spawn_blocking(move || {
             let mut cursor = 0u64;
@@ -69,11 +86,11 @@ impl PartFileWriter {
             Ok(())
         });
 
-        Ok(Self {
+        Self {
             part_path,
             tx,
             handle,
-        })
+        }
     }
 
     /// Sends a `Chunk` to be written at `offset`.

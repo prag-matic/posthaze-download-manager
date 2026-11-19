@@ -9,8 +9,9 @@ use reqwest::header::RANGE;
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 
-use crate::EngineError;
+use crate::store::DownloadStore;
 use crate::writer::PartFileWriter;
+use crate::{DownloadId, EngineError};
 
 pub const MIN_SEGMENT_SIZE: u64 = 2 * 1024 * 1024;
 pub const CHUNK_BUFFER_SIZE: usize = 512 * 1024;
@@ -57,12 +58,16 @@ struct ActiveSegment {
 
 impl ActiveSegment {
     fn new(id: usize, start: u64, end: u64) -> Arc<Self> {
+        Self::from_checkpoint(id, start, start, end, false)
+    }
+
+    fn from_checkpoint(id: usize, start: u64, cursor: u64, end: u64, completed: bool) -> Arc<Self> {
         Arc::new(Self {
             id,
             start,
-            cursor: AtomicU64::new(start),
+            cursor: AtomicU64::new(cursor),
             end: AtomicU64::new(end),
-            completed: AtomicBool::new(false),
+            completed: AtomicBool::new(completed),
         })
     }
 
@@ -146,9 +151,48 @@ pub(crate) async fn execute_multi_segment(
     downloaded: &Arc<AtomicU64>,
     active_workers: &Arc<AtomicUsize>,
     control_rx: watch::Receiver<ControlSignal>,
+    persist: Option<(DownloadId, DownloadStore)>,
 ) -> Result<MultiSegmentResult, TransferFailure> {
     let initial_specs = plan_segments(total_bytes, max_workers);
-    if initial_specs.is_empty() {
+    let checkpoints: Vec<SegmentCheckpoint> = initial_specs
+        .into_iter()
+        .enumerate()
+        .map(|(segment_index, spec)| SegmentCheckpoint {
+            segment_index,
+            start: spec.start,
+            cursor: spec.start,
+            end: Some(spec.end),
+            completed: false,
+        })
+        .collect();
+
+    execute_multi_segment_from_checkpoints(
+        client,
+        url,
+        checkpoints,
+        max_workers,
+        writer,
+        downloaded,
+        active_workers,
+        control_rx,
+        persist,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn execute_multi_segment_from_checkpoints(
+    client: &reqwest::Client,
+    url: &str,
+    checkpoints: Vec<SegmentCheckpoint>,
+    max_workers: usize,
+    writer: &Arc<PartFileWriter>,
+    downloaded: &Arc<AtomicU64>,
+    active_workers: &Arc<AtomicUsize>,
+    control_rx: watch::Receiver<ControlSignal>,
+    persist: Option<(DownloadId, DownloadStore)>,
+) -> Result<MultiSegmentResult, TransferFailure> {
+    if checkpoints.is_empty() {
         return Ok(MultiSegmentResult {
             bytes_written: 0,
             workers_used: 0,
@@ -157,25 +201,53 @@ pub(crate) async fn execute_multi_segment(
         });
     }
 
-    let worker_count = initial_specs.len();
-    let next_id = Arc::new(AtomicUsize::new(worker_count));
+    let max_idx = checkpoints
+        .iter()
+        .map(|c| c.segment_index)
+        .max()
+        .unwrap_or(0);
+    let next_id = Arc::new(AtomicUsize::new(max_idx + 1));
     let splits_performed = Arc::new(AtomicUsize::new(0));
     let retries_performed = Arc::new(AtomicUsize::new(0));
+
     let active_segments: Arc<Mutex<Vec<Arc<ActiveSegment>>>> = Arc::new(Mutex::new(
-        initial_specs
+        checkpoints
             .iter()
-            .enumerate()
-            .map(|(id, spec)| ActiveSegment::new(id, spec.start, spec.end))
+            .map(|c| {
+                let end = c.end.unwrap_or(c.cursor);
+                ActiveSegment::from_checkpoint(
+                    c.segment_index,
+                    c.start,
+                    c.cursor,
+                    end,
+                    c.completed || c.cursor >= end,
+                )
+            })
             .collect(),
     ));
 
-    let initial_list = {
+    let incomplete_list: Vec<Arc<ActiveSegment>> = {
         let guard = active_segments.lock().expect("active_segments poisoned");
-        guard.clone()
+        guard
+            .iter()
+            .filter(|seg| !seg.completed.load(Ordering::Acquire))
+            .cloned()
+            .collect()
     };
 
+    if incomplete_list.is_empty() {
+        let total_written = sum_segment_bytes(&active_segments);
+        return Ok(MultiSegmentResult {
+            bytes_written: total_written,
+            workers_used: 0,
+            splits_performed: 0,
+            retries_performed: 0,
+        });
+    }
+
+    let worker_count = incomplete_list.len().max(1).min(max_workers.max(1));
     let mut join_set = JoinSet::new();
-    for initial_seg in initial_list {
+    for initial_seg in incomplete_list {
         let client = client.clone();
         let url = url.to_string();
         let writer = Arc::clone(writer);
@@ -186,6 +258,7 @@ pub(crate) async fn execute_multi_segment(
         let splits_performed = Arc::clone(&splits_performed);
         let retries_performed = Arc::clone(&retries_performed);
         let control_rx = control_rx.clone();
+        let persist = persist.clone();
 
         join_set.spawn(async move {
             active_workers.fetch_add(1, Ordering::Relaxed);
@@ -201,6 +274,7 @@ pub(crate) async fn execute_multi_segment(
                 &splits_performed,
                 &retries_performed,
                 control_rx,
+                persist,
             )
             .await;
             active_workers.fetch_sub(1, Ordering::Relaxed);
@@ -208,10 +282,9 @@ pub(crate) async fn execute_multi_segment(
         });
     }
 
-    let mut total_written = 0u64;
     while let Some(joined) = join_set.join_next().await {
         match joined {
-            Ok(Ok(bytes)) => total_written += bytes,
+            Ok(Ok(_)) => {}
             Ok(Err(err)) => {
                 if matches!(err, EngineError::Paused) {
                     while join_set.join_next().await.is_some() {}
@@ -236,11 +309,19 @@ pub(crate) async fn execute_multi_segment(
     }
 
     Ok(MultiSegmentResult {
-        bytes_written: total_written,
+        bytes_written: sum_segment_bytes(&active_segments),
         workers_used: worker_count,
         splits_performed: splits_performed.load(Ordering::Relaxed),
         retries_performed: retries_performed.load(Ordering::Relaxed),
     })
+}
+
+fn sum_segment_bytes(active_segments: &Mutex<Vec<Arc<ActiveSegment>>>) -> u64 {
+    let guard = active_segments.lock().expect("active_segments poisoned");
+    guard
+        .iter()
+        .map(|s| s.cursor.load(Ordering::Acquire).saturating_sub(s.start))
+        .sum()
 }
 
 fn snapshot_segments(active_segments: &Mutex<Vec<Arc<ActiveSegment>>>) -> Vec<SegmentCheckpoint> {
@@ -277,6 +358,7 @@ async fn run_worker_loop(
     splits_performed: &AtomicUsize,
     retries_performed: &AtomicUsize,
     mut control_rx: watch::Receiver<ControlSignal>,
+    persist: Option<(DownloadId, DownloadStore)>,
 ) -> Result<u64, EngineError> {
     let mut worker_total = 0u64;
 
@@ -296,7 +378,20 @@ async fn run_worker_loop(
 
         current_seg.completed.store(true, Ordering::Release);
         match steal_largest_segment(active_segments, next_id) {
-            Some(stolen) => {
+            Some((target_idx, new_end, stolen)) => {
+                if let Some((download_id, store)) = &persist {
+                    let stolen_end = stolen.end.load(Ordering::Acquire);
+                    store
+                        .split_segment(
+                            download_id,
+                            target_idx,
+                            new_end,
+                            stolen.id,
+                            stolen.start,
+                            stolen_end,
+                        )
+                        .await?;
+                }
                 splits_performed.fetch_add(1, Ordering::Relaxed);
                 current_seg = stolen;
             }
@@ -310,7 +405,7 @@ async fn run_worker_loop(
 fn steal_largest_segment(
     active_segments: &Mutex<Vec<Arc<ActiveSegment>>>,
     next_id: &AtomicUsize,
-) -> Option<Arc<ActiveSegment>> {
+) -> Option<(usize, u64, Arc<ActiveSegment>)> {
     let mut guard = active_segments.lock().expect("active_segments poisoned");
 
     let target = guard
@@ -343,7 +438,7 @@ fn steal_largest_segment(
     let id = next_id.fetch_add(1, Ordering::Relaxed);
     let new_seg = ActiveSegment::new(id, steal_start, old_end);
     guard.push(Arc::clone(&new_seg));
-    Some(new_seg)
+    Some((target.id, mid, new_seg))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -549,6 +644,7 @@ fn is_transient_error(err: &EngineError) -> bool {
         | EngineError::Migration(_)
         | EngineError::InvalidState(_)
         | EngineError::NotFound(_)
+        | EngineError::ResourceChanged(_)
         | EngineError::Paused
         | EngineError::Cancelled
         | EngineError::TaskJoin(_) => false,

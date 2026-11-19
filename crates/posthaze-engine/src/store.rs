@@ -339,6 +339,97 @@ impl DownloadStore {
         Ok(())
     }
 
+    /// Transitions a resumed `Download` to `Active` and updates its `final_url`.
+    pub(crate) async fn mark_resumed_active(
+        &self,
+        id: &DownloadId,
+        final_url: &str,
+    ) -> Result<(), EngineError> {
+        sqlx::query(
+            "UPDATE downloads SET
+                final_url = ?,
+                state = ?,
+                error_message = NULL,
+                updated_at = ?
+             WHERE id = ?",
+        )
+        .bind(final_url)
+        .bind(DownloadState::Active.as_str())
+        .bind(unix_now())
+        .bind(id.as_str())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Atomically updates the bisected `Segment`'s `end_offset` and inserts the stolen `Segment`.
+    pub(crate) async fn split_segment(
+        &self,
+        id: &DownloadId,
+        target_index: usize,
+        new_end: u64,
+        stolen_index: usize,
+        stolen_start: u64,
+        stolen_end: u64,
+    ) -> Result<(), EngineError> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "UPDATE segments SET end_offset = ? WHERE download_id = ? AND segment_index = ?",
+        )
+        .bind(new_end as i64)
+        .bind(id.as_str())
+        .bind(target_index as i64)
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            "INSERT INTO segments (
+                download_id, segment_index, start_offset, cursor_offset, end_offset, completed
+             ) VALUES (?, ?, ?, ?, ?, 0)",
+        )
+        .bind(id.as_str())
+        .bind(stolen_index as i64)
+        .bind(stolen_start as i64)
+        .bind(stolen_start as i64)
+        .bind(stolen_end as i64)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Loads all persisted `SegmentCheckpoint`s for a `Download`, ordered by `segment_index`.
+    pub(crate) async fn get_segments(
+        &self,
+        id: &DownloadId,
+    ) -> Result<Vec<SegmentCheckpoint>, EngineError> {
+        let rows = sqlx::query(
+            "SELECT segment_index, start_offset, cursor_offset, end_offset, completed
+             FROM segments
+             WHERE download_id = ?
+             ORDER BY segment_index ASC",
+        )
+        .bind(id.as_str())
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            out.push(SegmentCheckpoint {
+                segment_index: usize::try_from(row.try_get::<i64, _>("segment_index")?)
+                    .unwrap_or(0),
+                start: u64::try_from(row.try_get::<i64, _>("start_offset")?).unwrap_or(0),
+                cursor: u64::try_from(row.try_get::<i64, _>("cursor_offset")?).unwrap_or(0),
+                end: row
+                    .try_get::<Option<i64>, _>("end_offset")?
+                    .map(|v| u64::try_from(v).unwrap_or(0)),
+                completed: row.try_get::<i64, _>("completed")? != 0,
+            });
+        }
+        Ok(out)
+    }
+
     /// Fetches a single `DownloadRecord` by `DownloadId`.
     pub(crate) async fn get_download(
         &self,
