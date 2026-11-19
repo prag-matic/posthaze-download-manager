@@ -495,7 +495,8 @@ where
                         ("WAIT", silver_muted())
                     };
                     div()
-                        .w(px(300.0))
+                        .min_w(px(240.0))
+                        .flex_1()
                         .px_2p5()
                         .py_1()
                         .bg(graphite_elevated())

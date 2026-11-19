@@ -31,10 +31,10 @@ use crate::modals::{
 };
 use crate::theme::*;
 use crate::view_model::{
-    DEFAULT_INSPECTOR_HEIGHT, DEFAULT_SIDEBAR_WIDTH, DownloadRowView, FilterTab,
-    RAIL_SIDEBAR_WIDTH, SortColumn, SortDirection, clamp_inspector_height, compute_fifo_ranks,
-    filter_and_sort_rows, format_bytes, format_eta, format_speed, parse_settings_inputs,
-    resolve_sidebar_drag, state_icon,
+    COLLAPSED_INSPECTOR_HEIGHT, DEFAULT_INSPECTOR_HEIGHT, DEFAULT_SIDEBAR_WIDTH, DownloadRowView,
+    FilterTab, RAIL_SIDEBAR_WIDTH, SortColumn, SortDirection, compute_fifo_ranks,
+    derive_display_filename, filter_and_sort_rows, format_bytes, format_eta, format_speed,
+    parse_settings_inputs, resolve_inspector_drag, resolve_sidebar_drag, state_icon,
 };
 
 const COL_STATE: f32 = 104.0;
@@ -729,11 +729,8 @@ impl Render for PosthazeApp {
                             .records
                             .iter()
                             .find(|r| r.id == id)
-                            .map(|r| r.url.as_str())
-                            .and_then(|u| u.rsplit('/').next())
-                            .filter(|s| !s.is_empty())
-                            .unwrap_or("download")
-                            .to_string();
+                            .map(derive_display_filename)
+                            .unwrap_or_else(|| "download".to_string());
                         app.request_delete_download(id, filename, cx);
                     });
                 },
@@ -836,6 +833,8 @@ impl Render for PosthazeApp {
         let resizing_sidebar = matches!(active_resize, Some(ActiveResize::Sidebar { .. }));
         let resizing_inspector = matches!(active_resize, Some(ActiveResize::Inspector { .. }));
 
+        let visible_ids: Vec<DownloadId> = visible_rows.iter().map(|r| r.id.clone()).collect();
+
         div()
             .relative()
             .flex()
@@ -843,8 +842,9 @@ impl Render for PosthazeApp {
             .size_full()
             .bg(paper_bg())
             .text_color(carbon_text())
-            .on_key_down(cx.listener(|app, event: &KeyDownEvent, _, cx| {
-                if event.keystroke.key == "escape" {
+            .on_key_down(cx.listener(move |app, event: &KeyDownEvent, window, cx| {
+                let key = event.keystroke.key.as_str();
+                if key == "escape" {
                     let mut changed = false;
                     if app.confirm_modal.take().is_some() {
                         changed = true;
@@ -858,6 +858,84 @@ impl Render for PosthazeApp {
                     if changed {
                         cx.notify();
                     }
+                    return;
+                }
+
+                if key == "enter" {
+                    if app.confirm_modal.is_some() {
+                        app.execute_confirmed_action(cx);
+                        return;
+                    }
+                    if matches!(app.preflight_modal, Some(PreflightModalState::Resolved { .. })) {
+                        app.confirm_preflight(true, window, cx);
+                        return;
+                    }
+                    if app.settings_modal.is_some() {
+                        app.save_settings_modal(cx);
+                        return;
+                    }
+                }
+
+                if app.confirm_modal.is_some()
+                    || app.preflight_modal.is_some()
+                    || app.settings_modal.is_some()
+                    || app.url_input.read(cx).focus_handle(cx).is_focused(window)
+                {
+                    return;
+                }
+
+                match key {
+                    "up" | "down" if !visible_ids.is_empty() => {
+                        let current_idx = app
+                            .selected_id
+                            .as_ref()
+                            .and_then(|id| visible_ids.iter().position(|v| v == id));
+                        let next_idx = match (key, current_idx) {
+                            ("up", Some(0)) | ("up", None) => 0,
+                            ("up", Some(i)) => i - 1,
+                            ("down", None) => 0,
+                            ("down", Some(i)) => (i + 1).min(visible_ids.len() - 1),
+                            _ => 0,
+                        };
+                        let next_id = visible_ids[next_idx].clone();
+                        app.selected_id = Some(next_id.clone());
+                        app.load_segments_for(next_id, cx);
+                        cx.notify();
+                    }
+                    "space" => {
+                        if let Some(id) = app.selected_id.clone()
+                            && let Some(rec) = app.records.iter().find(|r| r.id == id)
+                        {
+                            let state = app.live_map.get(&id).map_or(rec.state, |s| s.state);
+                            match state {
+                                DownloadState::Active
+                                | DownloadState::Queued
+                                | DownloadState::Probing => app.pause_download(id, cx),
+                                DownloadState::Paused => app.resume_download(id, cx),
+                                DownloadState::Failed => {
+                                    let is_rc = rec
+                                        .error_message
+                                        .as_deref()
+                                        .is_some_and(|m| m.contains("remote resource changed"));
+                                    if is_rc {
+                                        app.restart_fresh_download(id, cx);
+                                    } else {
+                                        app.resume_download(id, cx);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    "delete" => {
+                        if let Some(id) = app.selected_id.clone()
+                            && let Some(rec) = app.records.iter().find(|r| r.id == id)
+                        {
+                            let filename = derive_display_filename(rec);
+                            app.request_delete_download(id, filename, cx);
+                        }
+                    }
+                    _ => {}
                 }
             }))
             .when(resizing_sidebar, |el| el.cursor_col_resize())
@@ -887,7 +965,10 @@ impl Render for PosthazeApp {
                         start_height,
                     } => {
                         let delta = f32::from(start_y - event.position.y);
-                        app.inspector_height = clamp_inspector_height(start_height + delta);
+                        let (collapsed, expanded_height) =
+                            resolve_inspector_drag(start_height + delta, app.inspector_height);
+                        app.inspector_collapsed = collapsed;
+                        app.inspector_height = expanded_height;
                     }
                 }
                 cx.notify();
@@ -1006,44 +1087,48 @@ impl Render for PosthazeApp {
                                 )
                             })
                             .child(self.render_table(&visible_rows, is_empty_queue, cx))
-                            .when(!self.inspector_collapsed, |el| {
-                                el.child(
-                                    div()
-                                        .id("inspector-resize")
-                                        .h(px(7.0))
-                                        .w_full()
-                                        .flex_shrink_0()
-                                        .flex()
-                                        .items_center()
-                                        .cursor_row_resize()
-                                        .hover(|s| s.bg(rgba(0x2A282555)))
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            cx.listener(|app, ev: &MouseDownEvent, _, cx| {
-                                                cx.stop_propagation();
-                                                app.active_resize = Some(ActiveResize::Inspector {
-                                                    start_y: ev.position.y,
-                                                    start_height: app.inspector_height,
-                                                });
-                                                cx.notify();
-                                            }),
-                                        )
-                                        .on_double_click(cx.listener(|app, _, _, cx| {
-                                            app.inspector_height = DEFAULT_INSPECTOR_HEIGHT;
+                            .child(
+                                div()
+                                    .id("inspector-resize")
+                                    .h(px(7.0))
+                                    .w_full()
+                                    .flex_shrink_0()
+                                    .flex()
+                                    .items_center()
+                                    .cursor_row_resize()
+                                    .hover(|s| s.bg(rgba(0x2A282555)))
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|app, ev: &MouseDownEvent, _, cx| {
+                                            cx.stop_propagation();
+                                            let start_height = if app.inspector_collapsed {
+                                                COLLAPSED_INSPECTOR_HEIGHT
+                                            } else {
+                                                app.inspector_height
+                                            };
+                                            app.active_resize = Some(ActiveResize::Inspector {
+                                                start_y: ev.position.y,
+                                                start_height,
+                                            });
                                             cx.notify();
-                                        }))
-                                        .child(
-                                            div()
-                                                .h(px(if resizing_inspector { 2.0 } else { 1.0 }))
-                                                .w_full()
-                                                .bg(if resizing_inspector {
-                                                    selenium_amber()
-                                                } else {
-                                                    graphite_border()
-                                                }),
-                                        ),
-                                )
-                            })
+                                        }),
+                                    )
+                                    .on_double_click(cx.listener(|app, _, _, cx| {
+                                        app.inspector_collapsed = false;
+                                        app.inspector_height = DEFAULT_INSPECTOR_HEIGHT;
+                                        cx.notify();
+                                    }))
+                                    .child(
+                                        div()
+                                            .h(px(if resizing_inspector { 2.0 } else { 1.0 }))
+                                            .w_full()
+                                            .bg(if resizing_inspector {
+                                                selenium_amber()
+                                            } else {
+                                                graphite_border()
+                                            }),
+                                    ),
+                            )
                             .child(inspector),
                     ),
             )
@@ -1159,24 +1244,20 @@ impl PosthazeApp {
                                             graphite_bg()
                                         })
                                         .hover(|s| s.bg(graphite_elevated()))
+                                        .tooltip({
+                                            let label = format!("{} ({count})", tab.label());
+                                            move |window, cx| {
+                                                Tooltip::new(label.clone()).build(window, cx)
+                                            }
+                                        })
                                         .on_click(cx.listener(move |app, _, _, cx| {
                                             app.filter = tab;
                                             cx.notify();
                                         }))
                                         .child(
-                                            Button::new(SharedString::from(format!(
-                                                "rail-btn-{}",
-                                                tab.label()
-                                            )))
-                                            .xsmall()
-                                            .ghost()
-                                            .icon(tab_icon)
-                                            .text_color(tab_color)
-                                            .tooltip(format!("{} ({count})", tab.label()))
-                                            .on_click(cx.listener(move |app, _, _, cx| {
-                                                app.filter = tab;
-                                                cx.notify();
-                                            })),
+                                            Icon::new(tab_icon)
+                                                .size(px(15.0))
+                                                .text_color(tab_color),
                                         )
                                 }),
                             ),
@@ -2008,7 +2089,10 @@ impl PosthazeApp {
                         },
                     )
                     .when(
-                        !matches!(row.state, DownloadState::Completed | DownloadState::Cancelled),
+                        matches!(
+                            row.state,
+                            DownloadState::Active | DownloadState::Queued | DownloadState::Probing
+                        ),
                         |el| {
                             el.child(
                                 Button::new(SharedString::from(format!(

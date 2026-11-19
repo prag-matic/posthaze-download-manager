@@ -419,12 +419,27 @@ where
                 div()
                     .px_3()
                     .py_1p5()
-                    .bg(errata_vermilion())
-                    .font_family(MONO_FONT)
-                    .text_size(TYPE_BODY)
-                    .line_height(px(18.0))
-                    .text_color(silver_text())
-                    .child(err),
+                    .rounded(px(4.0))
+                    .bg(rgba(0xEF444424))
+                    .border_1()
+                    .border_color(errata_vermilion())
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        Icon::new(IconName::TriangleAlert)
+                            .size(px(14.0))
+                            .text_color(errata_vermilion()),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .font_family(MONO_FONT)
+                            .text_size(TYPE_BODY)
+                            .line_height(px(18.0))
+                            .text_color(silver_text())
+                            .child(err),
+                    ),
             )
         })
         .child(labeled_input("Default Output Directory", &state.dir_input))

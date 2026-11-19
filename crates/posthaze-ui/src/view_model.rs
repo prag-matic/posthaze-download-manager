@@ -21,10 +21,14 @@ pub const SIDEBAR_RAIL_SNAP_THRESHOLD: f32 = 130.0;
 
 /// Default height (in logical pixels) of the bottom selected-download inspector.
 pub const DEFAULT_INSPECTOR_HEIGHT: f32 = 240.0;
-/// Minimum allowed height (in logical pixels) of the bottom selected-download inspector.
+/// Minimum allowed expanded height (in logical pixels) of the bottom selected-download inspector.
 pub const MIN_INSPECTOR_HEIGHT: f32 = 150.0;
 /// Maximum allowed height (in logical pixels) of the bottom selected-download inspector.
 pub const MAX_INSPECTOR_HEIGHT: f32 = 460.0;
+/// Height (in logical pixels) of the collapsed bottom inspector summary strip.
+pub const COLLAPSED_INSPECTOR_HEIGHT: f32 = 28.0;
+/// Dragging shorter than this threshold snaps the inspector to its collapsed strip.
+pub const INSPECTOR_COLLAPSE_SNAP_THRESHOLD: f32 = 90.0;
 
 /// Clamps the left sidebar width to `[MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH]`.
 pub fn clamp_sidebar_width(width: f32) -> f32 {
@@ -45,6 +49,17 @@ pub fn resolve_sidebar_drag(dragged_width: f32, previous_expanded_width: f32) ->
 /// Clamps the bottom inspector height to `[MIN_INSPECTOR_HEIGHT, MAX_INSPECTOR_HEIGHT]`.
 pub fn clamp_inspector_height(height: f32) -> f32 {
     height.clamp(MIN_INSPECTOR_HEIGHT, MAX_INSPECTOR_HEIGHT)
+}
+
+/// Resolves `(collapsed, expanded_height)` while dragging the bottom inspector divider.
+/// Dragging below [`INSPECTOR_COLLAPSE_SNAP_THRESHOLD`] snaps to the collapsed strip while
+/// preserving `previous_expanded_height`.
+pub fn resolve_inspector_drag(dragged_height: f32, previous_expanded_height: f32) -> (bool, f32) {
+    if dragged_height < INSPECTOR_COLLAPSE_SNAP_THRESHOLD {
+        (true, clamp_inspector_height(previous_expanded_height))
+    } else {
+        (false, clamp_inspector_height(dragged_height))
+    }
 }
 
 /// Sidebar queue filter categories.
@@ -728,5 +743,9 @@ mod tests {
         assert_eq!(resolve_sidebar_drag(110.0, 260.0), (true, 260.0));
         assert_eq!(resolve_sidebar_drag(130.0, 260.0), (false, MIN_SIDEBAR_WIDTH));
         assert_eq!(resolve_sidebar_drag(250.0, 220.0), (false, 250.0));
+
+        assert_eq!(resolve_inspector_drag(60.0, 280.0), (true, 280.0));
+        assert_eq!(resolve_inspector_drag(90.0, 280.0), (false, MIN_INSPECTOR_HEIGHT));
+        assert_eq!(resolve_inspector_drag(320.0, 240.0), (false, 320.0));
     }
 }
