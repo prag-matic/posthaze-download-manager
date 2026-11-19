@@ -19,6 +19,9 @@ cargo run --release -p posthaze-cli -- bench --sizes 100M -c 8 --drop-pct 5 --er
 # Multi-scenario + A/B sync comparison against aria2c only
 cargo run --release -p posthaze-cli -- bench --sizes 64M -c 1,8 --tools posthaze,aria2c --compare-sync --scenarios clean,head-blocked,flaky
 
+# A/B SQLite persistence + writer-acked Checkpoint overhead comparison
+cargo run --release -p posthaze-cli -- bench --no-external --compare-db
+
 # Benchmark an external URL with custom aria2c args
 cargo run --release -p posthaze-cli -- bench --url "https://example.com/file.bin" -c 1,8 --tools posthaze,aria2c --aria2-args "--min-split-size=1M -k 1M"
 ```
@@ -31,7 +34,7 @@ cargo run --release -p posthaze-cli -- bench --url "https://example.com/file.bin
 | `--sizes <LIST>` | `100M` | Comma-separated virtual file sizes (e.g. `100M,1G`) |
 | `-c, --connections <LIST>` | `1,2,4,8,16,32` | Comma-separated `Worker` counts to sweep |
 | `--runs <N>` | `3` | Iterations per `(size, connections)` cell (reports median, min, max) |
-| `--tools <LIST>` | `auto` | Comma-separated tools (`auto`, `posthaze`, `posthaze-sync`, `aria2c`, `curl`) |
+| `--tools <LIST>` | `auto` | Comma-separated tools (`auto`, `posthaze`, `posthaze-sync`, `posthaze-db`, `aria2c`, `curl`) |
 | `--aria2-args <STR>` | `--min-split-size=2M` | Extra CLI flags passed to `aria2c` |
 | `--curl-args <STR>` | `""` | Extra CLI flags passed to `curl` |
 | `--scenarios <LIST>` | custom | Comma-separated server presets (`clean`, `throttled`, `head-blocked`, `flaky`) |
@@ -42,6 +45,7 @@ cargo run --release -p posthaze-cli -- bench --url "https://example.com/file.bin
 | `--block-head` | `false` | Return `405 Method Not Allowed` on `HEAD` in custom scenario |
 | `--sync-on-complete` | `false` | Enable `File::sync_all()` durability on `posthaze` runs |
 | `--compare-sync` | `false` | Include a `posthaze (sync)` A/B row alongside `posthaze` |
+| `--compare-db` | `false` | Include a `posthaze (db)` A/B row with SQLite persistence and periodic `Checkpoint`s |
 | `--alternate <BOOL>` | `true` | Alternate tool execution order across odd/even runs |
 | `--no-external` | `false` | Shorthand for `--tools posthaze` |
 | `--report <PATH>` | none | Save report as Markdown (or JSON when ending in `.json`) |

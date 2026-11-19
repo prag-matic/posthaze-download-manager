@@ -31,6 +31,7 @@ Documentation is a first-class part of Posthaze Download Manager.
 - [Ticket 03 Baseline — Static Multi-`Segment` Scaling (`c=2..32`)](benchmarks/ticket-03-baseline.md)
 - [Ticket 04 Benchmark — Dynamic `Segment` Splitting (`c=2..32`)](benchmarks/ticket-04-work-stealing.md)
 - [Milestone 02 Loopback Baseline — Zero-SQLite `posthaze-cli bench`](benchmarks/milestone-02-loopback-baseline.md)
+- [Milestone 02 SQLite `Checkpoint` Overhead — `posthaze` vs `posthaze (db)`](benchmarks/milestone-02-sqlite-checkpoint-overhead.md)
 
 ## Agent Workflow Configuration
 

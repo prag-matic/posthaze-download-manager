@@ -23,6 +23,7 @@ pub struct BenchOptions {
     pub block_head: bool,
     pub sync_on_complete: bool,
     pub compare_sync: bool,
+    pub compare_db: bool,
     pub alternate: bool,
     pub scenarios: Vec<String>,
     pub report_path: Option<PathBuf>,
@@ -47,6 +48,7 @@ pub struct BenchRow {
 enum ToolKind {
     Posthaze,
     PosthazeSync,
+    PosthazeDb,
     Aria2c,
     Curl,
 }
@@ -56,6 +58,7 @@ impl ToolKind {
         match self {
             Self::Posthaze => "posthaze",
             Self::PosthazeSync => "posthaze (sync)",
+            Self::PosthazeDb => "posthaze (db)",
             Self::Aria2c => "aria2c",
             Self::Curl => "curl",
         }
@@ -88,6 +91,18 @@ pub async fn run_bench(opts: BenchOptions) -> ExitCode {
     }
 
     let engine = DownloadEngine::new();
+    let db_engine = if selected_tools.contains(&ToolKind::PosthazeDb) {
+        match DownloadEngine::open(temp_root.join("bench-state.db")).await {
+            Ok(e) => Some(e),
+            Err(err) => {
+                eprintln!("Failed to open benchmark SQLite store: {err}");
+                let _ = std::fs::remove_dir_all(&temp_root);
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        None
+    };
     let aria2_extra = split_cli_args(&opts.aria2_args);
     let curl_extra = split_cli_args(&opts.curl_args);
     let mut rows = Vec::new();
@@ -112,6 +127,7 @@ pub async fn run_bench(opts: BenchOptions) -> ExitCode {
             &aria2_extra,
             &curl_extra,
             &engine,
+            db_engine.as_ref(),
             &temp_root,
             &mut rows,
         )
@@ -123,6 +139,7 @@ pub async fn run_bench(opts: BenchOptions) -> ExitCode {
                 Ok(bytes) => parsed_sizes.push((raw.clone(), bytes)),
                 Err(err) => {
                     eprintln!("Invalid --size '{raw}': {err}");
+                    drop(db_engine);
                     let _ = std::fs::remove_dir_all(&temp_root);
                     return ExitCode::FAILURE;
                 }
@@ -147,6 +164,7 @@ pub async fn run_bench(opts: BenchOptions) -> ExitCode {
                     Ok(s) => s,
                     Err(err) => {
                         eprintln!("Failed to start local bench server: {err}");
+                        drop(db_engine);
                         let _ = std::fs::remove_dir_all(&temp_root);
                         return ExitCode::FAILURE;
                     }
@@ -167,6 +185,7 @@ pub async fn run_bench(opts: BenchOptions) -> ExitCode {
                     &aria2_extra,
                     &curl_extra,
                     &engine,
+                    db_engine.as_ref(),
                     &temp_root,
                     &mut rows,
                 )
@@ -177,6 +196,7 @@ pub async fn run_bench(opts: BenchOptions) -> ExitCode {
         }
     }
 
+    drop(db_engine);
     let _ = std::fs::remove_dir_all(&temp_root);
 
     let markdown = render_markdown_table(&rows);
@@ -217,6 +237,7 @@ async fn run_matrix_against_url(
     aria2_extra: &[String],
     curl_extra: &[String],
     engine: &DownloadEngine,
+    db_engine: Option<&DownloadEngine>,
     temp_root: &Path,
     rows: &mut Vec<BenchRow>,
 ) {
@@ -227,7 +248,7 @@ async fn run_matrix_against_url(
             .filter(|t| match t {
                 ToolKind::Curl => c == 1,
                 ToolKind::Aria2c => c <= 16,
-                ToolKind::Posthaze | ToolKind::PosthazeSync => true,
+                ToolKind::Posthaze | ToolKind::PosthazeSync | ToolKind::PosthazeDb => true,
             })
             .collect();
 
@@ -246,15 +267,25 @@ async fn run_matrix_against_url(
             for idx in order {
                 let tool = applicable[idx];
                 match tool {
-                    ToolKind::Posthaze | ToolKind::PosthazeSync => {
-                        let out_path = temp_root.join(format!("ph-{scenario_name}-c{c}-r{run_idx}.bin"));
+                    ToolKind::Posthaze | ToolKind::PosthazeSync | ToolKind::PosthazeDb => {
+                        let tag = match tool {
+                            ToolKind::PosthazeDb => "db",
+                            ToolKind::PosthazeSync => "sync",
+                            _ => "mem",
+                        };
+                        let out_path =
+                            temp_root.join(format!("ph-{tag}-{scenario_name}-c{c}-r{run_idx}.bin"));
                         let mut req = DownloadRequest::new(url, temp_root);
                         req.output_path = Some(out_path.clone());
                         req.max_workers = c;
                         req.sync_on_complete =
                             matches!(tool, ToolKind::PosthazeSync) || opts.sync_on_complete;
 
-                        match engine.download(req, None).await {
+                        let target_engine = match tool {
+                            ToolKind::PosthazeDb => db_engine.unwrap_or(engine),
+                            _ => engine,
+                        };
+                        match target_engine.download(req, None).await {
                             Ok(outcome) => {
                                 let secs = outcome.transfer_duration.as_secs_f64().max(0.0001);
                                 let mbps = (outcome.average_bytes_per_sec() * 8.0) / 1_000_000.0;
@@ -335,6 +366,9 @@ fn resolve_tools(opts: &BenchOptions) -> Result<Vec<ToolKind>, String> {
                 if opts.compare_sync {
                     push_unique(&mut out, ToolKind::PosthazeSync);
                 }
+                if opts.compare_db {
+                    push_unique(&mut out, ToolKind::PosthazeDb);
+                }
                 if has_aria2 {
                     push_unique(&mut out, ToolKind::Aria2c);
                 }
@@ -347,8 +381,12 @@ fn resolve_tools(opts: &BenchOptions) -> Result<Vec<ToolKind>, String> {
                 if opts.compare_sync {
                     push_unique(&mut out, ToolKind::PosthazeSync);
                 }
+                if opts.compare_db {
+                    push_unique(&mut out, ToolKind::PosthazeDb);
+                }
             }
             "posthaze-sync" => push_unique(&mut out, ToolKind::PosthazeSync),
+            "posthaze-db" => push_unique(&mut out, ToolKind::PosthazeDb),
             "aria2c" | "aria2" => {
                 if !has_aria2 {
                     return Err("Tool 'aria2c' requested via --tools, but not found on PATH".into());
@@ -363,7 +401,7 @@ fn resolve_tools(opts: &BenchOptions) -> Result<Vec<ToolKind>, String> {
             }
             other => {
                 return Err(format!(
-                    "Unknown tool '{other}' in --tools (expected auto, posthaze, posthaze-sync, aria2c, curl)"
+                    "Unknown tool '{other}' in --tools (expected auto, posthaze, posthaze-sync, posthaze-db, aria2c, curl)"
                 ));
             }
         }

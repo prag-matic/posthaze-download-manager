@@ -108,7 +108,7 @@ enum Commands {
         /// Number of iterations per configuration.
         #[arg(long, default_value_t = 3)]
         runs: usize,
-        /// Comma-separated tools to compare (`auto`, `posthaze`, `posthaze-sync`, `aria2c`, `curl`).
+        /// Comma-separated tools to compare (`auto`, `posthaze`, `posthaze-sync`, `posthaze-db`, `aria2c`, `curl`).
         #[arg(long, value_delimiter = ',', default_value = "auto")]
         tools: Vec<String>,
         /// Extra CLI flags passed to `aria2c`.
@@ -138,6 +138,9 @@ enum Commands {
         /// Include an extra `posthaze (sync)` A/B row alongside `posthaze`.
         #[arg(long)]
         compare_sync: bool,
+        /// Include an extra `posthaze (db)` A/B row with SQLite persistence and periodic `Checkpoint`s.
+        #[arg(long)]
+        compare_db: bool,
         /// Alternate tool execution order on odd/even runs (enabled by default).
         #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
         alternate: bool,
@@ -283,6 +286,7 @@ async fn main() -> ExitCode {
             block_head,
             sync_on_complete,
             compare_sync,
+            compare_db,
             alternate,
             scenarios,
             no_external,
@@ -308,6 +312,7 @@ async fn main() -> ExitCode {
                 block_head,
                 sync_on_complete,
                 compare_sync,
+                compare_db,
                 alternate,
                 scenarios,
                 report_path: report,
@@ -837,6 +842,7 @@ mod tests {
             "--aria2-args",
             "--min-split-size=1M -k 1M",
             "--compare-sync",
+            "--compare-db",
             "--scenarios",
             "clean,flaky",
             "-c",
@@ -852,6 +858,7 @@ mod tests {
                 tools,
                 aria2_args,
                 compare_sync,
+                compare_db,
                 scenarios,
                 connections,
                 runs,
@@ -861,6 +868,7 @@ mod tests {
                 assert_eq!(tools, vec!["posthaze", "aria2c"]);
                 assert_eq!(aria2_args, "--min-split-size=1M -k 1M");
                 assert!(compare_sync);
+                assert!(compare_db);
                 assert_eq!(scenarios, vec!["clean", "flaky"]);
                 assert_eq!(connections, vec![1, 8]);
                 assert_eq!(runs, 2);
