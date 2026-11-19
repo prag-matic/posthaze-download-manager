@@ -1,10 +1,10 @@
-//! Comprehensive multi-tab Settings modal (`General`, `Network`, `Automation`, `Interface`, `Reset`).
+//! Comprehensive multi-tab Settings modal (`General`, `Downloads`, `Network`, `Automation`, `Interface`, `Reset`).
 
 use std::path::PathBuf;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::input::InputState;
+use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{Icon, Sizable};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
@@ -42,6 +42,17 @@ impl SettingsTab {
             Self::Automation => "Automation",
             Self::Interface => "Interface",
             Self::Reset => "Reset",
+        }
+    }
+
+    pub fn subtitle(self) -> &'static str {
+        match self {
+            Self::General => "Default save location and folder sorting.",
+            Self::Downloads => "File collisions, removal behavior, and automatic retries.",
+            Self::Network => "Proxy routing, bandwidth cap, and connection limits.",
+            Self::Automation => "Windows notifications and post-download commands.",
+            Self::Interface => "Row interactions, Pre-Flight actions, and display scale.",
+            Self::Reset => "Restore all preferences to factory defaults.",
         }
     }
 
@@ -87,7 +98,7 @@ pub(crate) struct SettingsModalState {
 impl SettingsModalState {
     pub fn from_settings(settings: &Settings, window: &mut Window, cx: &mut App) -> Self {
         let dir_input = cx.new(|cx| {
-            let mut st = InputState::new(window, cx).placeholder("Default output directory");
+            let mut st = InputState::new(window, cx).placeholder("Default save folder");
             st.set_value(
                 settings.default_output_dir.to_string_lossy().to_string(),
                 window,
@@ -96,7 +107,7 @@ impl SettingsModalState {
             st
         });
         let workers_input = cx.new(|cx| {
-            let mut st = InputState::new(window, cx).placeholder("1..32");
+            let mut st = InputState::new(window, cx).placeholder("1–32");
             st.set_value(settings.max_workers.to_string(), window, cx);
             st
         });
@@ -112,17 +123,17 @@ impl SettingsModalState {
             st
         });
         let speed_limit_input = cx.new(|cx| {
-            let mut st = InputState::new(window, cx).placeholder("0 = Unlimited");
+            let mut st = InputState::new(window, cx).placeholder("0");
             st.set_value(settings.download_speed_limit_kib.to_string(), window, cx);
             st
         });
         let auto_retry_input = cx.new(|cx| {
-            let mut st = InputState::new(window, cx).placeholder("0..10");
+            let mut st = InputState::new(window, cx).placeholder("0–10");
             st.set_value(settings.auto_retry_count.to_string(), window, cx);
             st
         });
         let cmd_path_input = cx.new(|cx| {
-            let mut st = InputState::new(window, cx).placeholder("Executable path...");
+            let mut st = InputState::new(window, cx).placeholder("C:\\Path\\To\\Program.exe");
             st.set_value(settings.completion_cmd_path.clone(), window, cx);
             st
         });
@@ -217,7 +228,7 @@ impl SettingsModalState {
     pub fn apply_to_settings(&self, cx: &App) -> Result<Settings, String> {
         let dir = self.dir_input.read(cx).value().trim().to_string();
         if dir.is_empty() {
-            return Err("Default output directory cannot be empty.".to_string());
+            return Err("Save folder cannot be empty.".to_string());
         }
         let max_workers = self
             .workers_input
@@ -225,9 +236,9 @@ impl SettingsModalState {
             .value()
             .trim()
             .parse::<usize>()
-            .map_err(|_| "Max workers must be an integer between 1 and 32.".to_string())?;
+            .map_err(|_| "Workers per download must be an integer between 1 and 32.".to_string())?;
         if !(1..=32).contains(&max_workers) {
-            return Err("Max workers must be between 1 and 32.".to_string());
+            return Err("Workers per download must be between 1 and 32.".to_string());
         }
         let max_concurrent_downloads = self
             .concurrent_input
@@ -235,9 +246,9 @@ impl SettingsModalState {
             .value()
             .trim()
             .parse::<usize>()
-            .map_err(|_| "Max simultaneous downloads must be at least 1.".to_string())?;
+            .map_err(|_| "Parallel downloads must be at least 1.".to_string())?;
         if max_concurrent_downloads == 0 {
-            return Err("Max simultaneous downloads must be at least 1.".to_string());
+            return Err("Parallel downloads must be at least 1.".to_string());
         }
         let proxy_url = self.proxy_url_input.read(cx).value().trim().to_string();
         if self.proxy_mode == ProxyMode::Manual && proxy_url.is_empty() {
@@ -249,7 +260,7 @@ impl SettingsModalState {
             .value()
             .trim()
             .parse::<u64>()
-            .map_err(|_| "Download speed limit must be a non-negative integer (KiB/s).".to_string())?;
+            .map_err(|_| "Speed limit must be a non-negative integer (KiB/s).".to_string())?;
         let auto_retry_count = self
             .auto_retry_input
             .read(cx)
@@ -264,7 +275,7 @@ impl SettingsModalState {
         let completion_cmd_path = self.cmd_path_input.read(cx).value().trim().to_string();
         let completion_cmd_args = self.cmd_args_input.read(cx).value().trim().to_string();
         if self.completion_cmd_enabled && completion_cmd_path.is_empty() {
-            return Err("Post-completion command path is required when enabled.".to_string());
+            return Err("Program path is required when post-download command is enabled.".to_string());
         }
 
         Ok(Settings {
@@ -337,10 +348,11 @@ where
             .flex()
             .flex_col()
             .gap_3()
-            .child(labeled_input("Default Download Folder", &state.dir_input))
+            .child(labeled_input("Save Folder", &state.dir_input))
             .child(toggle_row(
                 "settings-auto-categorize",
-                "Auto-categorize subfolders by file type (Archives, Video, Audio, Documents, Programs)",
+                "Sort by File Type",
+                "Route files into Archives, Video, Audio, Documents, and Programs subfolders.",
                 state.auto_categorize_folders,
                 SettingsAction::ToggleAutoCategorize,
                 on_action.clone(),
@@ -349,16 +361,13 @@ where
         SettingsTab::Downloads => div()
             .flex()
             .flex_col()
-            .gap_3()
-            .child(section_label("File Exists Reaction"))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_1p5()
+            .child(setting_row(
+                "When File Exists",
+                "Action when the destination filename already exists on disk.",
+                segmented_track()
                     .child(choice_btn(
                         "coll-rename",
-                        "Rename",
+                        "Rename Copy",
                         state.collision_policy == CollisionPolicy::Rename,
                         SettingsAction::SetCollisionPolicy(CollisionPolicy::Rename),
                         on_action.clone(),
@@ -372,65 +381,61 @@ where
                     ))
                     .child(choice_btn(
                         "coll-ask",
-                        "Always Ask",
+                        "Ask Each Time",
                         state.collision_policy == CollisionPolicy::Ask,
                         SettingsAction::SetCollisionPolicy(CollisionPolicy::Ask),
                         on_action.clone(),
                     )),
-            )
-            .child(section_label("Row Delete Button Default"))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_1p5()
+            ))
+            .child(setting_row(
+                "Remove Button Action",
+                "Default behavior for the row Trash icon (right-click always shows both).",
+                segmented_track()
                     .child(choice_btn(
                         "del-ask",
-                        "Always Ask",
+                        "Ask Each Time",
                         state.delete_action_default == DeleteDefaultAction::Ask,
                         SettingsAction::SetDeleteDefault(DeleteDefaultAction::Ask),
                         on_action.clone(),
                     ))
                     .child(choice_btn(
                         "del-remove",
-                        "Remove from List",
+                        "Remove Entry",
                         state.delete_action_default == DeleteDefaultAction::Remove,
                         SettingsAction::SetDeleteDefault(DeleteDefaultAction::Remove),
                         on_action.clone(),
                     ))
                     .child(choice_btn(
                         "del-file",
-                        "Delete File & Entry",
+                        "Delete File",
                         state.delete_action_default == DeleteDefaultAction::DeleteFile,
                         SettingsAction::SetDeleteDefault(DeleteDefaultAction::DeleteFile),
                         on_action.clone(),
                     )),
-            )
-            .child(labeled_input(
-                "Auto-Retry Failed Downloads (0..10)",
-                &state.auto_retry_input,
+            ))
+            .child(setting_row(
+                "Auto-Retry on Error",
+                "Automatic retry attempts (0–10) after a transient failure.",
+                compact_input(&state.auto_retry_input, px(88.0), Some("retries")),
             )),
 
         SettingsTab::Network => div()
             .flex()
             .flex_col()
-            .gap_3()
-            .child(section_label("Proxy Mode"))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_1p5()
+            .child(setting_row(
+                "Proxy",
+                "How HTTP/HTTPS requests are routed.",
+                segmented_track()
                     .child(choice_btn(
                         "proxy-sys",
-                        "System Proxy",
+                        "System",
                         state.proxy_mode == ProxyMode::System,
                         SettingsAction::SetProxyMode(ProxyMode::System),
                         on_action.clone(),
                     ))
                     .child(choice_btn(
                         "proxy-none",
-                        "No Proxy",
+                        "Direct",
                         state.proxy_mode == ProxyMode::None,
                         SettingsAction::SetProxyMode(ProxyMode::None),
                         on_action.clone(),
@@ -442,115 +447,135 @@ where
                         SettingsAction::SetProxyMode(ProxyMode::Manual),
                         on_action.clone(),
                     )),
-            )
-            .when(state.proxy_mode == ProxyMode::Manual, |el| {
-                el.child(labeled_input("Proxy URL", &state.proxy_url_input))
-            })
-            .child(section_label("Traffic Speed Profile"))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .flex_wrap()
-                    .gap_1p5()
-                    .child(preset_btn(
-                        "spd-unlim",
-                        "Unlimited",
-                        SettingsAction::SetSpeedPreset(0),
-                        on_action.clone(),
-                    ))
-                    .child(preset_btn(
-                        "spd-low",
-                        "Low (256 KiB/s)",
-                        SettingsAction::SetSpeedPreset(256),
-                        on_action.clone(),
-                    ))
-                    .child(preset_btn(
-                        "spd-med",
-                        "Medium (2 MiB/s)",
-                        SettingsAction::SetSpeedPreset(2048),
-                        on_action.clone(),
-                    ))
-                    .child(preset_btn(
-                        "spd-high",
-                        "High (8 MiB/s)",
-                        SettingsAction::SetSpeedPreset(8192),
-                        on_action.clone(),
-                    )),
-            )
-            .child(labeled_input(
-                "Global Download Speed Limit (KiB/s, 0 = Unlimited)",
-                &state.speed_limit_input,
             ))
+            .when(state.proxy_mode == ProxyMode::Manual, |el| {
+                el.child(
+                    div()
+                        .py_2p5()
+                        .border_b_1()
+                        .border_color(graphite_border())
+                        .child(labeled_input("Proxy URL", &state.proxy_url_input)),
+                )
+            })
             .child(
                 div()
+                    .py_2p5()
+                    .border_b_1()
+                    .border_color(graphite_border())
                     .flex()
-                    .gap_3()
+                    .flex_col()
+                    .gap_2()
                     .child(
                         div()
-                            .flex_1()
-                            .child(labeled_input("Max Workers (1..32)", &state.workers_input)),
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_4()
+                            .child(setting_text(
+                                "Speed Limit",
+                                "Global bandwidth cap across active workers (0 = Unlimited).",
+                            ))
+                            .child(compact_input(&state.speed_limit_input, px(108.0), Some("KiB/s"))),
                     )
                     .child(
-                        div()
-                            .flex_1()
-                            .child(labeled_input("Max Simultaneous (1+)", &state.concurrent_input)),
+                        segmented_track()
+                            .child(preset_btn(
+                                "spd-unlim",
+                                "Unlimited",
+                                SettingsAction::SetSpeedPreset(0),
+                                on_action.clone(),
+                            ))
+                            .child(preset_btn(
+                                "spd-low",
+                                "Low · 256 KiB/s",
+                                SettingsAction::SetSpeedPreset(256),
+                                on_action.clone(),
+                            ))
+                            .child(preset_btn(
+                                "spd-med",
+                                "Medium · 2 MiB/s",
+                                SettingsAction::SetSpeedPreset(2048),
+                                on_action.clone(),
+                            ))
+                            .child(preset_btn(
+                                "spd-high",
+                                "High · 8 MiB/s",
+                                SettingsAction::SetSpeedPreset(8192),
+                                on_action.clone(),
+                            )),
                     ),
             )
-            .child(toggle_row(
-                "settings-sync",
-                "Flush to disk on completion (sync_all)",
-                state.sync_on_complete,
-                SettingsAction::ToggleSyncOnComplete,
-                on_action.clone(),
-            )),
+            .child(setting_row(
+                "Workers per Download",
+                "Maximum concurrent byte-range segments per file (1–32).",
+                compact_input(&state.workers_input, px(88.0), Some("workers")),
+            ))
+            .child(setting_row(
+                "Parallel Downloads",
+                "Maximum active downloads running at the same time (1+).",
+                compact_input(&state.concurrent_input, px(88.0), Some("slots")),
+            ))
+            .child(
+                div().pt_2p5().child(toggle_row(
+                    "settings-sync",
+                    "Flush File Buffers on Finish",
+                    "Call sync_all before finalizing each download to protect against power loss.",
+                    state.sync_on_complete,
+                    SettingsAction::ToggleSyncOnComplete,
+                    on_action.clone(),
+                )),
+            ),
 
         SettingsTab::Automation => div()
             .flex()
             .flex_col()
-            .gap_3()
-            .child(section_label("Windows Notifications"))
+            .gap_2()
+            .child(section_heading("Desktop Notifications"))
             .child(toggle_row(
                 "notify-added",
-                "Notify when a Download is added",
+                "Download Added",
+                "Show a Windows notification when a new download is queued.",
                 state.notify_on_added,
                 SettingsAction::ToggleNotifyAdded,
                 on_action.clone(),
             ))
             .child(toggle_row(
                 "notify-completed",
-                "Notify when a Download completes",
+                "Download Completed",
+                "Show a Windows notification when a file finishes.",
                 state.notify_on_completed,
                 SettingsAction::ToggleNotifyCompleted,
                 on_action.clone(),
             ))
             .child(toggle_row(
                 "notify-failed",
-                "Notify when a Download fails",
+                "Download Failed",
+                "Show a Windows notification if a transfer stops with an error.",
                 state.notify_on_failed,
                 SettingsAction::ToggleNotifyFailed,
                 on_action.clone(),
             ))
             .child(toggle_row(
                 "notify-inactive",
-                "Notify only when Posthaze window is unfocused",
+                "Only When Window Is Unfocused",
+                "Suppress notifications while you are actively viewing Posthaze.",
                 state.notify_only_inactive,
                 SettingsAction::ToggleNotifyOnlyInactive,
                 on_action.clone(),
             ))
-            .child(div().h(px(1.0)).w_full().bg(graphite_border()))
+            .child(div().h(px(1.0)).w_full().my_1().bg(graphite_border()))
             .child(
                 div()
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child(section_label("Post-Completion Command / Antivirus Scan"))
+                    .child(section_heading("Run After Completion"))
                     .child({
                         let act = on_action.clone();
                         Button::new("settings-defender-preset")
-                            .xsmall()
+                            .small()
                             .icon(IconName::ShieldCheck)
-                            .label("Windows Defender Preset")
+                            .label("Use Windows Defender")
                             .on_click(move |_, window, cx| {
                                 act(SettingsAction::ApplyDefenderPreset, window, cx);
                             })
@@ -558,41 +583,59 @@ where
             )
             .child(toggle_row(
                 "cmd-enabled",
-                "Run external executable or antivirus scan when Download completes",
+                "Launch Program on Finish",
+                "Run an antivirus scanner or script when a download completes.",
                 state.completion_cmd_enabled,
                 SettingsAction::ToggleCompletionCmd,
                 on_action.clone(),
             ))
             .when(state.completion_cmd_enabled, |el| {
-                el.child(labeled_input("Executable Path", &state.cmd_path_input))
-                    .child(labeled_input("Arguments (%path% = file path)", &state.cmd_args_input))
+                el.child(
+                    div()
+                        .pt_1()
+                        .flex()
+                        .flex_col()
+                        .gap_2p5()
+                        .child(labeled_input("Program Path", &state.cmd_path_input))
+                        .child(labeled_input(
+                            "Arguments (%path% = completed file)",
+                            &state.cmd_args_input,
+                        )),
+                )
             }),
 
         SettingsTab::Interface => div()
             .flex()
             .flex_col()
-            .gap_3()
-            .child(section_label("Interaction Behavior"))
-            .child(toggle_row(
-                "ui-click-insp",
-                "Single-click download row opens Byte-Map Inspector",
-                state.ui_click_row_opens_inspector,
-                SettingsAction::ToggleClickOpensInspector,
-                on_action.clone(),
-            ))
-            .child(toggle_row(
-                "ui-add-paused",
-                "Show \"Add Paused\" button in Pre-Flight modal",
-                state.ui_show_add_paused,
-                SettingsAction::ToggleShowAddPaused,
-                on_action.clone(),
-            ))
-            .child(section_label("UI & Font Zoom"))
             .child(
                 div()
+                    .pb_2p5()
+                    .border_b_1()
+                    .border_color(graphite_border())
                     .flex()
-                    .items_center()
-                    .gap_1p5()
+                    .flex_col()
+                    .gap_2p5()
+                    .child(toggle_row(
+                        "ui-click-insp",
+                        "Open Byte-Map Inspector on Click",
+                        "Automatically expand the bottom inspector when selecting a download row.",
+                        state.ui_click_row_opens_inspector,
+                        SettingsAction::ToggleClickOpensInspector,
+                        on_action.clone(),
+                    ))
+                    .child(toggle_row(
+                        "ui-add-paused",
+                        "Show \"Add Paused\" in Pre-Flight",
+                        "Include the Add Paused button alongside Download Now.",
+                        state.ui_show_add_paused,
+                        SettingsAction::ToggleShowAddPaused,
+                        on_action.clone(),
+                    )),
+            )
+            .child(setting_row(
+                "Interface Scale",
+                "Adjust overall text and control sizing.",
+                segmented_track()
                     .child(choice_btn(
                         "zoom-90",
                         "90%",
@@ -621,7 +664,7 @@ where
                         SettingsAction::SetZoom(125),
                         on_action.clone(),
                     )),
-            ),
+            )),
 
         SettingsTab::Reset => div()
             .flex()
@@ -629,7 +672,7 @@ where
             .gap_3()
             .child(
                 div()
-                    .p_3()
+                    .p_3p5()
                     .bg(graphite_elevated())
                     .border_1()
                     .border_color(graphite_border())
@@ -637,7 +680,7 @@ where
                     .text_xs()
                     .line_height(px(18.0))
                     .text_color(silver_muted())
-                    .child("Restores all Posthaze settings—including default download folder, proxy, speed limits, collision/delete rules, notifications, post-completion command, and UI zoom—back to canonical defaults. Existing downloads in your Queue are untouched."),
+                    .child("Restores save folder, collision and removal rules, proxy, speed limit, notifications, post-download command, and interface scale to factory defaults. Downloads in your Queue are kept untouched."),
             )
             .child(
                 div().flex().child({
@@ -646,7 +689,7 @@ where
                         .small()
                         .danger()
                         .icon(IconName::RotateCcw)
-                        .label("Reset All Settings to Defaults")
+                        .label("Restore Default Settings")
                         .on_click(move |_, window, cx| {
                             act(SettingsAction::ResetToDefaults, window, cx);
                         })
@@ -655,8 +698,8 @@ where
     };
 
     let card = div()
-        .w(px(760.0))
-        .h(px(520.0))
+        .w(px(780.0))
+        .h(px(540.0))
         .max_w_full()
         .max_h_full()
         .bg(graphite_bg())
@@ -685,7 +728,7 @@ where
                 )
                 .child(
                     Button::new("settings-x-close")
-                        .xsmall()
+                        .small()
                         .ghost()
                         .icon(IconName::X)
                         .on_click({
@@ -701,7 +744,7 @@ where
                 .flex()
                 .child(
                     div()
-                        .w(px(172.0))
+                        .w(px(176.0))
                         .h_full()
                         .bg(graphite_elevated())
                         .border_r_1()
@@ -715,12 +758,12 @@ where
                             let act = on_action.clone();
                             div()
                                 .id(SharedString::from(format!("settings-tab-{}", tab.label())))
-                                .px_2p5()
-                                .py_1p5()
+                                .px_3()
+                                .py_2()
                                 .rounded(px(4.0))
                                 .flex()
                                 .items_center()
-                                .gap_2()
+                                .gap_2p5()
                                 .cursor_pointer()
                                 .bg(if active {
                                     paper_hover()
@@ -728,6 +771,11 @@ where
                                     graphite_elevated()
                                 })
                                 .text_size(TYPE_BODY)
+                                .font_weight(if active {
+                                    FontWeight::SEMIBOLD
+                                } else {
+                                    FontWeight::NORMAL
+                                })
                                 .text_color(if active { silver_text() } else { silver_muted() })
                                 .hover(|s| s.bg(graphite_border()))
                                 .on_click(move |_, window, cx| {
@@ -749,18 +797,45 @@ where
                         .flex_1()
                         .min_w_0()
                         .h_full()
-                        .p_4()
+                        .px_6()
+                        .py_5()
                         .overflow_y_scroll()
+                        .flex()
+                        .flex_col()
+                        .gap_4()
+                        .child(
+                            div()
+                                .pb_3()
+                                .border_b_1()
+                                .border_color(graphite_border())
+                                .flex()
+                                .flex_col()
+                                .gap_0p5()
+                                .child(
+                                    div()
+                                        .text_size(TYPE_HEADING)
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(silver_text())
+                                        .child(state.active_tab.label()),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(silver_muted())
+                                        .child(state.active_tab.subtitle()),
+                                ),
+                        )
                         .child(body),
                 ),
         )
         .when_some(state.error.clone(), |el, err| {
             el.child(
                 div()
-                    .mx_4()
+                    .mx_5()
                     .mb_2()
                     .px_3()
-                    .py_1p5()
+                    .py_2()
+                    .rounded(px(4.0))
                     .bg(rgba(0xEF444420))
                     .border_1()
                     .border_color(errata_vermilion())
@@ -799,17 +874,105 @@ where
     modal_backdrop(card, on_backdrop_close)
 }
 
-fn section_label(text: &'static str) -> impl IntoElement {
+fn section_heading(text: &'static str) -> impl IntoElement {
     div()
-        .text_size(TYPE_MICRO)
+        .text_size(TYPE_BODY)
         .font_weight(FontWeight::SEMIBOLD)
-        .text_color(silver_muted())
+        .text_color(silver_text())
         .child(text)
+}
+
+fn setting_text(title: &'static str, description: &'static str) -> impl IntoElement {
+    div()
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .gap_0p5()
+        .child(
+            div()
+                .text_size(TYPE_BODY)
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(silver_text())
+                .child(title),
+        )
+        .child(
+            div()
+                .text_xs()
+                .line_height(px(16.0))
+                .text_color(silver_muted())
+                .child(description),
+        )
+}
+
+fn setting_row(
+    title: &'static str,
+    description: &'static str,
+    control: impl IntoElement,
+) -> impl IntoElement {
+    div()
+        .py_3()
+        .border_b_1()
+        .border_color(graphite_border())
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap_4()
+        .child(setting_text(title, description))
+        .child(div().flex_shrink_0().child(control))
+}
+
+fn segmented_track() -> Div {
+    div()
+        .p_0p5()
+        .bg(table_header_bg())
+        .border_1()
+        .border_color(graphite_border())
+        .rounded(px(4.0))
+        .flex()
+        .items_center()
+        .gap_1()
+}
+
+fn compact_input(
+    state: &Entity<InputState>,
+    width: Pixels,
+    unit: Option<&'static str>,
+) -> impl IntoElement {
+    div()
+        .flex()
+        .items_center()
+        .gap_1p5()
+        .child(
+            div()
+                .w(width)
+                .h(px(30.0))
+                .px_2p5()
+                .bg(table_header_bg())
+                .border_1()
+                .border_color(paper_border())
+                .rounded(px(4.0))
+                .flex()
+                .items_center()
+                .font_family(MONO_FONT)
+                .text_size(TYPE_BODY)
+                .child(Input::new(state).appearance(false)),
+        )
+        .when_some(unit, |el, u| {
+            el.child(
+                div()
+                    .font_family(MONO_FONT)
+                    .text_size(TYPE_MICRO)
+                    .text_color(silver_muted())
+                    .child(u),
+            )
+        })
 }
 
 fn toggle_row<F>(
     id: &'static str,
-    label: &'static str,
+    title: &'static str,
+    description: &'static str,
     checked: bool,
     action: SettingsAction,
     on_action: F,
@@ -819,15 +982,18 @@ where
 {
     div()
         .id(id)
+        .py_1p5()
         .flex()
-        .items_center()
-        .gap_2()
+        .items_start()
+        .gap_2p5()
         .cursor_pointer()
         .on_click(move |_, window, cx| on_action(action.clone(), window, cx))
         .child(
             div()
-                .w(px(15.0))
-                .h(px(15.0))
+                .mt(px(2.0))
+                .w(px(16.0))
+                .h(px(16.0))
+                .rounded(px(3.0))
                 .flex_shrink_0()
                 .border_1()
                 .border_color(if checked {
@@ -851,7 +1017,7 @@ where
                     )
                 }),
         )
-        .child(div().text_xs().text_color(silver_text()).child(label))
+        .child(setting_text(title, description))
 }
 
 fn choice_btn<F>(
@@ -864,9 +1030,11 @@ fn choice_btn<F>(
 where
     F: Fn(SettingsAction, &mut Window, &mut App) + 'static,
 {
-    let mut btn = Button::new(id).xsmall().label(label);
+    let mut btn = Button::new(id).small().label(label);
     if selected {
         btn = btn.primary();
+    } else {
+        btn = btn.ghost();
     }
     btn.on_click(move |_, window, cx| on_action(action.clone(), window, cx))
 }
@@ -881,7 +1049,8 @@ where
     F: Fn(SettingsAction, &mut Window, &mut App) + 'static,
 {
     Button::new(id)
-        .xsmall()
+        .small()
+        .ghost()
         .label(label)
         .on_click(move |_, window, cx| on_action(action.clone(), window, cx))
 }
