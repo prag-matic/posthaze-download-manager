@@ -5,8 +5,10 @@ use std::path::PathBuf;
 
 use gpui_kit::assets::IconName;
 use posthaze_engine::{
-    DownloadId, DownloadRecord, DownloadState, ProgressSnapshot, SegmentProgress, Settings,
+    DownloadId, DownloadRecord, DownloadState, ProgressSnapshot, SegmentProgress,
 };
+#[cfg(test)]
+use posthaze_engine::Settings;
 
 /// Default width (in logical pixels) of the left filter & telemetry rail.
 pub const DEFAULT_SIDEBAR_WIDTH: f32 = 220.0;
@@ -510,6 +512,7 @@ pub fn normalize_byte_map_segments(
 }
 
 /// Validates and parses user-edited `Settings` form fields.
+#[cfg(test)]
 pub fn parse_settings_inputs(
     default_output_dir: &str,
     max_workers_str: &str,
@@ -539,6 +542,7 @@ pub fn parse_settings_inputs(
         max_workers,
         max_concurrent_downloads,
         sync_on_complete,
+        ..Settings::default()
     })
 }
 

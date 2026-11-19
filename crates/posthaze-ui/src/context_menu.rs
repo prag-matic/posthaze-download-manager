@@ -33,6 +33,9 @@ pub(crate) enum ContextMenuAction {
     ShowInFolder,
     CopyUrl,
     InspectByteMap,
+    FileIntegrity,
+    RenameFile,
+    MoveTo,
     RemoveFromList,
     DeleteFileAndEntry,
 }
@@ -135,6 +138,29 @@ pub(crate) fn build_row_menu_items(row: &DownloadRowView) -> Vec<ContextMenuEntr
         enabled: true,
         danger: false,
     });
+    if row.state == DownloadState::Completed {
+        items.push(ContextMenuEntry::Item {
+            action: ContextMenuAction::FileIntegrity,
+            label: "File Integrity (BLAKE3)",
+            icon: IconName::ShieldCheck,
+            enabled: has_path,
+            danger: false,
+        });
+        items.push(ContextMenuEntry::Item {
+            action: ContextMenuAction::RenameFile,
+            label: "Rename File...",
+            icon: IconName::File,
+            enabled: has_path,
+            danger: false,
+        });
+        items.push(ContextMenuEntry::Item {
+            action: ContextMenuAction::MoveTo,
+            label: "Move To...",
+            icon: IconName::Folder,
+            enabled: has_path,
+            danger: false,
+        });
+    }
 
     items.push(ContextMenuEntry::Separator);
 

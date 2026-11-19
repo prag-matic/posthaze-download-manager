@@ -14,7 +14,10 @@ use sqlx::sqlite::{
 
 use crate::probe::ProbeResult;
 use crate::transfer::{SegmentCheckpoint, plan_segments};
-use crate::{DownloadId, DownloadRequest, DownloadState, EngineError, Settings};
+use crate::{
+    CollisionPolicy, DeleteDefaultAction, DownloadId, DownloadRequest, DownloadState, EngineError,
+    ProxyMode, Settings,
+};
 
 const DOWNLOAD_SELECT_COLUMNS: &str = "
     id, url, final_url, output_dir, output_path, part_path, state,
@@ -602,7 +605,12 @@ impl DownloadStore {
     /// Reads the persisted [`Settings`] row.
     pub(crate) async fn get_settings(&self) -> Result<Settings, EngineError> {
         let row = sqlx::query(
-            "SELECT default_output_dir, max_workers, max_concurrent_downloads, sync_on_complete
+            "SELECT default_output_dir, max_workers, max_concurrent_downloads, sync_on_complete,
+                    proxy_mode, proxy_url, download_speed_limit_kib, auto_categorize_folders,
+                    collision_policy, delete_action_default, auto_retry_count,
+                    completion_cmd_enabled, completion_cmd_path, completion_cmd_args,
+                    notify_on_added, notify_on_completed, notify_on_failed, notify_only_inactive,
+                    ui_click_row_opens_inspector, ui_show_add_paused, ui_zoom_percent
              FROM settings WHERE id = 1",
         )
         .fetch_one(&self.pool)
@@ -618,12 +626,55 @@ impl DownloadStore {
                 .unwrap_or(defaults.max_concurrent_downloads)
                 .max(1);
         let sync_on_complete = row.try_get::<i64, _>("sync_on_complete")? != 0;
+        let proxy_mode = ProxyMode::from_str(&row.try_get::<String, _>("proxy_mode")?)
+            .unwrap_or(defaults.proxy_mode);
+        let proxy_url: String = row.try_get("proxy_url")?;
+        let download_speed_limit_kib =
+            u64::try_from(row.try_get::<i64, _>("download_speed_limit_kib")?).unwrap_or(0);
+        let auto_categorize_folders = row.try_get::<i64, _>("auto_categorize_folders")? != 0;
+        let collision_policy =
+            CollisionPolicy::from_str(&row.try_get::<String, _>("collision_policy")?)
+                .unwrap_or(defaults.collision_policy);
+        let delete_action_default =
+            DeleteDefaultAction::from_str(&row.try_get::<String, _>("delete_action_default")?)
+                .unwrap_or(defaults.delete_action_default);
+        let auto_retry_count =
+            u32::try_from(row.try_get::<i64, _>("auto_retry_count")?).unwrap_or(0);
+        let completion_cmd_enabled = row.try_get::<i64, _>("completion_cmd_enabled")? != 0;
+        let completion_cmd_path: String = row.try_get("completion_cmd_path")?;
+        let completion_cmd_args: String = row.try_get("completion_cmd_args")?;
+        let notify_on_added = row.try_get::<i64, _>("notify_on_added")? != 0;
+        let notify_on_completed = row.try_get::<i64, _>("notify_on_completed")? != 0;
+        let notify_on_failed = row.try_get::<i64, _>("notify_on_failed")? != 0;
+        let notify_only_inactive = row.try_get::<i64, _>("notify_only_inactive")? != 0;
+        let ui_click_row_opens_inspector =
+            row.try_get::<i64, _>("ui_click_row_opens_inspector")? != 0;
+        let ui_show_add_paused = row.try_get::<i64, _>("ui_show_add_paused")? != 0;
+        let ui_zoom_percent =
+            u16::try_from(row.try_get::<i64, _>("ui_zoom_percent")?).unwrap_or(100);
 
         Ok(Settings {
             default_output_dir: PathBuf::from(dir_str),
             max_workers,
             max_concurrent_downloads,
             sync_on_complete,
+            proxy_mode,
+            proxy_url,
+            download_speed_limit_kib,
+            auto_categorize_folders,
+            collision_policy,
+            delete_action_default,
+            auto_retry_count,
+            completion_cmd_enabled,
+            completion_cmd_path,
+            completion_cmd_args,
+            notify_on_added,
+            notify_on_completed,
+            notify_on_failed,
+            notify_only_inactive,
+            ui_click_row_opens_inspector,
+            ui_show_add_paused,
+            ui_zoom_percent,
         })
     }
 
@@ -634,13 +685,73 @@ impl DownloadStore {
              SET default_output_dir = ?,
                  max_workers = ?,
                  max_concurrent_downloads = ?,
-                 sync_on_complete = ?
+                 sync_on_complete = ?,
+                 proxy_mode = ?,
+                 proxy_url = ?,
+                 download_speed_limit_kib = ?,
+                 auto_categorize_folders = ?,
+                 collision_policy = ?,
+                 delete_action_default = ?,
+                 auto_retry_count = ?,
+                 completion_cmd_enabled = ?,
+                 completion_cmd_path = ?,
+                 completion_cmd_args = ?,
+                 notify_on_added = ?,
+                 notify_on_completed = ?,
+                 notify_on_failed = ?,
+                 notify_only_inactive = ?,
+                 ui_click_row_opens_inspector = ?,
+                 ui_show_add_paused = ?,
+                 ui_zoom_percent = ?
              WHERE id = 1",
         )
         .bind(settings.default_output_dir.to_string_lossy().into_owned())
         .bind(settings.max_workers as i64)
         .bind(settings.max_concurrent_downloads as i64)
         .bind(i64::from(settings.sync_on_complete))
+        .bind(settings.proxy_mode.as_str())
+        .bind(&settings.proxy_url)
+        .bind(settings.download_speed_limit_kib as i64)
+        .bind(i64::from(settings.auto_categorize_folders))
+        .bind(settings.collision_policy.as_str())
+        .bind(settings.delete_action_default.as_str())
+        .bind(i64::from(settings.auto_retry_count))
+        .bind(i64::from(settings.completion_cmd_enabled))
+        .bind(&settings.completion_cmd_path)
+        .bind(&settings.completion_cmd_args)
+        .bind(i64::from(settings.notify_on_added))
+        .bind(i64::from(settings.notify_on_completed))
+        .bind(i64::from(settings.notify_on_failed))
+        .bind(i64::from(settings.notify_only_inactive))
+        .bind(i64::from(settings.ui_click_row_opens_inspector))
+        .bind(i64::from(settings.ui_show_add_paused))
+        .bind(i64::from(settings.ui_zoom_percent))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Updates `output_path` and `output_dir` after renaming or moving a completed file.
+    pub(crate) async fn update_completed_file_paths(
+        &self,
+        id: &DownloadId,
+        output_path: &Path,
+        output_dir: Option<&Path>,
+    ) -> Result<(), EngineError> {
+        let now = unix_now();
+        let path_str = output_path.to_string_lossy().into_owned();
+        let dir_str = output_dir.map(|p| p.to_string_lossy().into_owned());
+        sqlx::query(
+            "UPDATE downloads
+             SET output_path = ?,
+                 output_dir = COALESCE(?, output_dir),
+                 updated_at = ?
+             WHERE id = ?",
+        )
+        .bind(path_str)
+        .bind(dir_str)
+        .bind(now)
+        .bind(id.as_str())
         .execute(&self.pool)
         .await?;
         Ok(())

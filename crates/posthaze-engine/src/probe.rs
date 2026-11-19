@@ -222,7 +222,7 @@ fn filename_from_url(url: &reqwest::Url) -> Option<String> {
     sanitize_filename(&decoded)
 }
 
-fn sanitize_filename(raw: &str) -> Option<String> {
+pub(crate) fn sanitize_filename(raw: &str) -> Option<String> {
     // Take only the terminal path component to prevent directory traversal.
     let base = Path::new(raw).file_name()?.to_str()?.trim();
     if base.is_empty() || base == "." || base == ".." {

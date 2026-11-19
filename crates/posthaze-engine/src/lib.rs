@@ -5,6 +5,7 @@
 mod probe;
 mod queue;
 mod store;
+mod throttle;
 mod transfer;
 /// Dedicated blocking `.part` file writer used by `DownloadEngine` and benchmarks.
 pub mod writer;
@@ -24,6 +25,7 @@ use tokio::sync::{Mutex, broadcast, mpsc, watch};
 use crate::probe::{ProbeResult, probe_url_with_headers};
 use crate::queue::QueueCoordinator;
 use crate::store::DownloadStore;
+use crate::throttle::BandwidthLimiter;
 use crate::transfer::{
     ControlSignal, LiveSegments, MultiSegmentResult, SegmentCheckpoint, execute_multi_segment,
     execute_multi_segment_from_checkpoints, execute_single_stream,
@@ -213,6 +215,130 @@ impl DownloadRequest {
     }
 }
 
+/// Proxy configuration mode for [`DownloadEngine`] HTTP/HTTPS requests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProxyMode {
+    /// Use the operating system's configured proxy settings.
+    System,
+    /// Bypass all proxies and connect directly.
+    None,
+    /// Route requests through an explicit proxy URL (`http://`, `https://`, or `socks5://`).
+    Manual,
+}
+
+impl ProxyMode {
+    /// Returns the persisted database token for this proxy mode.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::None => "none",
+            Self::Manual => "manual",
+        }
+    }
+}
+
+impl FromStr for ProxyMode {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "system" => Ok(Self::System),
+            "none" => Ok(Self::None),
+            "manual" => Ok(Self::Manual),
+            _ => Err(()),
+        }
+    }
+}
+
+/// Reaction when a `Download`'s target filename already exists on disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CollisionPolicy {
+    /// Automatically disambiguate with ` (1)`, ` (2)`, etc.
+    Rename,
+    /// Overwrite the existing destination file on completion.
+    Overwrite,
+    /// Prompt the user during Pre-Flight before starting.
+    Ask,
+}
+
+impl CollisionPolicy {
+    /// Returns the persisted database token for this collision policy.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Rename => "rename",
+            Self::Overwrite => "overwrite",
+            Self::Ask => "ask",
+        }
+    }
+}
+
+impl FromStr for CollisionPolicy {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "rename" => Ok(Self::Rename),
+            "overwrite" => Ok(Self::Overwrite),
+            "ask" => Ok(Self::Ask),
+            _ => Err(()),
+        }
+    }
+}
+
+/// Default behavior when clicking a row's delete button.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeleteDefaultAction {
+    /// Prompt with a confirmation modal before deleting.
+    Ask,
+    /// Remove only from the `Queue` list while keeping completed files on disk.
+    Remove,
+    /// Remove from the list and permanently delete the file from disk.
+    DeleteFile,
+}
+
+impl DeleteDefaultAction {
+    /// Returns the persisted database token for this delete action.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ask => "ask",
+            Self::Remove => "remove",
+            Self::DeleteFile => "delete_file",
+        }
+    }
+}
+
+impl FromStr for DeleteDefaultAction {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "ask" => Ok(Self::Ask),
+            "remove" => Ok(Self::Remove),
+            "delete_file" => Ok(Self::DeleteFile),
+            _ => Err(()),
+        }
+    }
+}
+
+/// Returns an optional category subfolder name (`Archives`, `Video`, `Audio`, `Documents`,
+/// `Programs`) for `filename` based on its extension.
+pub fn categorize_subfolder(filename: &str) -> Option<&'static str> {
+    let ext = Path::new(filename)
+        .extension()
+        .and_then(|e| e.to_str())?
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "zip" | "7z" | "rar" | "tar" | "gz" | "xz" | "zst" | "bz2" | "iso" => Some("Archives"),
+        "mp4" | "mkv" | "webm" | "mov" | "avi" | "flv" | "m4v" => Some("Video"),
+        "mp3" | "flac" | "wav" | "aac" | "ogg" | "m4a" | "opus" => Some("Audio"),
+        "pdf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "txt" | "md" | "csv" | "epub" => {
+            Some("Documents")
+        }
+        "exe" | "msi" | "msix" | "appx" | "bat" | "ps1" => Some("Programs"),
+        _ => None,
+    }
+}
+
 /// Persisted application configuration for [`DownloadEngine`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
@@ -224,6 +350,40 @@ pub struct Settings {
     pub max_concurrent_downloads: usize,
     /// Whether completed `Download`s call `File::sync_all()` before renaming `.part`.
     pub sync_on_complete: bool,
+    /// Proxy routing mode (`System`, `None`, or `Manual`).
+    pub proxy_mode: ProxyMode,
+    /// Explicit proxy URL when `proxy_mode == ProxyMode::Manual`.
+    pub proxy_url: String,
+    /// Global `Download` speed limit in KiB/s (`0` = unlimited).
+    pub download_speed_limit_kib: u64,
+    /// Whether to route downloads into file-type subfolders under `default_output_dir`.
+    pub auto_categorize_folders: bool,
+    /// Policy when a destination file already exists on disk.
+    pub collision_policy: CollisionPolicy,
+    /// Default action for the row delete button.
+    pub delete_action_default: DeleteDefaultAction,
+    /// Number of automatic retries after a `Download` transitions to `Failed`.
+    pub auto_retry_count: u32,
+    /// Whether to run an external command (or antivirus scanner) upon `Download` completion.
+    pub completion_cmd_enabled: bool,
+    /// Executable path for the post-completion hook.
+    pub completion_cmd_path: String,
+    /// Argument template for the post-completion hook (`%path%` expands to the file path).
+    pub completion_cmd_args: String,
+    /// Show a Windows notification when a `Download` is added.
+    pub notify_on_added: bool,
+    /// Show a Windows notification when a `Download` completes.
+    pub notify_on_completed: bool,
+    /// Show a Windows notification when a `Download` fails.
+    pub notify_on_failed: bool,
+    /// Suppress notifications while the Posthaze window is focused.
+    pub notify_only_inactive: bool,
+    /// Expand the bottom byte-map inspector automatically when clicking a row.
+    pub ui_click_row_opens_inspector: bool,
+    /// Show the `Add Paused` button in the Pre-Flight modal.
+    pub ui_show_add_paused: bool,
+    /// UI zoom percentage (`90`, `100`, `110`, `125`).
+    pub ui_zoom_percent: u16,
 }
 
 impl Default for Settings {
@@ -233,6 +393,23 @@ impl Default for Settings {
             max_workers: 8,
             max_concurrent_downloads: 3,
             sync_on_complete: false,
+            proxy_mode: ProxyMode::System,
+            proxy_url: String::new(),
+            download_speed_limit_kib: 0,
+            auto_categorize_folders: false,
+            collision_policy: CollisionPolicy::Rename,
+            delete_action_default: DeleteDefaultAction::Ask,
+            auto_retry_count: 0,
+            completion_cmd_enabled: false,
+            completion_cmd_path: String::new(),
+            completion_cmd_args: "%path%".to_string(),
+            notify_on_added: false,
+            notify_on_completed: true,
+            notify_on_failed: true,
+            notify_only_inactive: true,
+            ui_click_row_opens_inspector: true,
+            ui_show_add_paused: true,
+            ui_zoom_percent: 100,
         }
     }
 }
@@ -456,7 +633,8 @@ impl DownloadHandle {
 /// Headless HTTP/HTTPS download engine.
 #[derive(Debug, Clone)]
 pub struct DownloadEngine {
-    client: reqwest::Client,
+    client: Arc<std::sync::RwLock<reqwest::Client>>,
+    limiter: Arc<BandwidthLimiter>,
     store: Option<DownloadStore>,
     active: Arc<Mutex<HashMap<DownloadId, ActiveControl>>>,
     queue: Arc<QueueCoordinator>,
@@ -473,14 +651,24 @@ impl Default for DownloadEngine {
 impl DownloadEngine {
     fn with_store(store: Option<DownloadStore>, settings: Settings) -> Self {
         let (event_tx, _) = broadcast::channel(1024);
+        let client = build_http_client(settings.proxy_mode, &settings.proxy_url)
+            .unwrap_or_else(|_| build_http_client(ProxyMode::System, "").unwrap());
         Self {
-            client: build_http_client(),
+            client: Arc::new(std::sync::RwLock::new(client)),
+            limiter: Arc::new(BandwidthLimiter::new(settings.download_speed_limit_kib)),
             store,
             active: Arc::new(Mutex::new(HashMap::new())),
             queue: Arc::new(QueueCoordinator::new(settings.max_concurrent_downloads)),
             ephemeral_settings: Arc::new(Mutex::new(settings)),
             event_tx,
         }
+    }
+
+    fn http_client(&self) -> reqwest::Client {
+        self.client
+            .read()
+            .expect("http client rwlock poisoned")
+            .clone()
     }
 
     /// Constructs a new ephemeral [`DownloadEngine`] without SQLite persistence.
@@ -527,7 +715,8 @@ impl DownloadEngine {
         headers: &[(String, String)],
     ) -> Result<PreflightInfo, EngineError> {
         let original_url = url.into();
-        let probed = probe_url_with_headers(&self.client, &original_url, headers).await?;
+        let client = self.http_client();
+        let probed = probe_url_with_headers(&client, &original_url, headers).await?;
         let disambiguated_output_path =
             disambiguate_output_path(output_dir.as_ref(), &probed.suggested_filename);
         Ok(PreflightInfo {
@@ -592,7 +781,8 @@ impl DownloadEngine {
             );
         }
 
-        let client = self.client.clone();
+        let client = self.http_client();
+        let limiter = Arc::clone(&self.limiter);
         let store = self.store.clone();
         let active_map = Arc::clone(&self.active);
         let queue = Arc::clone(&self.queue);
@@ -614,6 +804,7 @@ impl DownloadEngine {
                 Ok(_slot) => {
                     let res = run_download(
                         client,
+                        limiter,
                         store,
                         task_id.clone(),
                         request,
@@ -668,7 +859,8 @@ impl DownloadEngine {
 
         let record = store
             .get_download(id)
-            .await?
+            .await
+        .map_err(|e| EngineError::TaskJoin(e.to_string()))?
             .ok_or_else(|| EngineError::NotFound(id.to_string()))?;
 
         match record.state {
@@ -748,7 +940,8 @@ impl DownloadEngine {
             );
         }
 
-        let client = self.client.clone();
+        let client = self.http_client();
+        let limiter = Arc::clone(&self.limiter);
         let store = store.clone();
         let active_map = Arc::clone(&self.active);
         let queue = Arc::clone(&self.queue);
@@ -771,6 +964,7 @@ impl DownloadEngine {
                     let res = if let Some(req) = fresh_request {
                         run_download(
                             client,
+                            limiter,
                             Some(store),
                             task_id.clone(),
                             req,
@@ -781,6 +975,7 @@ impl DownloadEngine {
                     } else {
                         run_resumed_download(
                             client,
+                            limiter,
                             store,
                             task_id.clone(),
                             record,
@@ -844,7 +1039,8 @@ impl DownloadEngine {
         };
         let record = store
             .get_download(id)
-            .await?
+            .await
+        .map_err(|e| EngineError::TaskJoin(e.to_string()))?
             .ok_or_else(|| EngineError::NotFound(id.to_string()))?;
         Ok((store, record))
     }
@@ -1020,16 +1216,134 @@ impl DownloadEngine {
                 "max_concurrent_downloads must be at least 1".to_string(),
             ));
         }
+        let rebuilt_client = build_http_client(settings.proxy_mode, &settings.proxy_url)?;
         match &self.store {
             Some(store) => store.update_settings(&settings).await?,
             None => {
                 *self.ephemeral_settings.lock().await = settings.clone();
             }
         }
+        *self.client.write().expect("http client rwlock poisoned") = rebuilt_client;
+        self.limiter.set_limit_kib(settings.download_speed_limit_kib);
         self.queue.set_max_concurrent(settings.max_concurrent_downloads);
         let _ = self.event_tx.send(EngineEvent::SettingsUpdated(settings));
         let _ = self.event_tx.send(EngineEvent::QueueUpdated);
         Ok(())
+    }
+
+    /// Computes the `BLAKE3` hex digest of a `Completed` `Download`'s output file.
+    pub async fn compute_file_blake3(&self, id: &DownloadId) -> Result<String, EngineError> {
+        let (_, record) = self.require_download_record(id).await?;
+        if record.state != DownloadState::Completed {
+            return Err(EngineError::InvalidState(
+                "file integrity is only available for completed downloads".to_string(),
+            ));
+        }
+        let path = record.output_path.ok_or_else(|| {
+            EngineError::NotFound("completed download has no output path".to_string())
+        })?;
+        tokio::task::spawn_blocking(move || -> Result<String, EngineError> {
+            use std::io::Read as _;
+            let mut file = std::fs::File::open(&path)?;
+            let mut hasher = blake3::Hasher::new();
+            let mut buf = [0u8; 64 * 1024];
+            loop {
+                let n = file.read(&mut buf)?;
+                if n == 0 {
+                    break;
+                }
+                hasher.update(&buf[..n]);
+            }
+            Ok(hasher.finalize().to_hex().to_string())
+        })
+        .await
+        .map_err(|e| EngineError::TaskJoin(e.to_string()))?
+    }
+
+    /// Renames a `Completed` `Download`'s output file on disk and updates SQLite.
+    pub async fn rename_completed_file(
+        &self,
+        id: &DownloadId,
+        new_filename: &str,
+    ) -> Result<PathBuf, EngineError> {
+        let (store, record) = self.require_download_record(id).await?;
+        if record.state != DownloadState::Completed {
+            return Err(EngineError::InvalidState(
+                "only completed downloads can be renamed".to_string(),
+            ));
+        }
+        let old_path = record.output_path.ok_or_else(|| {
+            EngineError::NotFound("completed download has no output path".to_string())
+        })?;
+        let parent = old_path
+            .parent()
+            .ok_or_else(|| EngineError::InvalidState("missing parent directory".to_string()))?;
+        let sanitized = probe::sanitize_filename(new_filename).ok_or_else(|| {
+            EngineError::InvalidState("filename cannot be empty or invalid".to_string())
+        })?;
+        let new_path = parent.join(&sanitized);
+        if new_path == old_path {
+            return Ok(new_path);
+        }
+        if new_path.exists() {
+            return Err(EngineError::InvalidState(format!(
+                "target file already exists: {}",
+                new_path.display()
+            )));
+        }
+        tokio::fs::rename(&old_path, &new_path).await?;
+        store
+            .update_completed_file_paths(id, &new_path, None)
+            .await
+        .map_err(|e| EngineError::TaskJoin(e.to_string()))?;
+        let _ = self.event_tx.send(EngineEvent::QueueUpdated);
+        Ok(new_path)
+    }
+
+    /// Moves a `Completed` `Download`'s output file to `target_dir` and updates SQLite.
+    pub async fn move_completed_file(
+        &self,
+        id: &DownloadId,
+        target_dir: impl AsRef<Path>,
+    ) -> Result<PathBuf, EngineError> {
+        let (store, record) = self.require_download_record(id).await?;
+        if record.state != DownloadState::Completed {
+            return Err(EngineError::InvalidState(
+                "only completed downloads can be moved".to_string(),
+            ));
+        }
+        let old_path = record.output_path.ok_or_else(|| {
+            EngineError::NotFound("completed download has no output path".to_string())
+        })?;
+        let file_name = old_path
+            .file_name()
+            .ok_or_else(|| EngineError::InvalidState("missing filename".to_string()))?
+            .to_os_string();
+        let target_dir = target_dir.as_ref().to_path_buf();
+        tokio::fs::create_dir_all(&target_dir).await?;
+        let new_path = target_dir.join(file_name);
+        if new_path == old_path {
+            return Ok(new_path);
+        }
+        if new_path.exists() {
+            return Err(EngineError::InvalidState(format!(
+                "target file already exists: {}",
+                new_path.display()
+            )));
+        }
+        if let Err(rename_err) = tokio::fs::rename(&old_path, &new_path).await {
+            // Cross-volume move fallback: copy -> fsync -> remove original.
+            if tokio::fs::copy(&old_path, &new_path).await.is_err() {
+                return Err(EngineError::Io(rename_err));
+            }
+            tokio::fs::remove_file(&old_path).await?;
+        }
+        store
+            .update_completed_file_paths(id, &new_path, Some(&target_dir))
+            .await
+        .map_err(|e| EngineError::TaskJoin(e.to_string()))?;
+        let _ = self.event_tx.send(EngineEvent::QueueUpdated);
+        Ok(new_path)
     }
 
     /// Executes a single `Download` to completion, streaming progress updates via `progress_tx`.
@@ -1045,7 +1359,8 @@ impl DownloadEngine {
         let (_control_tx, control_rx) = watch::channel(ControlSignal::Run);
         let sink = ProgressSink::new(id.clone(), progress_tx, self.event_tx.clone());
         run_download(
-            self.client.clone(),
+            self.http_client(),
+            Arc::clone(&self.limiter),
             self.store.clone(),
             id,
             request,
@@ -1056,13 +1371,32 @@ impl DownloadEngine {
     }
 }
 
-fn build_http_client() -> reqwest::Client {
-    reqwest::Client::builder()
+fn build_http_client(proxy_mode: ProxyMode, proxy_url: &str) -> Result<reqwest::Client, EngineError> {
+    let mut builder = reqwest::Client::builder()
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
         .connect_timeout(Duration::from_secs(15))
-        .tcp_nodelay(true)
-        .build()
-        .unwrap_or_default()
+        .tcp_nodelay(true);
+
+    match proxy_mode {
+        ProxyMode::System => {}
+        ProxyMode::None => {
+            builder = builder.no_proxy();
+        }
+        ProxyMode::Manual => {
+            let trimmed = proxy_url.trim();
+            if trimmed.is_empty() {
+                return Err(EngineError::InvalidState(
+                    "manual proxy mode requires a proxy URL".to_string(),
+                ));
+            }
+            let proxy = reqwest::Proxy::all(trimmed).map_err(|err| {
+                EngineError::InvalidState(format!("invalid proxy URL '{trimmed}': {err}"))
+            })?;
+            builder = builder.proxy(proxy);
+        }
+    }
+
+    builder.build().map_err(EngineError::Http)
 }
 
 async fn remove_file_if_exists(path: &Path) -> Result<(), EngineError> {
@@ -1375,7 +1709,8 @@ async fn finalize_transfer(
                                 None,
                                 &writer_cursors,
                             )
-                            .await?
+                            .await
+        .map_err(|e| EngineError::TaskJoin(e.to_string()))?
                     } else {
                         bytes
                     };
@@ -1508,8 +1843,10 @@ async fn finalize_transfer(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_resumed_download(
     client: reqwest::Client,
+    limiter: Arc<BandwidthLimiter>,
     store: DownloadStore,
     id: DownloadId,
     record: DownloadRecord,
@@ -1633,6 +1970,7 @@ async fn run_resumed_download(
         &client,
         &probe.final_url,
         &record.headers,
+        Some(&limiter),
         segments,
         record.max_workers,
         &writer,
@@ -1671,6 +2009,7 @@ async fn run_resumed_download(
 
 async fn run_download(
     client: reqwest::Client,
+    limiter: Arc<BandwidthLimiter>,
     store: Option<DownloadStore>,
     id: DownloadId,
     request: DownloadRequest,
@@ -1759,6 +2098,7 @@ async fn run_download(
                 &client,
                 &probe.final_url,
                 &request.headers,
+                Some(&limiter),
                 total_bytes,
                 request.max_workers,
                 &writer,
@@ -1774,6 +2114,7 @@ async fn run_download(
             &client,
             &probe.final_url,
             &request.headers,
+            Some(limiter.as_ref()),
             &writer,
             &downloaded,
             &active_workers,

@@ -11,6 +11,7 @@ use tokio::task::JoinSet;
 
 use crate::probe::apply_custom_headers;
 use crate::store::DownloadStore;
+use crate::throttle::BandwidthLimiter;
 use crate::writer::PartFileWriter;
 use crate::{DownloadId, EngineError};
 
@@ -116,10 +117,12 @@ pub fn plan_segments(total_bytes: u64, max_workers: usize) -> Vec<SegmentSpec> {
     segments
 }
 
-pub async fn execute_single_stream(
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn execute_single_stream(
     client: &reqwest::Client,
     url: &str,
     headers: &[(String, String)],
+    limiter: Option<&BandwidthLimiter>,
     writer: &PartFileWriter,
     downloaded: &AtomicU64,
     active_workers: &AtomicUsize,
@@ -147,7 +150,7 @@ pub async fn execute_single_stream(
         });
     }
 
-    let result = stream_unbounded_to_writer(resp, writer, downloaded, control_rx).await;
+    let result = stream_unbounded_to_writer(resp, limiter, writer, downloaded, control_rx).await;
     active_workers.store(0, Ordering::Relaxed);
     result
 }
@@ -165,6 +168,7 @@ pub(crate) async fn execute_multi_segment(
     client: &reqwest::Client,
     url: &str,
     headers: &[(String, String)],
+    limiter: Option<&Arc<BandwidthLimiter>>,
     total_bytes: u64,
     max_workers: usize,
     writer: &Arc<PartFileWriter>,
@@ -191,6 +195,7 @@ pub(crate) async fn execute_multi_segment(
         client,
         url,
         headers,
+        limiter,
         checkpoints,
         max_workers,
         writer,
@@ -208,6 +213,7 @@ pub(crate) async fn execute_multi_segment_from_checkpoints(
     client: &reqwest::Client,
     url: &str,
     headers: &[(String, String)],
+    limiter: Option<&Arc<BandwidthLimiter>>,
     checkpoints: Vec<SegmentCheckpoint>,
     max_workers: usize,
     writer: &Arc<PartFileWriter>,
@@ -319,6 +325,7 @@ pub(crate) async fn execute_multi_segment_from_checkpoints(
         let control_rx = control_rx.clone();
         let persist = persist.clone();
         let headers: Arc<[(String, String)]> = headers.to_vec().into();
+        let limiter = limiter.cloned();
 
         join_set.spawn(async move {
             active_workers.fetch_add(1, Ordering::Relaxed);
@@ -326,6 +333,7 @@ pub(crate) async fn execute_multi_segment_from_checkpoints(
                 &client,
                 &url,
                 &headers,
+                limiter.as_deref(),
                 initial_seg,
                 worker_count == 1,
                 &writer,
@@ -384,6 +392,7 @@ async fn run_worker_loop(
     client: &reqwest::Client,
     url: &str,
     headers: &[(String, String)],
+    limiter: Option<&BandwidthLimiter>,
     mut current_seg: Arc<ActiveSegment>,
     allow_full_200: bool,
     writer: &PartFileWriter,
@@ -402,6 +411,7 @@ async fn run_worker_loop(
             client,
             url,
             headers,
+            limiter,
             &current_seg,
             allow_full_200,
             writer,
@@ -499,6 +509,7 @@ async fn run_segment_worker(
     client: &reqwest::Client,
     url: &str,
     headers: &[(String, String)],
+    limiter: Option<&BandwidthLimiter>,
     seg: &ActiveSegment,
     allow_full_200: bool,
     writer: &PartFileWriter,
@@ -523,6 +534,7 @@ async fn run_segment_worker(
             client,
             url,
             headers,
+            limiter,
             seg,
             attempt_start,
             end_snapshot,
@@ -574,6 +586,7 @@ async fn run_segment_attempt(
     client: &reqwest::Client,
     url: &str,
     headers: &[(String, String)],
+    limiter: Option<&BandwidthLimiter>,
     seg: &ActiveSegment,
     attempt_start: u64,
     end_snapshot: u64,
@@ -651,6 +664,9 @@ async fn run_segment_attempt(
         };
 
         let len = slice.len() as u64;
+        if let Some(lim) = limiter {
+            lim.acquire(len).await;
+        }
         cur += len;
         seg.cursor.store(cur, Ordering::Release);
         downloaded.fetch_add(len, Ordering::Relaxed);
@@ -737,6 +753,7 @@ fn backoff_with_jitter(retry_index: u32) -> Duration {
 
 async fn stream_unbounded_to_writer(
     resp: reqwest::Response,
+    limiter: Option<&BandwidthLimiter>,
     writer: &PartFileWriter,
     downloaded: &AtomicU64,
     mut control_rx: watch::Receiver<ControlSignal>,
@@ -769,6 +786,9 @@ async fn stream_unbounded_to_writer(
 
         let chunk = item?;
         let len = chunk.len() as u64;
+        if let Some(lim) = limiter {
+            lim.acquire(len).await;
+        }
         written += len;
         downloaded.fetch_add(len, Ordering::Relaxed);
         buffer.extend_from_slice(&chunk);

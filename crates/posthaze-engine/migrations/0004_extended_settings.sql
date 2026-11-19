@@ -1,0 +1,17 @@
+ALTER TABLE settings ADD COLUMN proxy_mode TEXT NOT NULL DEFAULT 'system';
+ALTER TABLE settings ADD COLUMN proxy_url TEXT NOT NULL DEFAULT '';
+ALTER TABLE settings ADD COLUMN download_speed_limit_kib INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE settings ADD COLUMN auto_categorize_folders INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE settings ADD COLUMN collision_policy TEXT NOT NULL DEFAULT 'rename';
+ALTER TABLE settings ADD COLUMN delete_action_default TEXT NOT NULL DEFAULT 'ask';
+ALTER TABLE settings ADD COLUMN auto_retry_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE settings ADD COLUMN completion_cmd_enabled INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE settings ADD COLUMN completion_cmd_path TEXT NOT NULL DEFAULT '';
+ALTER TABLE settings ADD COLUMN completion_cmd_args TEXT NOT NULL DEFAULT '%path%';
+ALTER TABLE settings ADD COLUMN notify_on_added INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE settings ADD COLUMN notify_on_completed INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE settings ADD COLUMN notify_on_failed INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE settings ADD COLUMN notify_only_inactive INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE settings ADD COLUMN ui_click_row_opens_inspector INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE settings ADD COLUMN ui_show_add_paused INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE settings ADD COLUMN ui_zoom_percent INTEGER NOT NULL DEFAULT 100;

@@ -27,6 +27,7 @@ async fn settings_persist_across_engine_reopen_and_validate_bounds() {
         max_workers: 12,
         max_concurrent_downloads: 5,
         sync_on_complete: true,
+        ..Settings::default()
     };
     engine.update_settings(updated.clone()).await.unwrap();
     assert_eq!(engine.get_settings().await.unwrap(), updated);
