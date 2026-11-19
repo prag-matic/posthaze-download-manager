@@ -99,7 +99,7 @@ fn main() {
             let window_options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                     None,
-                    size(px(1440.0), px(900.0)),
+                    size(px(960.0), px(640.0)),
                     cx,
                 ))),
                 window_min_size: Some(size(px(960.0), px(640.0))),

@@ -153,7 +153,7 @@ A restrained dual-ground palette where warm neutrals carry 90% of the viewport a
 
 ## Layout
 
-Single-window desktop shell (`1440×900` default, resizable down to `960×640`):
+Single-window desktop shell (`960×640` default & minimum size, expandable):
 - **Custom Titlebar**: Fixed `34px` GPUI Kit `TitleBar` on `#141311` graphite with a `1px` `#2A2825` bottom rule, framed Selenium Amber plate mark, `POSTHAZE // v0.3.0-m3` monospace identifier, window drag / double-click maximize, and native Windows caption controls.
 - **Left Filter Rail**: Defaults to the collapsed `52px` icon rail; expandable & resizable (`220px` default expanded width, `180px–380px` drag range, snapping back to `52px` below `130px`, double-click to reset) on `#141311` graphite.
 - **Top URL Dispatch Toolbar**: Fixed `54px` height on `#1E1D1A` warm charcoal with `16px` horizontal padding, unified `#141311` URL input with tucked icon-only `Paste & Probe` button, and ghost batch controls.
