@@ -458,7 +458,7 @@ impl PosthazeApp {
                                 1
                             };
                             app.preflight_modal = Some(PreflightModalState::Resolved {
-                                info,
+                                info: Box::new(info),
                                 filename_input,
                                 dir_input,
                                 cookie_input,

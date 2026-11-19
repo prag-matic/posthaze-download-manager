@@ -36,7 +36,7 @@ pub(crate) enum PreflightModalState {
         message: String,
     },
     Resolved {
-        info: PreflightInfo,
+        info: Box<PreflightInfo>,
         filename_input: Entity<InputState>,
         dir_input: Entity<InputState>,
         cookie_input: Entity<InputState>,

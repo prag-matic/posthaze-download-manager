@@ -180,8 +180,13 @@ fn tokenize_curl(raw: &str) -> Vec<String> {
                     current.push(ch);
                 }
             } else if ch == '^' {
-                if let Some(next) = chars.next() {
-                    current.push(next);
+                if let Some(&next) = chars.peek() {
+                    if next == '"' {
+                        chars.next();
+                        in_double = false;
+                    } else {
+                        current.push(chars.next().unwrap());
+                    }
                 }
             } else {
                 current.push(ch);
