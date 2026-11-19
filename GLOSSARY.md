@@ -27,3 +27,7 @@ _Avoid_: Savepoint, bookmark, offset log
 **Validator**:
 Server-supplied resource identity metadata (`ETag`, `Last-Modified`, and `Content-Length`) recorded during `Probing` and re-verified before resuming a `Download`.
 _Avoid_: Fingerprint, checksum, cache key
+
+**Queue**:
+The ordered collection of `Download`s managed by the engine, admitting `Queued` transfers into `Active` execution in FIFO order up to the configured concurrency limit.
+_Avoid_: Pool, backlog, scheduler

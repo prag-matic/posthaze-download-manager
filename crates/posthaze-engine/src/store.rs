@@ -13,10 +13,10 @@ use sqlx::sqlite::{
 
 use crate::probe::ProbeResult;
 use crate::transfer::{SegmentCheckpoint, plan_segments};
-use crate::{DownloadId, DownloadRequest, DownloadState, EngineError};
+use crate::{DownloadId, DownloadRequest, DownloadState, EngineError, Settings};
 
 const DOWNLOAD_SELECT_COLUMNS: &str = "
-    id, url, final_url, output_path, part_path, state,
+    id, url, final_url, output_dir, output_path, part_path, state,
     content_length, supports_ranges, etag, last_modified,
     max_workers, sync_on_complete, bytes_downloaded,
     error_message, created_at, updated_at
@@ -31,6 +31,8 @@ pub struct DownloadRecord {
     pub url: String,
     /// Final effective URL after redirects during `Probing`, if completed.
     pub final_url: Option<String>,
+    /// Target directory requested when `output_path` was not explicitly set.
+    pub output_dir: Option<PathBuf>,
     /// Resolved final output file path, if known.
     pub output_path: Option<PathBuf>,
     /// Temporary `.part` file path, if known.
@@ -88,6 +90,7 @@ impl DownloadStore {
 
         sqlx::migrate!("./migrations").run(&pool).await?;
         let store = Self { pool };
+        store.ensure_default_settings().await?;
         store.reconcile_crashed_downloads().await?;
         Ok(store)
     }
@@ -105,6 +108,7 @@ impl DownloadStore {
 
         sqlx::migrate!("./migrations").run(&pool).await?;
         let store = Self { pool };
+        store.ensure_default_settings().await?;
         store.reconcile_crashed_downloads().await?;
         Ok(store)
     }
@@ -116,18 +120,20 @@ impl DownloadStore {
         request: &DownloadRequest,
     ) -> Result<(), EngineError> {
         let now = unix_now();
+        let output_dir = request.output_dir.to_string_lossy().into_owned();
         let output_path = request
             .output_path
             .as_ref()
             .map(|p| p.to_string_lossy().into_owned());
         sqlx::query(
             "INSERT INTO downloads (
-                id, url, output_path, state, max_workers, sync_on_complete,
+                id, url, output_dir, output_path, state, max_workers, sync_on_complete,
                 bytes_downloaded, created_at, updated_at
-             ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)",
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
         )
         .bind(id.as_str())
         .bind(&request.url)
+        .bind(output_dir)
         .bind(output_path)
         .bind(DownloadState::Queued.as_str())
         .bind(request.max_workers as i64)
@@ -415,17 +421,18 @@ impl DownloadStore {
         Ok(())
     }
 
-    /// Reconciles stale `Active` and `Probing` rows left behind by an ungraceful process exit.
+    /// Reconciles stale `Queued`, `Active`, and `Probing` rows left behind by an ungraceful process exit.
     pub(crate) async fn reconcile_crashed_downloads(&self) -> Result<(), EngineError> {
         let now = unix_now();
         let mut tx = self.pool.begin().await?;
 
         sqlx::query(
             "UPDATE downloads SET state = ?, updated_at = ?
-             WHERE state = ? AND supports_ranges = 1",
+             WHERE state = ? OR (state = ? AND supports_ranges = 1)",
         )
         .bind(DownloadState::Paused.as_str())
         .bind(now)
+        .bind(DownloadState::Queued.as_str())
         .bind(DownloadState::Active.as_str())
         .execute(&mut *tx)
         .await?;
@@ -549,6 +556,70 @@ impl DownloadStore {
 
         rows.into_iter().map(row_to_record).collect()
     }
+
+    /// Ensures the singleton `settings` row exists with default values.
+    pub(crate) async fn ensure_default_settings(&self) -> Result<(), EngineError> {
+        let defaults = Settings::default();
+        sqlx::query(
+            "INSERT OR IGNORE INTO settings (
+                id, default_output_dir, max_workers, max_concurrent_downloads, sync_on_complete
+             ) VALUES (1, ?, ?, ?, ?)",
+        )
+        .bind(defaults.default_output_dir.to_string_lossy().into_owned())
+        .bind(defaults.max_workers as i64)
+        .bind(defaults.max_concurrent_downloads as i64)
+        .bind(i64::from(defaults.sync_on_complete))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Reads the persisted [`Settings`] row.
+    pub(crate) async fn get_settings(&self) -> Result<Settings, EngineError> {
+        let row = sqlx::query(
+            "SELECT default_output_dir, max_workers, max_concurrent_downloads, sync_on_complete
+             FROM settings WHERE id = 1",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        let defaults = Settings::default();
+        let dir_str: String = row.try_get("default_output_dir")?;
+        let max_workers = usize::try_from(row.try_get::<i64, _>("max_workers")?)
+            .unwrap_or(defaults.max_workers)
+            .max(1);
+        let max_concurrent_downloads =
+            usize::try_from(row.try_get::<i64, _>("max_concurrent_downloads")?)
+                .unwrap_or(defaults.max_concurrent_downloads)
+                .max(1);
+        let sync_on_complete = row.try_get::<i64, _>("sync_on_complete")? != 0;
+
+        Ok(Settings {
+            default_output_dir: PathBuf::from(dir_str),
+            max_workers,
+            max_concurrent_downloads,
+            sync_on_complete,
+        })
+    }
+
+    /// Updates the persisted [`Settings`] row.
+    pub(crate) async fn update_settings(&self, settings: &Settings) -> Result<(), EngineError> {
+        sqlx::query(
+            "UPDATE settings
+             SET default_output_dir = ?,
+                 max_workers = ?,
+                 max_concurrent_downloads = ?,
+                 sync_on_complete = ?
+             WHERE id = 1",
+        )
+        .bind(settings.default_output_dir.to_string_lossy().into_owned())
+        .bind(settings.max_workers as i64)
+        .bind(settings.max_concurrent_downloads as i64)
+        .bind(i64::from(settings.sync_on_complete))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
 }
 
 fn row_to_record(row: SqliteRow) -> Result<DownloadRecord, EngineError> {
@@ -561,6 +632,9 @@ fn row_to_record(row: SqliteRow) -> Result<DownloadRecord, EngineError> {
         id: DownloadId(row.try_get("id")?),
         url: row.try_get("url")?,
         final_url: row.try_get("final_url")?,
+        output_dir: row
+            .try_get::<Option<String>, _>("output_dir")?
+            .map(PathBuf::from),
         output_path: row
             .try_get::<Option<String>, _>("output_path")?
             .map(PathBuf::from),

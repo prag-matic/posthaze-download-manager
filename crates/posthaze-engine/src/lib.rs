@@ -3,6 +3,7 @@
 #![deny(missing_docs)]
 
 mod probe;
+mod queue;
 mod store;
 mod transfer;
 /// Dedicated blocking `.part` file writer used by `DownloadEngine` and benchmarks.
@@ -21,6 +22,7 @@ use thiserror::Error;
 use tokio::sync::{Mutex, mpsc, watch};
 
 use crate::probe::{ProbeResult, probe_url};
+use crate::queue::QueueCoordinator;
 use crate::store::DownloadStore;
 use crate::transfer::{
     ControlSignal, MultiSegmentResult, SegmentCheckpoint, execute_multi_segment,
@@ -208,6 +210,41 @@ impl DownloadRequest {
     }
 }
 
+/// Persisted application configuration for [`DownloadEngine`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Settings {
+    /// Default target directory for new `Download`s when no explicit path is provided.
+    pub default_output_dir: PathBuf,
+    /// Default maximum concurrent `Worker`s per multi-`Segment` `Download`.
+    pub max_workers: usize,
+    /// Maximum number of `Download`s admitted simultaneously by the `Queue`.
+    pub max_concurrent_downloads: usize,
+    /// Whether completed `Download`s call `File::sync_all()` before renaming `.part`.
+    pub sync_on_complete: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            default_output_dir: default_downloads_dir(),
+            max_workers: 8,
+            max_concurrent_downloads: 3,
+            sync_on_complete: false,
+        }
+    }
+}
+
+fn default_downloads_dir() -> PathBuf {
+    if let Some(profile) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
+        let downloads = PathBuf::from(&profile).join("Downloads");
+        if downloads.is_dir() {
+            return downloads;
+        }
+        return PathBuf::from(profile);
+    }
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
 /// Snapshot of a `Download`'s progress and metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProgressSnapshot {
@@ -317,6 +354,8 @@ pub struct DownloadEngine {
     client: reqwest::Client,
     store: Option<DownloadStore>,
     active: Arc<Mutex<HashMap<DownloadId, ActiveControl>>>,
+    queue: Arc<QueueCoordinator>,
+    ephemeral_settings: Arc<Mutex<Settings>>,
 }
 
 impl Default for DownloadEngine {
@@ -328,30 +367,39 @@ impl Default for DownloadEngine {
 impl DownloadEngine {
     /// Constructs a new ephemeral [`DownloadEngine`] without SQLite persistence.
     pub fn new() -> Self {
+        let defaults = Settings::default();
         Self {
             client: build_http_client(),
             store: None,
             active: Arc::new(Mutex::new(HashMap::new())),
+            queue: Arc::new(QueueCoordinator::new(defaults.max_concurrent_downloads)),
+            ephemeral_settings: Arc::new(Mutex::new(defaults)),
         }
     }
 
     /// Opens or creates a SQLite-backed [`DownloadEngine`] at `db_path`.
     pub async fn open(db_path: impl AsRef<Path>) -> Result<Self, EngineError> {
         let store = DownloadStore::open(db_path.as_ref()).await?;
+        let settings = store.get_settings().await?;
         Ok(Self {
             client: build_http_client(),
             store: Some(store),
             active: Arc::new(Mutex::new(HashMap::new())),
+            queue: Arc::new(QueueCoordinator::new(settings.max_concurrent_downloads)),
+            ephemeral_settings: Arc::new(Mutex::new(settings)),
         })
     }
 
     /// Constructs an ephemeral in-memory SQLite-backed [`DownloadEngine`].
     pub async fn in_memory() -> Result<Self, EngineError> {
         let store = DownloadStore::in_memory().await?;
+        let settings = store.get_settings().await?;
         Ok(Self {
             client: build_http_client(),
             store: Some(store),
             active: Arc::new(Mutex::new(HashMap::new())),
+            queue: Arc::new(QueueCoordinator::new(settings.max_concurrent_downloads)),
+            ephemeral_settings: Arc::new(Mutex::new(settings)),
         })
     }
 
@@ -385,19 +433,41 @@ impl DownloadEngine {
         let client = self.client.clone();
         let store = self.store.clone();
         let active_map = Arc::clone(&self.active);
+        let queue = Arc::clone(&self.queue);
         let task_id = id.clone();
 
+        queue.enqueue(id.clone());
+
         let join_handle = tokio::spawn(async move {
-            let res = run_download(
-                client,
-                store,
-                task_id.clone(),
-                request,
-                Some(progress_tx),
-                control_rx,
-            )
-            .await;
-            active_map.lock().await.remove(&task_id);
+            let mut control_rx = control_rx;
+            let res = match queue.wait_for_slot(&task_id, &mut control_rx).await {
+                Ok(_slot) => {
+                    let res = run_download(
+                        client,
+                        store,
+                        task_id.clone(),
+                        request,
+                        Some(progress_tx),
+                        control_rx,
+                    )
+                    .await;
+                    active_map.lock().await.remove(&task_id);
+                    res
+                }
+                Err(err) => {
+                    active_map.lock().await.remove(&task_id);
+                    finalize_queued_interruption(
+                        store.as_ref(),
+                        &task_id,
+                        None,
+                        0,
+                        None,
+                        &progress_tx,
+                        err,
+                    )
+                    .await
+                }
+            };
             let _ = done_tx.send(true);
             res
         });
@@ -440,30 +510,51 @@ impl DownloadEngine {
             }
         }
 
-        if !record.supports_ranges {
-            return Err(EngineError::InvalidState(
-                "cannot resume download without server byte-range support".to_string(),
-            ));
-        }
+        let not_started_yet =
+            record.part_path.is_none() && store.get_segments(id).await?.is_empty();
 
-        let Some(part_path) = &record.part_path else {
-            return Err(EngineError::InvalidState(
-                "cannot resume download without a recorded .part file".to_string(),
-            ));
+        let (segments, fresh_request) = if not_started_yet {
+            let fallback_dir = match &record.output_dir {
+                Some(dir) => dir.clone(),
+                None => store.get_settings().await?.default_output_dir,
+            };
+            let req = DownloadRequest {
+                url: record.url.clone(),
+                output_path: record.output_path.clone(),
+                output_dir: fallback_dir,
+                max_workers: record.max_workers,
+                sync_on_complete: record.sync_on_complete,
+            };
+            (Vec::new(), Some(req))
+        } else {
+            if !record.supports_ranges {
+                return Err(EngineError::InvalidState(
+                    "cannot resume download without server byte-range support".to_string(),
+                ));
+            }
+
+            let Some(part_path) = &record.part_path else {
+                return Err(EngineError::InvalidState(
+                    "cannot resume download without a recorded .part file".to_string(),
+                ));
+            };
+            if !part_path.exists() {
+                return Err(EngineError::InvalidState(format!(
+                    "missing .part file for resume: {}",
+                    part_path.display()
+                )));
+            }
+
+            let segments = store.get_segments(id).await?;
+            if segments.is_empty() {
+                return Err(EngineError::InvalidState(
+                    "cannot resume download with no persisted segments".to_string(),
+                ));
+            }
+            (segments, None)
         };
-        if !part_path.exists() {
-            return Err(EngineError::InvalidState(format!(
-                "missing .part file for resume: {}",
-                part_path.display()
-            )));
-        }
 
-        let segments = store.get_segments(id).await?;
-        if segments.is_empty() {
-            return Err(EngineError::InvalidState(
-                "cannot resume download with no persisted segments".to_string(),
-            ));
-        }
+        store.set_state(id, DownloadState::Queued).await?;
 
         let (progress_tx, progress_rx) = watch::channel(ProgressSnapshot {
             state: DownloadState::Queued,
@@ -488,20 +579,54 @@ impl DownloadEngine {
         let client = self.client.clone();
         let store = store.clone();
         let active_map = Arc::clone(&self.active);
+        let queue = Arc::clone(&self.queue);
         let task_id = id.clone();
 
+        queue.enqueue(id.clone());
+
         let join_handle = tokio::spawn(async move {
-            let res = run_resumed_download(
-                client,
-                store,
-                task_id.clone(),
-                record,
-                segments,
-                Some(progress_tx),
-                control_rx,
-            )
-            .await;
-            active_map.lock().await.remove(&task_id);
+            let mut control_rx = control_rx;
+            let res = match queue.wait_for_slot(&task_id, &mut control_rx).await {
+                Ok(_slot) => {
+                    let res = if let Some(req) = fresh_request {
+                        run_download(
+                            client,
+                            Some(store),
+                            task_id.clone(),
+                            req,
+                            Some(progress_tx),
+                            control_rx,
+                        )
+                        .await
+                    } else {
+                        run_resumed_download(
+                            client,
+                            store,
+                            task_id.clone(),
+                            record,
+                            segments,
+                            Some(progress_tx),
+                            control_rx,
+                        )
+                        .await
+                    };
+                    active_map.lock().await.remove(&task_id);
+                    res
+                }
+                Err(err) => {
+                    active_map.lock().await.remove(&task_id);
+                    finalize_queued_interruption(
+                        Some(&store),
+                        &task_id,
+                        record.part_path.as_deref(),
+                        record.bytes_downloaded,
+                        record.content_length,
+                        &progress_tx,
+                        err,
+                    )
+                    .await
+                }
+            };
             let _ = done_tx.send(true);
             res
         });
@@ -572,6 +697,36 @@ impl DownloadEngine {
             Some(store) => store.get_download(id).await,
             None => Ok(None),
         }
+    }
+
+    /// Reads the persisted [`Settings`] for this engine.
+    pub async fn get_settings(&self) -> Result<Settings, EngineError> {
+        match &self.store {
+            Some(store) => store.get_settings().await,
+            None => Ok(self.ephemeral_settings.lock().await.clone()),
+        }
+    }
+
+    /// Validates and persists updated [`Settings`] for this engine.
+    pub async fn update_settings(&self, settings: Settings) -> Result<(), EngineError> {
+        if settings.max_workers == 0 {
+            return Err(EngineError::InvalidState(
+                "max_workers must be at least 1".to_string(),
+            ));
+        }
+        if settings.max_concurrent_downloads == 0 {
+            return Err(EngineError::InvalidState(
+                "max_concurrent_downloads must be at least 1".to_string(),
+            ));
+        }
+        match &self.store {
+            Some(store) => store.update_settings(&settings).await?,
+            None => {
+                *self.ephemeral_settings.lock().await = settings.clone();
+            }
+        }
+        self.queue.set_max_concurrent(settings.max_concurrent_downloads);
+        Ok(())
     }
 
     /// Executes a single `Download` to completion, streaming progress updates via `progress_tx`.
@@ -1315,6 +1470,47 @@ fn make_part_path(final_path: &Path) -> PathBuf {
 fn emit_progress(tx: &Option<watch::Sender<ProgressSnapshot>>, snapshot: ProgressSnapshot) {
     if let Some(tx) = tx {
         let _ = tx.send(snapshot);
+    }
+}
+
+async fn finalize_queued_interruption(
+    store: Option<&DownloadStore>,
+    id: &DownloadId,
+    part_path: Option<&Path>,
+    bytes_downloaded: u64,
+    total_bytes: Option<u64>,
+    progress_tx: &watch::Sender<ProgressSnapshot>,
+    err: EngineError,
+) -> Result<DownloadOutcome, EngineError> {
+    match err {
+        EngineError::Paused => {
+            if let Some(store) = store {
+                let _ = store.set_state(id, DownloadState::Paused).await;
+            }
+            let _ = progress_tx.send(ProgressSnapshot {
+                state: DownloadState::Paused,
+                bytes_downloaded,
+                total_bytes,
+                active_workers: 0,
+            });
+            Err(EngineError::Paused)
+        }
+        EngineError::Cancelled => {
+            if let Some(part) = part_path {
+                let _ = remove_part_file(part).await;
+            }
+            if let Some(store) = store {
+                let _ = store.mark_cancelled(id).await;
+            }
+            let _ = progress_tx.send(ProgressSnapshot {
+                state: DownloadState::Cancelled,
+                bytes_downloaded,
+                total_bytes,
+                active_workers: 0,
+            });
+            Err(EngineError::Cancelled)
+        }
+        other => Err(other),
     }
 }
 

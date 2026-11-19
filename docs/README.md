@@ -17,6 +17,8 @@ Documentation is a first-class part of Posthaze Download Manager.
   - [0006 — SQLite persistence via `sqlx` with runtime queries](adr/0006-sqlite-persistence-sqlx.md)
   - [0007 — Writer-acknowledged `Checkpoint`s for crash recovery](adr/0007-writer-acked-checkpoints.md)
   - [0008 — GPUI and GPUI Kit for the desktop UI](adr/0008-gpui-and-gpui-kit-desktop-ui.md)
+  - [0009 — SQLite-backed settings and engine-owned FIFO queue admission](adr/0009-sqlite-settings-and-queue-admission.md)
+  - [0010 — Dedicated background Tokio runtime bridged to GPUI via `EngineEvent` broadcast](adr/0010-tokio-gpui-runtime-bridge.md)
 
 ## Implemented Milestones & Tickets
 
