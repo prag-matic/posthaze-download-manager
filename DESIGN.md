@@ -155,7 +155,7 @@ A restrained dual-ground palette where warm neutrals carry 90% of the viewport a
 
 Single-window desktop shell (`1440×900` default, resizable down to `960×640`):
 - **Custom Titlebar**: Fixed `34px` GPUI Kit `TitleBar` on `#141311` graphite with a `1px` `#2A2825` bottom rule, framed Selenium Amber plate mark, `POSTHAZE // v0.3.0-m3` monospace identifier, window drag / double-click maximize, and native Windows caption controls.
-- **Left Filter Rail**: Collapsible & resizable (`220px` default, `180px–380px` drag range via GPUI Kit `resize_handle`, double-click to reset) on `#141311` graphite with `12px` padding.
+- **Left Filter Rail**: Collapsible into a `52px` icon rail & resizable (`220px` default, `180px–380px` drag range, snapping to the `52px` rail below `130px`, double-click to reset) on `#141311` graphite with `12px` padding.
 - **Top URL Dispatch Toolbar**: Fixed `56px` height on `#1E1D1A` warm charcoal with `16px` horizontal padding, sidebar toggle button, and `8px` control gaps.
 - **Center `Downloads` Table**: `flex-1` scrollable region with `28px` sortable modular construction-grid header (`#181714`) and `38px` data rows using shared column width stops (`104px` state, `flex-1 min 120px` filename, `176px` progress, `90px` speed, `64px` ETA, `48px` segments, `148px` actions).
 - **Bottom Selected Download Inspector**: Collapsible (`28px` summary strip) & resizable (`240px` default, `150px–460px` drag range via GPUI Kit `resize_handle`, double-click to reset) on `#141311` graphite.

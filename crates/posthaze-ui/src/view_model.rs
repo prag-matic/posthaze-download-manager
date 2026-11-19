@@ -10,10 +10,14 @@ use posthaze_engine::{
 
 /// Default width (in logical pixels) of the left filter & telemetry rail.
 pub const DEFAULT_SIDEBAR_WIDTH: f32 = 220.0;
-/// Minimum allowed width (in logical pixels) of the left filter & telemetry rail.
+/// Minimum allowed expanded width (in logical pixels) of the left filter & telemetry rail.
 pub const MIN_SIDEBAR_WIDTH: f32 = 180.0;
-/// Maximum allowed width (in logical pixels) of the left filter & telemetry rail.
+/// Maximum allowed expanded width (in logical pixels) of the left filter & telemetry rail.
 pub const MAX_SIDEBAR_WIDTH: f32 = 380.0;
+/// Width (in logical pixels) of the collapsed left icon rail.
+pub const RAIL_SIDEBAR_WIDTH: f32 = 52.0;
+/// Dragging narrower than this threshold snaps the sidebar into the icon rail.
+pub const SIDEBAR_RAIL_SNAP_THRESHOLD: f32 = 130.0;
 
 /// Default height (in logical pixels) of the bottom selected-download inspector.
 pub const DEFAULT_INSPECTOR_HEIGHT: f32 = 240.0;
@@ -25,6 +29,17 @@ pub const MAX_INSPECTOR_HEIGHT: f32 = 460.0;
 /// Clamps the left sidebar width to `[MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH]`.
 pub fn clamp_sidebar_width(width: f32) -> f32 {
     width.clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH)
+}
+
+/// Resolves `(collapsed, expanded_width)` while dragging the left sidebar divider.
+/// Dragging below [`SIDEBAR_RAIL_SNAP_THRESHOLD`] snaps to the icon rail while
+/// preserving `previous_expanded_width`.
+pub fn resolve_sidebar_drag(dragged_width: f32, previous_expanded_width: f32) -> (bool, f32) {
+    if dragged_width < SIDEBAR_RAIL_SNAP_THRESHOLD {
+        (true, clamp_sidebar_width(previous_expanded_width))
+    } else {
+        (false, clamp_sidebar_width(dragged_width))
+    }
 }
 
 /// Clamps the bottom inspector height to `[MIN_INSPECTOR_HEIGHT, MAX_INSPECTOR_HEIGHT]`.
@@ -668,5 +683,9 @@ mod tests {
         assert_eq!(clamp_inspector_height(40.0), MIN_INSPECTOR_HEIGHT);
         assert_eq!(clamp_inspector_height(310.0), 310.0);
         assert_eq!(clamp_inspector_height(800.0), MAX_INSPECTOR_HEIGHT);
+
+        assert_eq!(resolve_sidebar_drag(110.0, 260.0), (true, 260.0));
+        assert_eq!(resolve_sidebar_drag(130.0, 260.0), (false, MIN_SIDEBAR_WIDTH));
+        assert_eq!(resolve_sidebar_drag(250.0, 220.0), (false, 250.0));
     }
 }
