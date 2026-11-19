@@ -3,12 +3,15 @@
 #![deny(missing_docs)]
 
 mod probe;
+mod store;
 mod transfer;
 /// Dedicated blocking `.part` file writer used by `DownloadEngine` and benchmarks.
 pub mod writer;
 
 use std::ffi::OsString;
+use std::fmt;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -17,10 +20,53 @@ use thiserror::Error;
 use tokio::sync::watch;
 
 use crate::probe::probe_url;
+use crate::store::DownloadStore;
 use crate::transfer::{execute_multi_segment, execute_single_stream};
 use crate::writer::PartFileWriter;
 
+pub use crate::store::DownloadRecord;
+
 const PROGRESS_EMIT_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Persistent identifier for a `Download` (UUID v4).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DownloadId(String);
+
+impl DownloadId {
+    /// Generates a new random UUID v4 [`DownloadId`].
+    pub fn new() -> Self {
+        Self(uuid::Uuid::new_v4().to_string())
+    }
+
+    /// Returns the string representation of this [`DownloadId`].
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Default for DownloadId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Display for DownloadId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl AsRef<str> for DownloadId {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for DownloadId {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
 
 /// Lifecycle state of a `Download`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,6 +85,38 @@ pub enum DownloadState {
     Failed,
     /// Cancelled before completion.
     Cancelled,
+}
+
+impl DownloadState {
+    /// Returns the canonical database/display string for this state.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Queued => "Queued",
+            Self::Probing => "Probing",
+            Self::Active => "Active",
+            Self::Paused => "Paused",
+            Self::Completed => "Completed",
+            Self::Failed => "Failed",
+            Self::Cancelled => "Cancelled",
+        }
+    }
+}
+
+impl FromStr for DownloadState {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "Queued" => Ok(Self::Queued),
+            "Probing" => Ok(Self::Probing),
+            "Active" => Ok(Self::Active),
+            "Paused" => Ok(Self::Paused),
+            "Completed" => Ok(Self::Completed),
+            "Failed" => Ok(Self::Failed),
+            "Cancelled" => Ok(Self::Cancelled),
+            _ => Err(()),
+        }
+    }
 }
 
 /// Errors produced by [`DownloadEngine`].
@@ -64,6 +142,22 @@ pub enum EngineError {
     /// Dedicated `.part` writer task failed or panicked.
     #[error("file writer task failed: {0}")]
     Writer(String),
+
+    /// SQLite persistence error.
+    #[error("database error: {0}")]
+    Database(#[from] sqlx::Error),
+
+    /// SQLite schema migration error.
+    #[error("database migration error: {0}")]
+    Migration(#[from] sqlx::migrate::MigrateError),
+
+    /// Requested operation is invalid for the current `Download` state.
+    #[error("invalid download state: {0}")]
+    InvalidState(String),
+
+    /// Background `Download` task failed to join.
+    #[error("download task join error: {0}")]
+    TaskJoin(String),
 }
 
 /// Request parameters for starting a `Download`.
@@ -150,10 +244,38 @@ impl DownloadOutcome {
     }
 }
 
+/// Control and observation handle for an active `Download`.
+#[derive(Debug)]
+pub struct DownloadHandle {
+    id: DownloadId,
+    progress_rx: watch::Receiver<ProgressSnapshot>,
+    join_handle: tokio::task::JoinHandle<Result<DownloadOutcome, EngineError>>,
+}
+
+impl DownloadHandle {
+    /// Returns the persistent [`DownloadId`] for this `Download`.
+    pub fn id(&self) -> &DownloadId {
+        &self.id
+    }
+
+    /// Subscribes to live [`ProgressSnapshot`] updates for this `Download`.
+    pub fn subscribe(&self) -> watch::Receiver<ProgressSnapshot> {
+        self.progress_rx.clone()
+    }
+
+    /// Awaits completion of this `Download` and returns its [`DownloadOutcome`].
+    pub async fn wait(self) -> Result<DownloadOutcome, EngineError> {
+        self.join_handle
+            .await
+            .map_err(|e| EngineError::TaskJoin(e.to_string()))?
+    }
+}
+
 /// Headless HTTP/HTTPS download engine.
 #[derive(Debug, Clone)]
 pub struct DownloadEngine {
     client: reqwest::Client,
+    store: Option<DownloadStore>,
 }
 
 impl Default for DownloadEngine {
@@ -163,15 +285,75 @@ impl Default for DownloadEngine {
 }
 
 impl DownloadEngine {
-    /// Constructs a new [`DownloadEngine`].
+    /// Constructs a new ephemeral [`DownloadEngine`] without SQLite persistence.
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
-            .user_agent(concat!("posthaze/", env!("CARGO_PKG_VERSION")))
-            .connect_timeout(Duration::from_secs(15))
-            .tcp_nodelay(true)
-            .build()
-            .unwrap_or_default();
-        Self { client }
+        Self {
+            client: build_http_client(),
+            store: None,
+        }
+    }
+
+    /// Opens or creates a SQLite-backed [`DownloadEngine`] at `db_path`.
+    pub async fn open(db_path: impl AsRef<Path>) -> Result<Self, EngineError> {
+        let store = DownloadStore::open(db_path.as_ref()).await?;
+        Ok(Self {
+            client: build_http_client(),
+            store: Some(store),
+        })
+    }
+
+    /// Constructs an ephemeral in-memory SQLite-backed [`DownloadEngine`].
+    pub async fn in_memory() -> Result<Self, EngineError> {
+        let store = DownloadStore::in_memory().await?;
+        Ok(Self {
+            client: build_http_client(),
+            store: Some(store),
+        })
+    }
+
+    /// Starts a `Download` asynchronously and returns a [`DownloadHandle`].
+    pub async fn start(&self, request: DownloadRequest) -> Result<DownloadHandle, EngineError> {
+        let id = DownloadId::new();
+        if let Some(store) = &self.store {
+            store.insert_queued(&id, &request).await?;
+        }
+
+        let (progress_tx, progress_rx) = watch::channel(ProgressSnapshot {
+            state: DownloadState::Queued,
+            bytes_downloaded: 0,
+            total_bytes: None,
+            active_workers: 0,
+        });
+
+        let client = self.client.clone();
+        let store = self.store.clone();
+        let task_id = id.clone();
+
+        let join_handle = tokio::spawn(async move {
+            run_download(client, store, task_id, request, Some(progress_tx)).await
+        });
+
+        Ok(DownloadHandle {
+            id,
+            progress_rx,
+            join_handle,
+        })
+    }
+
+    /// Lists all persisted `DownloadRecord`s ordered newest-first.
+    pub async fn list_downloads(&self) -> Result<Vec<DownloadRecord>, EngineError> {
+        match &self.store {
+            Some(store) => store.list_downloads().await,
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// Fetches a single persisted `DownloadRecord` by [`DownloadId`].
+    pub async fn get_download(&self, id: &DownloadId) -> Result<Option<DownloadRecord>, EngineError> {
+        match &self.store {
+            Some(store) => store.get_download(id).await,
+            None => Ok(None),
+        }
     }
 
     /// Executes a single `Download` to completion, streaming progress updates via `progress_tx`.
@@ -180,137 +362,232 @@ impl DownloadEngine {
         request: DownloadRequest,
         progress_tx: Option<watch::Sender<ProgressSnapshot>>,
     ) -> Result<DownloadOutcome, EngineError> {
-        let total_start = Instant::now();
-        emit_progress(
-            &progress_tx,
-            ProgressSnapshot {
-                state: DownloadState::Probing,
-                bytes_downloaded: 0,
-                total_bytes: None,
-                active_workers: 0,
-            },
-        );
+        let id = DownloadId::new();
+        if let Some(store) = &self.store {
+            store.insert_queued(&id, &request).await?;
+        }
+        run_download(
+            self.client.clone(),
+            self.store.clone(),
+            id,
+            request,
+            progress_tx,
+        )
+        .await
+    }
+}
 
-        let probe_start = Instant::now();
-        let probe = match probe_url(&self.client, &request.url).await {
-            Ok(probe) => probe,
-            Err(err) => {
-                emit_failed(&progress_tx, 0, None);
-                return Err(err);
-            }
-        };
-        let probe_duration = probe_start.elapsed();
+fn build_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .user_agent(concat!("posthaze/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(Duration::from_secs(15))
+        .tcp_nodelay(true)
+        .build()
+        .unwrap_or_default()
+}
 
-        let final_path = request
-            .output_path
-            .unwrap_or_else(|| request.output_dir.join(&probe.suggested_filename));
-        let part_path = make_part_path(&final_path);
+async fn fail_download(
+    store: &Option<DownloadStore>,
+    progress_tx: &Option<watch::Sender<ProgressSnapshot>>,
+    id: &DownloadId,
+    bytes: u64,
+    total: Option<u64>,
+    err: EngineError,
+) -> EngineError {
+    if let Some(store) = store {
+        let _ = store.mark_failed(id, bytes, &err.to_string()).await;
+    }
+    emit_failed(progress_tx, bytes, total);
+    err
+}
 
-        let transfer_start = Instant::now();
-        let writer = Arc::new(PartFileWriter::spawn_with_sync(
-            part_path,
-            probe.content_length,
-            request.sync_on_complete,
-        )?);
-        let downloaded = Arc::new(AtomicU64::new(0));
-        let active_workers = Arc::new(AtomicUsize::new(0));
+async fn run_download(
+    client: reqwest::Client,
+    store: Option<DownloadStore>,
+    id: DownloadId,
+    request: DownloadRequest,
+    progress_tx: Option<watch::Sender<ProgressSnapshot>>,
+) -> Result<DownloadOutcome, EngineError> {
+    let total_start = Instant::now();
+    if let Some(store) = &store
+        && let Err(err) = store.set_state(&id, DownloadState::Probing).await
+    {
+        return Err(fail_download(&None, &progress_tx, &id, 0, None, err).await);
+    }
+    emit_progress(
+        &progress_tx,
+        ProgressSnapshot {
+            state: DownloadState::Probing,
+            bytes_downloaded: 0,
+            total_bytes: None,
+            active_workers: 0,
+        },
+    );
 
-        emit_progress(
-            &progress_tx,
-            ProgressSnapshot {
-                state: DownloadState::Active,
-                bytes_downloaded: 0,
-                total_bytes: probe.content_length,
-                active_workers: 0,
-            },
-        );
+    let probe_start = Instant::now();
+    let probe = match probe_url(&client, &request.url).await {
+        Ok(probe) => probe,
+        Err(err) => return Err(fail_download(&store, &progress_tx, &id, 0, None, err).await),
+    };
+    let probe_duration = probe_start.elapsed();
 
-        let reporter = spawn_progress_reporter(
-            progress_tx.clone(),
-            Arc::clone(&downloaded),
-            Arc::clone(&active_workers),
-            probe.content_length,
-        );
+    let final_path = request
+        .output_path
+        .unwrap_or_else(|| request.output_dir.join(&probe.suggested_filename));
+    let part_path = make_part_path(&final_path);
 
-        let transfer_result = match (probe.supports_ranges, probe.content_length) {
-            (true, Some(total_bytes)) => {
-                execute_multi_segment(
-                    &self.client,
-                    &probe.final_url,
-                    total_bytes,
-                    request.max_workers,
-                    &writer,
-                    &downloaded,
-                    &active_workers,
-                )
-                .await
-            }
-            _ => execute_single_stream(
-                &self.client,
+    let transfer_start = Instant::now();
+    let writer = match PartFileWriter::spawn_with_sync(
+        part_path.clone(),
+        probe.content_length,
+        request.sync_on_complete,
+    ) {
+        Ok(writer) => Arc::new(writer),
+        Err(err) => {
+            return Err(
+                fail_download(&store, &progress_tx, &id, 0, probe.content_length, err).await,
+            );
+        }
+    };
+
+    if let Some(store) = &store
+        && let Err(err) = store
+            .record_probed_and_activate(&id, &probe, &final_path, &part_path, request.max_workers)
+            .await
+    {
+        return Err(fail_download(&None, &progress_tx, &id, 0, probe.content_length, err).await);
+    }
+
+    let downloaded = Arc::new(AtomicU64::new(0));
+    let active_workers = Arc::new(AtomicUsize::new(0));
+
+    emit_progress(
+        &progress_tx,
+        ProgressSnapshot {
+            state: DownloadState::Active,
+            bytes_downloaded: 0,
+            total_bytes: probe.content_length,
+            active_workers: 0,
+        },
+    );
+
+    let reporter = spawn_progress_reporter(
+        progress_tx.clone(),
+        Arc::clone(&downloaded),
+        Arc::clone(&active_workers),
+        probe.content_length,
+    );
+
+    let transfer_result = match (probe.supports_ranges, probe.content_length) {
+        (true, Some(total_bytes)) => {
+            execute_multi_segment(
+                &client,
                 &probe.final_url,
+                total_bytes,
+                request.max_workers,
                 &writer,
                 &downloaded,
                 &active_workers,
             )
             .await
-            .map(|bytes| crate::transfer::MultiSegmentResult {
-                bytes_written: bytes,
-                workers_used: 1,
-                splits_performed: 0,
-                retries_performed: 0,
-            }),
-        };
-
-        if let Some(handle) = reporter {
-            handle.abort();
         }
+        _ => execute_single_stream(
+            &client,
+            &probe.final_url,
+            &writer,
+            &downloaded,
+            &active_workers,
+        )
+        .await
+        .map(|bytes| crate::transfer::MultiSegmentResult {
+            bytes_written: bytes,
+            workers_used: 1,
+            splits_performed: 0,
+            retries_performed: 0,
+        }),
+    };
 
-        let res = match transfer_result {
-            Ok(res) => res,
-            Err(err) => {
-                emit_failed(
-                    &progress_tx,
-                    downloaded.load(Ordering::Relaxed),
-                    probe.content_length,
-                );
-                return Err(err);
-            }
-        };
-
-        let writer = Arc::try_unwrap(writer).map_err(|_| {
-            EngineError::Writer("writer handle still referenced after workers exited".to_string())
-        })?;
-        writer.finish(&final_path).await?;
-
-        let transfer_duration = transfer_start.elapsed();
-        let total_duration = total_start.elapsed();
-
-        emit_progress(
-            &progress_tx,
-            ProgressSnapshot {
-                state: DownloadState::Completed,
-                bytes_downloaded: res.bytes_written,
-                total_bytes: probe.content_length.or(Some(res.bytes_written)),
-                active_workers: 0,
-            },
-        );
-
-        Ok(DownloadOutcome {
-            final_path,
-            bytes_downloaded: res.bytes_written,
-            content_length: probe.content_length,
-            supports_ranges: probe.supports_ranges,
-            workers_used: res.workers_used,
-            splits_performed: res.splits_performed,
-            retries_performed: res.retries_performed,
-            probe_duration,
-            transfer_duration,
-            total_duration,
-            etag: probe.etag,
-            last_modified: probe.last_modified,
-            final_url: probe.final_url,
-        })
+    if let Some(handle) = reporter {
+        handle.abort();
     }
+
+    let res = match transfer_result {
+        Ok(res) => res,
+        Err(err) => {
+            let bytes = downloaded.load(Ordering::Relaxed);
+            return Err(fail_download(
+                &store,
+                &progress_tx,
+                &id,
+                bytes,
+                probe.content_length,
+                err,
+            )
+            .await);
+        }
+    };
+
+    let writer = match Arc::try_unwrap(writer) {
+        Ok(writer) => writer,
+        Err(_) => {
+            return Err(fail_download(
+                &store,
+                &progress_tx,
+                &id,
+                res.bytes_written,
+                probe.content_length,
+                EngineError::Writer(
+                    "writer handle still referenced after workers exited".to_string(),
+                ),
+            )
+            .await);
+        }
+    };
+
+    if let Err(err) = writer.finish(&final_path).await {
+        return Err(fail_download(
+            &store,
+            &progress_tx,
+            &id,
+            res.bytes_written,
+            probe.content_length,
+            err,
+        )
+        .await);
+    }
+
+    if let Some(store) = &store {
+        store.mark_completed(&id, res.bytes_written).await?;
+    }
+
+    let transfer_duration = transfer_start.elapsed();
+    let total_duration = total_start.elapsed();
+
+    emit_progress(
+        &progress_tx,
+        ProgressSnapshot {
+            state: DownloadState::Completed,
+            bytes_downloaded: res.bytes_written,
+            total_bytes: probe.content_length.or(Some(res.bytes_written)),
+            active_workers: 0,
+        },
+    );
+
+    Ok(DownloadOutcome {
+        final_path,
+        bytes_downloaded: res.bytes_written,
+        content_length: probe.content_length,
+        supports_ranges: probe.supports_ranges,
+        workers_used: res.workers_used,
+        splits_performed: res.splits_performed,
+        retries_performed: res.retries_performed,
+        probe_duration,
+        transfer_duration,
+        total_duration,
+        etag: probe.etag,
+        last_modified: probe.last_modified,
+        final_url: probe.final_url,
+    })
 }
 
 fn spawn_progress_reporter(

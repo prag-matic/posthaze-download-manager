@@ -19,3 +19,11 @@ _Avoid_: Block, packet, frame
 **Worker**:
 An async execution unit that fetches a single assigned `Segment` over HTTP/HTTPS and streams its `Chunk`s to storage.
 _Avoid_: Thread, connection, fetcher
+
+**Checkpoint**:
+A persisted record of `Segment` byte progress captured strictly after the corresponding `Chunk`s have been written to disk, used to resume a `Download` after an unexpected termination.
+_Avoid_: Savepoint, bookmark, offset log
+
+**Validator**:
+Server-supplied resource identity metadata (`ETag`, `Last-Modified`, and `Content-Length`) recorded during `Probing` and re-verified before resuming a `Download`.
+_Avoid_: Fingerprint, checksum, cache key

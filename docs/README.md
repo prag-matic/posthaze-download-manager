@@ -13,6 +13,8 @@ Documentation is a first-class part of Posthaze Download Manager.
   - [0003 — Dynamic segment splitting (work stealing)](adr/0003-dynamic-segment-splitting.md)
   - [0004 — HTTP capability probing with HEAD and Range GET fallback](adr/0004-range-capability-probing.md)
   - [0005 — Dedicated blocking writer task over a bounded channel](adr/0005-dedicated-writer-channel.md)
+  - [0006 — SQLite persistence via `sqlx` with runtime queries](adr/0006-sqlite-persistence-sqlx.md)
+  - [0007 — Writer-acknowledged `Checkpoint`s for crash recovery](adr/0007-writer-acked-checkpoints.md)
 
 ## Implemented Milestones & Tickets
 

@@ -427,7 +427,11 @@ fn is_transient_error(err: &EngineError) -> bool {
         EngineError::Http(_) => true,
         EngineError::HttpStatus { status, .. } => matches!(*status, 408 | 429 | 500..=599),
         EngineError::Io(io_err) => io_err.kind() == std::io::ErrorKind::UnexpectedEof,
-        EngineError::Writer(_) => false,
+        EngineError::Writer(_)
+        | EngineError::Database(_)
+        | EngineError::Migration(_)
+        | EngineError::InvalidState(_)
+        | EngineError::TaskJoin(_) => false,
     }
 }
 
