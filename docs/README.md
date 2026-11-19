@@ -20,8 +20,11 @@ Documentation is a first-class part of Posthaze Download Manager.
   - [0008 — GPUI and GPUI Kit for the desktop UI](adr/0008-gpui-and-gpui-kit-desktop-ui.md)
   - [0009 — SQLite-backed settings and engine-owned FIFO queue admission](adr/0009-sqlite-settings-and-queue-admission.md)
   - [0010 — Dedicated background Tokio runtime bridged to GPUI via `EngineEvent` broadcast](adr/0010-tokio-gpui-runtime-bridge.md)
+  - [0011 — Hot-swappable proxy client and shared bandwidth limiter](adr/0011-hot-swappable-proxy-client-and-bandwidth-limiter.md)
 
 ## Implemented Milestones & Tickets
+
+- [Comprehensive Settings, Custom Headers & Context Menu](settings-and-context-menu.md)
 
 - [Ticket 01 — Single-Stream HTTP Download Engine & CLI](ticket-01-single-stream-engine.md)
 - [Ticket 02 — `HEAD`-Blocked Range Probe Fallback & Chunked Handling](ticket-02-range-probe-fallback.md)

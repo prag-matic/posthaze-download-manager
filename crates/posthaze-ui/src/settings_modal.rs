@@ -4,19 +4,20 @@ use std::path::PathBuf;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::input::InputState;
 use gpui_kit::component::{Icon, Sizable};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use posthaze_engine::{CollisionPolicy, DeleteDefaultAction, ProxyMode, Settings};
 
-use crate::modals::modal_backdrop;
+use crate::modals::{labeled_input, modal_backdrop};
 use crate::theme::*;
 
 /// Navigation tabs inside the comprehensive Settings modal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SettingsTab {
     General,
+    Downloads,
     Network,
     Automation,
     Interface,
@@ -24,8 +25,9 @@ pub(crate) enum SettingsTab {
 }
 
 impl SettingsTab {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::General,
+        Self::Downloads,
         Self::Network,
         Self::Automation,
         Self::Interface,
@@ -35,6 +37,7 @@ impl SettingsTab {
     pub fn label(self) -> &'static str {
         match self {
             Self::General => "General",
+            Self::Downloads => "Downloads",
             Self::Network => "Network",
             Self::Automation => "Automation",
             Self::Interface => "Interface",
@@ -45,6 +48,7 @@ impl SettingsTab {
     pub fn icon(self) -> IconName {
         match self {
             Self::General => IconName::Folder,
+            Self::Downloads => IconName::Download,
             Self::Network => IconName::Globe,
             Self::Automation => IconName::Bell,
             Self::Interface => IconName::LayoutDashboard,
@@ -152,6 +156,61 @@ impl SettingsModalState {
             ui_show_add_paused: settings.ui_show_add_paused,
             ui_zoom_percent: settings.ui_zoom_percent,
             error: None,
+        }
+    }
+
+    pub fn handle_action(&mut self, action: SettingsAction, window: &mut Window, cx: &mut App) {
+        match action {
+            SettingsAction::SelectTab(tab) => self.active_tab = tab,
+            SettingsAction::SetProxyMode(mode) => self.proxy_mode = mode,
+            SettingsAction::SetSpeedPreset(kib) => {
+                self.speed_limit_input.update(cx, |st, cx| {
+                    st.set_value(kib.to_string(), window, cx);
+                });
+            }
+            SettingsAction::SetCollisionPolicy(policy) => self.collision_policy = policy,
+            SettingsAction::SetDeleteDefault(def) => self.delete_action_default = def,
+            SettingsAction::SetZoom(zoom) => self.ui_zoom_percent = zoom,
+            SettingsAction::ToggleSyncOnComplete => {
+                self.sync_on_complete = !self.sync_on_complete;
+            }
+            SettingsAction::ToggleAutoCategorize => {
+                self.auto_categorize_folders = !self.auto_categorize_folders;
+            }
+            SettingsAction::ToggleCompletionCmd => {
+                self.completion_cmd_enabled = !self.completion_cmd_enabled;
+            }
+            SettingsAction::ApplyDefenderPreset => {
+                self.completion_cmd_enabled = true;
+                self.cmd_path_input.update(cx, |st, cx| {
+                    st.set_value(
+                        r"C:\Program Files\Windows Defender\MpCmdRun.exe".to_string(),
+                        window,
+                        cx,
+                    );
+                });
+                self.cmd_args_input.update(cx, |st, cx| {
+                    st.set_value("-Scan -ScanType 3 -File \"%path%\"".to_string(), window, cx);
+                });
+            }
+            SettingsAction::ToggleNotifyAdded => self.notify_on_added = !self.notify_on_added,
+            SettingsAction::ToggleNotifyCompleted => {
+                self.notify_on_completed = !self.notify_on_completed;
+            }
+            SettingsAction::ToggleNotifyFailed => self.notify_on_failed = !self.notify_on_failed,
+            SettingsAction::ToggleNotifyOnlyInactive => {
+                self.notify_only_inactive = !self.notify_only_inactive;
+            }
+            SettingsAction::ToggleClickOpensInspector => {
+                self.ui_click_row_opens_inspector = !self.ui_click_row_opens_inspector;
+            }
+            SettingsAction::ToggleShowAddPaused => {
+                self.ui_show_add_paused = !self.ui_show_add_paused;
+            }
+            SettingsAction::ResetToDefaults => {
+                *self = Self::from_settings(&Settings::default(), window, cx);
+                self.active_tab = SettingsTab::Reset;
+            }
         }
     }
 
@@ -278,14 +337,19 @@ where
             .flex()
             .flex_col()
             .gap_3()
-            .child(modal_input("Default Download Folder", &state.dir_input))
+            .child(labeled_input("Default Download Folder", &state.dir_input))
             .child(toggle_row(
                 "settings-auto-categorize",
                 "Auto-categorize subfolders by file type (Archives, Video, Audio, Documents, Programs)",
                 state.auto_categorize_folders,
                 SettingsAction::ToggleAutoCategorize,
                 on_action.clone(),
-            ))
+            )),
+
+        SettingsTab::Downloads => div()
+            .flex()
+            .flex_col()
+            .gap_3()
             .child(section_label("File Exists Reaction"))
             .child(
                 div()
@@ -342,7 +406,7 @@ where
                         on_action.clone(),
                     )),
             )
-            .child(modal_input(
+            .child(labeled_input(
                 "Auto-Retry Failed Downloads (0..10)",
                 &state.auto_retry_input,
             )),
@@ -380,7 +444,7 @@ where
                     )),
             )
             .when(state.proxy_mode == ProxyMode::Manual, |el| {
-                el.child(modal_input("Proxy URL", &state.proxy_url_input))
+                el.child(labeled_input("Proxy URL", &state.proxy_url_input))
             })
             .child(section_label("Traffic Speed Profile"))
             .child(
@@ -414,7 +478,7 @@ where
                         on_action.clone(),
                     )),
             )
-            .child(modal_input(
+            .child(labeled_input(
                 "Global Download Speed Limit (KiB/s, 0 = Unlimited)",
                 &state.speed_limit_input,
             ))
@@ -425,12 +489,12 @@ where
                     .child(
                         div()
                             .flex_1()
-                            .child(modal_input("Max Workers (1..32)", &state.workers_input)),
+                            .child(labeled_input("Max Workers (1..32)", &state.workers_input)),
                     )
                     .child(
                         div()
                             .flex_1()
-                            .child(modal_input("Max Simultaneous (1+)", &state.concurrent_input)),
+                            .child(labeled_input("Max Simultaneous (1+)", &state.concurrent_input)),
                     ),
             )
             .child(toggle_row(
@@ -500,8 +564,8 @@ where
                 on_action.clone(),
             ))
             .when(state.completion_cmd_enabled, |el| {
-                el.child(modal_input("Executable Path", &state.cmd_path_input))
-                    .child(modal_input("Arguments (%path% = file path)", &state.cmd_args_input))
+                el.child(labeled_input("Executable Path", &state.cmd_path_input))
+                    .child(labeled_input("Arguments (%path% = file path)", &state.cmd_args_input))
             }),
 
         SettingsTab::Interface => div()
@@ -741,35 +805,6 @@ fn section_label(text: &'static str) -> impl IntoElement {
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(silver_muted())
         .child(text)
-}
-
-fn modal_input(label: &'static str, state: &Entity<InputState>) -> impl IntoElement {
-    div()
-        .flex()
-        .flex_col()
-        .gap_1()
-        .child(
-            div()
-                .text_size(TYPE_BODY)
-                .line_height(px(18.0))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(silver_muted())
-                .child(label),
-        )
-        .child(
-            div()
-                .h(px(30.0))
-                .px_2p5()
-                .bg(table_header_bg())
-                .border_1()
-                .border_color(paper_border())
-                .rounded(px(4.0))
-                .flex()
-                .items_center()
-                .font_family(MONO_FONT)
-                .text_size(TYPE_BODY)
-                .child(Input::new(state).appearance(false)),
-        )
 }
 
 fn toggle_row<F>(

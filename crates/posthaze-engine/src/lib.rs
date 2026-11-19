@@ -1260,21 +1260,29 @@ impl DownloadEngine {
         .map_err(|e| EngineError::TaskJoin(e.to_string()))?
     }
 
+    async fn prepare_completed_file_op(
+        &self,
+        id: &DownloadId,
+    ) -> Result<(DownloadStore, PathBuf), EngineError> {
+        let (store, record) = self.require_download_record(id).await?;
+        if record.state != DownloadState::Completed {
+            return Err(EngineError::InvalidState(
+                "file operation is only available for completed downloads".to_string(),
+            ));
+        }
+        let path = record.output_path.ok_or_else(|| {
+            EngineError::NotFound("completed download has no output path".to_string())
+        })?;
+        Ok((store.clone(), path))
+    }
+
     /// Renames a `Completed` `Download`'s output file on disk and updates SQLite.
     pub async fn rename_completed_file(
         &self,
         id: &DownloadId,
         new_filename: &str,
     ) -> Result<PathBuf, EngineError> {
-        let (store, record) = self.require_download_record(id).await?;
-        if record.state != DownloadState::Completed {
-            return Err(EngineError::InvalidState(
-                "only completed downloads can be renamed".to_string(),
-            ));
-        }
-        let old_path = record.output_path.ok_or_else(|| {
-            EngineError::NotFound("completed download has no output path".to_string())
-        })?;
+        let (store, old_path) = self.prepare_completed_file_op(id).await?;
         let parent = old_path
             .parent()
             .ok_or_else(|| EngineError::InvalidState("missing parent directory".to_string()))?;
@@ -1294,8 +1302,7 @@ impl DownloadEngine {
         tokio::fs::rename(&old_path, &new_path).await?;
         store
             .update_completed_file_paths(id, &new_path, None)
-            .await
-        .map_err(|e| EngineError::TaskJoin(e.to_string()))?;
+            .await?;
         let _ = self.event_tx.send(EngineEvent::QueueUpdated);
         Ok(new_path)
     }
@@ -1306,15 +1313,7 @@ impl DownloadEngine {
         id: &DownloadId,
         target_dir: impl AsRef<Path>,
     ) -> Result<PathBuf, EngineError> {
-        let (store, record) = self.require_download_record(id).await?;
-        if record.state != DownloadState::Completed {
-            return Err(EngineError::InvalidState(
-                "only completed downloads can be moved".to_string(),
-            ));
-        }
-        let old_path = record.output_path.ok_or_else(|| {
-            EngineError::NotFound("completed download has no output path".to_string())
-        })?;
+        let (store, old_path) = self.prepare_completed_file_op(id).await?;
         let file_name = old_path
             .file_name()
             .ok_or_else(|| EngineError::InvalidState("missing filename".to_string()))?

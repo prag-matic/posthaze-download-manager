@@ -6,6 +6,7 @@ mod curl_parser;
 mod inspector;
 mod modals;
 mod motion;
+mod platform_hooks;
 mod settings_modal;
 mod theme;
 mod view_model;
@@ -37,6 +38,7 @@ use crate::modals::{
     render_file_op_modal, render_preflight_modal,
 };
 use crate::motion::{MotionState, RowMotionSample};
+use crate::platform_hooks::{disambiguate_ui_path, spawn_completion_hook, spawn_windows_toast};
 use crate::settings_modal::{SettingsAction, SettingsModalState, render_settings_modal};
 use crate::theme::*;
 use crate::view_model::{
@@ -134,6 +136,7 @@ enum ActiveResize {
 
 struct PosthazeApp {
     bridge: EngineBridge,
+    window_handle: AnyWindowHandle,
     url_input: Entity<InputState>,
     records: Vec<DownloadRecord>,
     live_map: HashMap<DownloadId, ProgressSnapshot>,
@@ -177,6 +180,7 @@ impl PosthazeApp {
 
         let app = Self {
             bridge,
+            window_handle: window.window_handle(),
             url_input,
             records: Vec::new(),
             live_map: HashMap::new(),
@@ -291,7 +295,14 @@ impl PosthazeApp {
                                 app.auto_retries_used.remove(&id);
                                 if let Some(ref r) = rec {
                                     let name = derive_display_filename(r);
-                                    if app.settings.notify_on_completed {
+                                    let win_active = cx
+                                        .update_window(app.window_handle, |_, w, _| {
+                                            w.is_window_active()
+                                        })
+                                        .unwrap_or(false);
+                                    if app.settings.notify_on_completed
+                                        && (!app.settings.notify_only_inactive || !win_active)
+                                    {
                                         spawn_windows_toast(
                                             "Posthaze — Download Completed",
                                             &name,
@@ -315,12 +326,21 @@ impl PosthazeApp {
                                 if !is_resource_changed && used < app.settings.auto_retry_count {
                                     app.auto_retries_used.insert(id.clone(), used + 1);
                                     app.resume_download(id.clone(), cx);
-                                } else if app.settings.notify_on_failed {
-                                    let name = rec
-                                        .as_ref()
-                                        .map(derive_display_filename)
-                                        .unwrap_or_else(|| "Download".to_string());
-                                    spawn_windows_toast("Posthaze — Download Failed", &name);
+                                } else {
+                                    let win_active = cx
+                                        .update_window(app.window_handle, |_, w, _| {
+                                            w.is_window_active()
+                                        })
+                                        .unwrap_or(false);
+                                    if app.settings.notify_on_failed
+                                        && (!app.settings.notify_only_inactive || !win_active)
+                                    {
+                                        let name = rec
+                                            .as_ref()
+                                            .map(derive_display_filename)
+                                            .unwrap_or_else(|| "Download".to_string());
+                                        spawn_windows_toast("Posthaze — Download Failed", &name);
+                                    }
                                 }
                             }
 
@@ -449,12 +469,16 @@ impl PosthazeApp {
                     }
                     match res {
                         Ok(Ok(info)) => {
-                            let initial_name = info
-                                .disambiguated_output_path
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or(&info.suggested_filename)
-                                .to_string();
+                            let initial_name =
+                                if app.settings.collision_policy == CollisionPolicy::Rename {
+                                    info.disambiguated_output_path
+                                        .file_name()
+                                        .and_then(|n| n.to_str())
+                                        .unwrap_or(&info.suggested_filename)
+                                        .to_string()
+                                } else {
+                                    info.suggested_filename.clone()
+                                };
                             let base_dir = info
                                 .disambiguated_output_path
                                 .parent()
@@ -577,16 +601,23 @@ impl PosthazeApp {
         };
 
         let mut req = DownloadRequest::new(info.original_url, &out_dir);
+        let mut ask_overwrite_name: Option<String> = None;
         if !filename.is_empty() {
             let target = out_dir.join(&filename);
             let resolved_target = match self.settings.collision_policy {
                 CollisionPolicy::Overwrite => target,
-                CollisionPolicy::Rename | CollisionPolicy::Ask => {
+                CollisionPolicy::Rename => {
                     if target.exists() {
                         disambiguate_ui_path(&out_dir, &filename)
                     } else {
                         target
                     }
+                }
+                CollisionPolicy::Ask => {
+                    if target.exists() {
+                        ask_overwrite_name = Some(filename.clone());
+                    }
+                    target
                 }
             };
             req.output_path = Some(resolved_target);
@@ -594,6 +625,20 @@ impl PosthazeApp {
         req.max_workers = if info.supports_ranges { workers } else { 1 };
         req.sync_on_complete = self.settings.sync_on_complete;
         req.headers = headers;
+
+        self.url_input.update(cx, |state, cx| {
+            state.set_value(String::new(), window, cx);
+        });
+
+        if let Some(collision_name) = ask_overwrite_name {
+            self.confirm_modal = Some(ConfirmAction::OverwriteCollision {
+                request: Box::new(req),
+                start_immediately,
+                filename: collision_name,
+            });
+            cx.notify();
+            return;
+        }
 
         if self.settings.notify_on_added {
             let allow_notify = !self.settings.notify_only_inactive || !window.is_window_active();
@@ -605,9 +650,15 @@ impl PosthazeApp {
             }
         }
 
-        self.url_input.update(cx, |state, cx| {
-            state.set_value(String::new(), window, cx);
-        });
+        self.dispatch_download_request(req, start_immediately, cx);
+    }
+
+    fn dispatch_download_request(
+        &mut self,
+        req: DownloadRequest,
+        start_immediately: bool,
+        cx: &mut Context<Self>,
+    ) {
 
         let rx = self.bridge.dispatch(move |engine| async move {
             if start_immediately {
@@ -677,62 +728,10 @@ impl PosthazeApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(modal) = &mut self.settings_modal else {
-            return;
-        };
-        match action {
-            SettingsAction::SelectTab(tab) => modal.active_tab = tab,
-            SettingsAction::SetProxyMode(mode) => modal.proxy_mode = mode,
-            SettingsAction::SetSpeedPreset(kib) => {
-                modal.speed_limit_input.update(cx, |st, cx| {
-                    st.set_value(kib.to_string(), window, cx);
-                });
-            }
-            SettingsAction::SetCollisionPolicy(policy) => modal.collision_policy = policy,
-            SettingsAction::SetDeleteDefault(def) => modal.delete_action_default = def,
-            SettingsAction::SetZoom(zoom) => modal.ui_zoom_percent = zoom,
-            SettingsAction::ToggleSyncOnComplete => {
-                modal.sync_on_complete = !modal.sync_on_complete;
-            }
-            SettingsAction::ToggleAutoCategorize => {
-                modal.auto_categorize_folders = !modal.auto_categorize_folders;
-            }
-            SettingsAction::ToggleCompletionCmd => {
-                modal.completion_cmd_enabled = !modal.completion_cmd_enabled;
-            }
-            SettingsAction::ApplyDefenderPreset => {
-                modal.completion_cmd_enabled = true;
-                modal.cmd_path_input.update(cx, |st, cx| {
-                    st.set_value(
-                        r"C:\Program Files\Windows Defender\MpCmdRun.exe".to_string(),
-                        window,
-                        cx,
-                    );
-                });
-                modal.cmd_args_input.update(cx, |st, cx| {
-                    st.set_value("-Scan -ScanType 3 -File \"%path%\"".to_string(), window, cx);
-                });
-            }
-            SettingsAction::ToggleNotifyAdded => modal.notify_on_added = !modal.notify_on_added,
-            SettingsAction::ToggleNotifyCompleted => {
-                modal.notify_on_completed = !modal.notify_on_completed;
-            }
-            SettingsAction::ToggleNotifyFailed => modal.notify_on_failed = !modal.notify_on_failed,
-            SettingsAction::ToggleNotifyOnlyInactive => {
-                modal.notify_only_inactive = !modal.notify_only_inactive;
-            }
-            SettingsAction::ToggleClickOpensInspector => {
-                modal.ui_click_row_opens_inspector = !modal.ui_click_row_opens_inspector;
-            }
-            SettingsAction::ToggleShowAddPaused => {
-                modal.ui_show_add_paused = !modal.ui_show_add_paused;
-            }
-            SettingsAction::ResetToDefaults => {
-                let defaults = Settings::default();
-                self.settings_modal = Some(SettingsModalState::from_settings(&defaults, window, cx));
-            }
+        if let Some(modal) = &mut self.settings_modal {
+            modal.handle_action(action, window, cx);
+            cx.notify();
         }
-        cx.notify();
     }
 
     fn pause_download(&mut self, id: DownloadId, cx: &mut Context<Self>) {
@@ -810,6 +809,11 @@ impl PosthazeApp {
                 id, delete_file, ..
             } => self.delete_download(id, delete_file, cx),
             ConfirmAction::ClearCompleted { .. } => self.clear_completed(cx),
+            ConfirmAction::OverwriteCollision {
+                request,
+                start_immediately,
+                ..
+            } => self.dispatch_download_request(*request, start_immediately, cx),
         }
     }
 
@@ -2940,71 +2944,4 @@ impl PosthazeApp {
                     ),
             )
     }
-}
-
-fn disambiguate_ui_path(dir: &std::path::Path, filename: &str) -> PathBuf {
-    let candidate = dir.join(filename);
-    if !candidate.exists() {
-        return candidate;
-    }
-    let path = std::path::Path::new(filename);
-    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or(filename);
-    let ext = path.extension().and_then(|e| e.to_str());
-    for idx in 1..=1000 {
-        let numbered = match ext {
-            Some(ext) if !ext.is_empty() => format!("{stem} ({idx}).{ext}"),
-            _ => format!("{stem} ({idx})"),
-        };
-        let next = dir.join(numbered);
-        if !next.exists() {
-            return next;
-        }
-    }
-    candidate
-}
-
-fn spawn_windows_toast(title: &str, body: &str) {
-    #[cfg(target_os = "windows")]
-    {
-        let title_esc = title.replace('\'', "''");
-        let body_esc = body.replace('\'', "''");
-        let script = format!(
-            "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null; \
-             $template = [Windows.UI.Notifications.ToastTemplateType]::ToastText02; \
-             $xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent($template); \
-             $nodes = $xml.GetElementsByTagName('text'); \
-             $nodes.Item(0).AppendChild($xml.CreateTextNode('{title_esc}')) > $null; \
-             $nodes.Item(1).AppendChild($xml.CreateTextNode('{body_esc}')) > $null; \
-             $toast = [Windows.UI.Notifications.ToastNotification]::new($xml); \
-             [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Posthaze Download Manager').Show($toast)"
-        );
-        std::thread::spawn(move || {
-            let _ = std::process::Command::new("powershell.exe")
-                .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &script])
-                .spawn();
-        });
-    }
-    #[cfg(not(target_os = "windows"))]
-    let _ = (title, body);
-}
-
-fn spawn_completion_hook(exe_path: &str, args_template: &str, file_path: &std::path::Path) {
-    let trimmed = exe_path.trim();
-    if trimmed.is_empty() {
-        return;
-    }
-    let exe = trimmed.to_string();
-    let path_str = file_path.to_string_lossy().into_owned();
-    let args_line = args_template.replace("%path%", &path_str);
-    std::thread::spawn(move || {
-        #[cfg(target_os = "windows")]
-        {
-            let full_cmd = format!("\"{exe}\" {args_line}");
-            let _ = std::process::Command::new("cmd.exe")
-                .args(["/C", &full_cmd])
-                .spawn();
-        }
-        #[cfg(not(target_os = "windows"))]
-        let _ = (exe, args_line);
-    });
 }

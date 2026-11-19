@@ -21,6 +21,14 @@ const MAX_SEGMENT_RETRIES: u32 = 5;
 const BASE_BACKOFF_MS: u64 = 100;
 const MAX_BACKOFF_MS: u64 = 5_000;
 
+#[derive(Clone, Copy)]
+struct TransferContext<'a> {
+    client: &'a reqwest::Client,
+    url: &'a str,
+    headers: &'a [(String, String)],
+    limiter: Option<&'a BandwidthLimiter>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ControlSignal {
     Run,
@@ -329,11 +337,14 @@ pub(crate) async fn execute_multi_segment_from_checkpoints(
 
         join_set.spawn(async move {
             active_workers.fetch_add(1, Ordering::Relaxed);
+            let tctx = TransferContext {
+                client: &client,
+                url: &url,
+                headers: &headers,
+                limiter: limiter.as_deref(),
+            };
             let res = run_worker_loop(
-                &client,
-                &url,
-                &headers,
-                limiter.as_deref(),
+                tctx,
                 initial_seg,
                 worker_count == 1,
                 &writer,
@@ -389,10 +400,7 @@ fn sum_segment_bytes(active_segments: &Mutex<Vec<Arc<ActiveSegment>>>) -> u64 {
 
 #[allow(clippy::too_many_arguments)]
 async fn run_worker_loop(
-    client: &reqwest::Client,
-    url: &str,
-    headers: &[(String, String)],
-    limiter: Option<&BandwidthLimiter>,
+    tctx: TransferContext<'_>,
     mut current_seg: Arc<ActiveSegment>,
     allow_full_200: bool,
     writer: &PartFileWriter,
@@ -408,10 +416,7 @@ async fn run_worker_loop(
 
     loop {
         let seg_bytes = run_segment_worker(
-            client,
-            url,
-            headers,
-            limiter,
+            tctx,
             &current_seg,
             allow_full_200,
             writer,
@@ -506,10 +511,7 @@ fn steal_largest_segment(
 
 #[allow(clippy::too_many_arguments)]
 async fn run_segment_worker(
-    client: &reqwest::Client,
-    url: &str,
-    headers: &[(String, String)],
-    limiter: Option<&BandwidthLimiter>,
+    tctx: TransferContext<'_>,
     seg: &ActiveSegment,
     allow_full_200: bool,
     writer: &PartFileWriter,
@@ -531,10 +533,7 @@ async fn run_segment_worker(
         }
 
         match run_segment_attempt(
-            client,
-            url,
-            headers,
-            limiter,
+            tctx,
             seg,
             attempt_start,
             end_snapshot,
@@ -583,10 +582,7 @@ async fn run_segment_worker(
 
 #[allow(clippy::too_many_arguments)]
 async fn run_segment_attempt(
-    client: &reqwest::Client,
-    url: &str,
-    headers: &[(String, String)],
-    limiter: Option<&BandwidthLimiter>,
+    tctx: TransferContext<'_>,
     seg: &ActiveSegment,
     attempt_start: u64,
     end_snapshot: u64,
@@ -604,7 +600,7 @@ async fn run_segment_attempt(
             }
             unreachable!("Run signal does not trigger abort");
         }
-        res = apply_custom_headers(client.get(url).header(RANGE, range_header), headers).send() => res?,
+        res = apply_custom_headers(tctx.client.get(tctx.url).header(RANGE, range_header), tctx.headers).send() => res?,
     };
     let status = resp.status();
 
@@ -664,7 +660,7 @@ async fn run_segment_attempt(
         };
 
         let len = slice.len() as u64;
-        if let Some(lim) = limiter {
+        if let Some(lim) = tctx.limiter {
             lim.acquire(len).await;
         }
         cur += len;

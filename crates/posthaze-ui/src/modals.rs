@@ -8,13 +8,13 @@ use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{Icon, Sizable};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
-use posthaze_engine::{DownloadId, PreflightInfo};
+use posthaze_engine::{DownloadId, DownloadRequest, PreflightInfo};
 
 use crate::curl_parser::mask_header_summary;
 use crate::theme::*;
 use crate::view_model::format_bytes;
 
-/// Active confirmation prompt for destructive queue/record actions.
+/// Active confirmation prompt for destructive or collision-override queue/record actions.
 pub(crate) enum ConfirmAction {
     DeleteDownload {
         id: DownloadId,
@@ -22,6 +22,11 @@ pub(crate) enum ConfirmAction {
         delete_file: bool,
     },
     ClearCompleted { count: usize },
+    OverwriteCollision {
+        request: Box<DownloadRequest>,
+        start_immediately: bool,
+        filename: String,
+    },
 }
 
 /// Active state of the Pre-Flight Add Download Confirmation Modal.
@@ -504,104 +509,28 @@ where
 {
     let on_backdrop_close = on_cancel.clone();
     let card = match state {
-        FileOpModalState::Rename { input, error, .. } => div()
-            .w(px(460.0))
-            .p_5()
-            .bg(graphite_bg())
-            .border_1()
-            .border_color(graphite_border())
-            .rounded(px(6.0))
-            .flex()
-            .flex_col()
-            .gap_3()
-            .child(
-                div()
-                    .text_size(TYPE_HEADING)
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(silver_text())
-                    .child("Rename Completed File"),
-            )
-            .when_some(error.clone(), |el, err| {
-                el.child(
-                    div()
-                        .font_family(MONO_FONT)
-                        .text_size(TYPE_MICRO)
-                        .text_color(errata_vermilion())
-                        .child(err),
-                )
-            })
-            .child(labeled_input("New Filename", input))
-            .child(
-                div()
-                    .flex()
-                    .justify_end()
-                    .gap_2()
-                    .pt_2()
-                    .child(
-                        Button::new("fileop-cancel")
-                            .small()
-                            .icon(IconName::X)
-                            .label("Cancel")
-                            .on_click(move |_, window, cx| on_cancel(window, cx)),
-                    )
-                    .child(
-                        Button::new("fileop-save")
-                            .small()
-                            .primary()
-                            .icon(IconName::Check)
-                            .label("Rename")
-                            .on_click(move |_, window, cx| on_confirm(window, cx)),
-                    ),
-            ),
-        FileOpModalState::Move { input, error, .. } => div()
-            .w(px(480.0))
-            .p_5()
-            .bg(graphite_bg())
-            .border_1()
-            .border_color(graphite_border())
-            .rounded(px(6.0))
-            .flex()
-            .flex_col()
-            .gap_3()
-            .child(
-                div()
-                    .text_size(TYPE_HEADING)
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(silver_text())
-                    .child("Move Completed File"),
-            )
-            .when_some(error.clone(), |el, err| {
-                el.child(
-                    div()
-                        .font_family(MONO_FONT)
-                        .text_size(TYPE_MICRO)
-                        .text_color(errata_vermilion())
-                        .child(err),
-                )
-            })
-            .child(labeled_input("Destination Directory", input))
-            .child(
-                div()
-                    .flex()
-                    .justify_end()
-                    .gap_2()
-                    .pt_2()
-                    .child(
-                        Button::new("fileop-cancel")
-                            .small()
-                            .icon(IconName::X)
-                            .label("Cancel")
-                            .on_click(move |_, window, cx| on_cancel(window, cx)),
-                    )
-                    .child(
-                        Button::new("fileop-save")
-                            .small()
-                            .primary()
-                            .icon(IconName::FolderOpen)
-                            .label("Move File")
-                            .on_click(move |_, window, cx| on_confirm(window, cx)),
-                    ),
-            ),
+        FileOpModalState::Rename { input, error, .. } => file_op_form_card(
+            "Rename Completed File",
+            "New Filename",
+            "Rename",
+            IconName::Check,
+            px(460.0),
+            input,
+            error.as_deref(),
+            on_cancel,
+            on_confirm,
+        ),
+        FileOpModalState::Move { input, error, .. } => file_op_form_card(
+            "Move Completed File",
+            "Destination Directory",
+            "Move File",
+            IconName::FolderOpen,
+            px(480.0),
+            input,
+            error.as_deref(),
+            on_cancel,
+            on_confirm,
+        ),
         FileOpModalState::Integrity {
             filename,
             digest,
@@ -730,6 +659,13 @@ where
             ),
             "Clear List",
         ),
+        ConfirmAction::OverwriteCollision { filename, .. } => (
+            "File Already Exists",
+            format!(
+                "\"{filename}\" already exists in the destination directory. Overwrite the existing file?"
+            ),
+            "Overwrite",
+        ),
     };
 
     let on_backdrop_close = on_cancel.clone();
@@ -795,7 +731,74 @@ where
     modal_backdrop(card, on_backdrop_close)
 }
 
-fn labeled_input(label: &'static str, state: &Entity<InputState>) -> impl IntoElement {
+#[allow(clippy::too_many_arguments)]
+fn file_op_form_card<F1, F2>(
+    title: &'static str,
+    input_label: &'static str,
+    confirm_label: &'static str,
+    confirm_icon: IconName,
+    width: Pixels,
+    input: &Entity<InputState>,
+    error: Option<&str>,
+    on_cancel: F1,
+    on_confirm: F2,
+) -> Div
+where
+    F1: Fn(&mut Window, &mut App) + 'static,
+    F2: Fn(&mut Window, &mut App) + 'static,
+{
+    div()
+        .w(width)
+        .p_5()
+        .bg(graphite_bg())
+        .border_1()
+        .border_color(graphite_border())
+        .rounded(px(6.0))
+        .flex()
+        .flex_col()
+        .gap_3()
+        .child(
+            div()
+                .text_size(TYPE_HEADING)
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(silver_text())
+                .child(title),
+        )
+        .when_some(error.map(str::to_string), |el, err| {
+            el.child(
+                div()
+                    .font_family(MONO_FONT)
+                    .text_size(TYPE_MICRO)
+                    .text_color(errata_vermilion())
+                    .child(err),
+            )
+        })
+        .child(labeled_input(input_label, input))
+        .child(
+            div()
+                .flex()
+                .justify_end()
+                .gap_2()
+                .pt_2()
+                .child(
+                    Button::new("fileop-cancel")
+                        .small()
+                        .icon(IconName::X)
+                        .label("Cancel")
+                        .on_click(move |_, window, cx| on_cancel(window, cx)),
+                )
+                .child(
+                    Button::new("fileop-save")
+                        .small()
+                        .primary()
+                        .icon(confirm_icon)
+                        .label(confirm_label)
+                        .on_click(move |_, window, cx| on_confirm(window, cx)),
+                ),
+        )
+}
+
+pub(crate) fn labeled_input(label: &'static str, state: &Entity<InputState>) -> impl IntoElement {
     div()
         .flex()
         .flex_col()

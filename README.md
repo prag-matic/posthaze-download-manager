@@ -5,6 +5,7 @@ A Windows-native, multi-connection HTTP/HTTPS download manager built with a deco
 ## Documentation
 
 - [Documentation Index](docs/README.md) — Milestone docs, benchmarks, ADRs, and API doc instructions
+- [Comprehensive Settings, Custom Headers & Context Menu](docs/settings-and-context-menu.md) — 6-tab Settings, proxy/throttling, Paste as cURL, notifications/hooks, and row context menu
 - [Milestone 03 — Queue, Settings, Telemetry & GPUI Desktop UI](docs/milestone-03-desktop-ui.md) — FIFO `Queue`, `Settings`, `probe()`, `EngineEvent`s, and `posthaze-ui`
 - [Milestone 02 — Persistence, Pause/Resume, and Crash Recovery](docs/milestone-02-persistence.md) — SQLite store, `Checkpoint`s, `Validator`s, and CLI persistence commands
 - [Design System (`DESIGN.md`)](DESIGN.md) — Chronophotographic Interval Plate tokens and component grammar

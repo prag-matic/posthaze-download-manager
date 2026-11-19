@@ -1,0 +1,23 @@
+# Comprehensive Settings, Custom Headers & Context Menu
+
+This document summarizes the configurable `Settings`, custom HTTP header / cURL support, and download row context menu implemented across `posthaze-engine` and `posthaze-ui`.
+
+## Comprehensive Settings (`SettingsModalState`)
+
+The Settings modal uses a 6-tab left-navigation layout (`General`, `Downloads`, `Network`, `Automation`, `Interface`, `Reset`) backed by SQLite (`0004_extended_settings.sql`):
+
+- **General:** Default download folder and optional file-type subfolder auto-categorization (`Archives`, `Video`, `Audio`, `Documents`, `Programs` via `categorize_subfolder`).
+- **Downloads:** File-exists collision policy (`CollisionPolicy::{Rename, Overwrite, Ask}`), row delete button default (`DeleteDefaultAction::{Ask, Remove, DeleteFile}`), and automatic retry count for transient failures (`auto_retry_count`).
+- **Network:** Proxy routing (`ProxyMode::{System, None, Manual}`), global download speed limit (`BandwidthLimiter` with `Low` / `Medium` / `High` / `Unlimited` presets or custom KiB/s), `max_workers` (`1..32`), `max_concurrent_downloads`, and `sync_on_complete`.
+- **Automation:** Windows Toast notifications (`notify_on_added`, `notify_on_completed`, `notify_on_failed`, `notify_only_inactive`) and a post-completion external command hook (`%path%` substitution) with a 1-click Windows Defender (`MpCmdRun.exe`) preset.
+- **Interface:** `ui_click_row_opens_inspector`, `ui_show_add_paused`, and `ui_zoom_percent` (`90%`, `100%`, `110%`, `125%`).
+- **Reset:** One-click `Reset All Settings to Defaults` restoring `Settings::default()`.
+
+## Custom Headers & Paste as cURL
+
+- `DownloadEngine::probe_with_headers` and `DownloadRequest.headers` persist custom request headers (`Cookie`, `Referer`, `User-Agent`) in SQLite (`0003_request_headers.sql`) so pause and resume preserve session context.
+- `posthaze-ui` (`curl_parser.rs`) parses both plain URLs and Browser DevTools *Copy as cURL* commands (Bash and Windows `cmd` `^"` syntax) in the URL bar and **Paste & Probe**.
+
+## Download Row Context Menu & File Operations
+
+Right-clicking a download row opens `context_menu.rs` with state-aware transfer controls (`Pause`, `Resume`, `Restart Fresh` / `Download Again`, `Cancel Transfer`), file/link actions (`Open File`, `Show in Folder`, `Copy URL`, `Inspect Byte-Map`), `Completed`-file operations (`File Integrity (BLAKE3)`, `Rename File...`, `Move To...` backed by `DownloadEngine::compute_file_blake3`, `rename_completed_file`, and `move_completed_file`), and explicit `Remove from List` vs `Delete File & Entry` actions.
