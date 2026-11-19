@@ -444,7 +444,7 @@ where
                     div()
                         .text_xs()
                         .text_color(silver_muted())
-                        .child("Sync file buffers on completion (FlushFileBuffers)"),
+                        .child("Flush file buffers to disk before marking complete"),
                 )
                 .child(
                     Button::new("settings-sync")

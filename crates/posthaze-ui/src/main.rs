@@ -1088,7 +1088,7 @@ impl PosthazeApp {
                             .font_family(MONO_FONT)
                             .text_size(TYPE_HEADER)
                             .text_color(silver_muted())
-                            .child("GPUI-KIT 0.10.0 · TOKIO-BRIDGE"),
+                            .child("MULTI-SEGMENT HTTP ENGINE"),
                     ),
             )
     }
@@ -1573,6 +1573,18 @@ impl PosthazeApp {
                             })),
                     )
                 })
+                .when(!is_empty_queue, |el| {
+                    el.child(
+                        Button::new("empty-show-all")
+                            .small()
+                            .icon(IconName::Folder)
+                            .label("Show All Transfers")
+                            .on_click(cx.listener(|app, _, _, cx| {
+                                app.filter = FilterTab::All;
+                                cx.notify();
+                            })),
+                    )
+                })
                 .into_any_element();
         }
 
@@ -1683,7 +1695,8 @@ impl PosthazeApp {
                 el.child(Icon::new(icon).size(px(12.0)).text_color(selenium_amber()))
             });
         match width {
-            Some(w) => base.w(px(w)).into_any_element(),
+            Some(w) if col == SortColumn::State => base.w(px(w)).into_any_element(),
+            Some(w) => base.w(px(w)).pl_2().into_any_element(),
             None => base.flex_1().min_w(px(120.0)).px_2().into_any_element(),
         }
     }
@@ -1735,12 +1748,12 @@ impl PosthazeApp {
                 app.load_segments_for(id_select.clone(), cx);
                 cx.notify();
             }))
-            // 3px selection accent bar (Selenium Amber)
+            // 3px selection accent bar + 13px margin = 16px left offset matching header px_4
             .child(
                 div()
                     .w(px(3.0))
                     .h_full()
-                    .mr_3()
+                    .mr(px(13.0))
                     .bg(if is_selected {
                         selenium_amber()
                     } else {
@@ -1844,7 +1857,7 @@ impl PosthazeApp {
                                     .child(if row.total_bytes.is_some() {
                                         format!("{total_pct:.1}%")
                                     } else {
-                                        "200".to_string()
+                                        "STREAM".to_string()
                                     }),
                             ),
                     )

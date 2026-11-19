@@ -94,43 +94,43 @@ components:
 
 **Creative North Star: "Chronophotographic Interval Plate"**
 
-Posthaze Download Manager pairs a warm graphite emulsion shell (`#181715`) with a high-legibility silver-halide paper work surface (`#F2EFE9`) so power users can scan dozens of concurrent HTTP/HTTPS `Download`s without visual fatigue while reading exact byte-range `Checkpoint` telemetry at a glance. Rather than mimicking dark-neon cyber downloaders or cramped 2000s shareware grids, every surface separates structural chrome from live transfer evidence through calibrated contrast and tabular precision.
+Posthaze Download Manager pairs a deep warm graphite shell (`#141311`) with a warm charcoal table work surface (`#1E1D1A`) so power users can scan dozens of concurrent HTTP/HTTPS `Download`s without visual fatigue while reading exact byte-range `Checkpoint` telemetry at a glance. Rather than mimicking dark-neon cyber downloaders or cramped 2000s shareware grids, every surface separates structural chrome from live transfer evidence through calibrated contrast and tabular precision.
 
-Implemented in pure Rust (`crates/posthaze-ui`) with GPUI and GPUI Kit `0.10.0`, the system enforces an instrument-grade hierarchy: dark graphite owns navigation, confirmation modals, and the selected `Download` byte-map deck, while warm paper owns the sortable `Downloads` table.
+Implemented in pure Rust (`crates/posthaze-ui`) with GPUI and GPUI Kit `0.10.0`, the system enforces an instrument-grade hierarchy: `#141311` graphite owns the custom titlebar, collapsible icon rail, confirmation modals, and the selected `Download` byte-map deck, while `#1E1D1A` warm charcoal owns the toolbar and sortable `Downloads` table.
 
 **Key Characteristics:**
-- Dual-ground contrast separating dark graphite instrument rails from warm silver-halide table paper.
+- Tonal dark-ground separation between `#141311` instrument rails and `#1E1D1A` charcoal table workspace.
 - Two-tier transfer honesty distinguishing writer-acknowledged disk `Checkpoint`s (Cyanotype Blue) from in-flight `Chunk`s (Selenium Amber).
 - Tabular monospaced telemetry (`Consolas`) paired with Windows system UI sans (`Segoe UI`).
 - Hairline `1px` borders with flat elevation and crisp 90ms two-frame state snaps.
 
 ## Colors
 
-A restrained dual-ground palette where warm neutrals carry 90% of the viewport and four semantic telemetry hues encode live engine state.
+A restrained dark-instrument palette where warm neutrals carry 90% of the viewport and four semantic telemetry hues encode live engine state.
 
 ### Primary
-- **Selenium Amber** (`#D97724`): Active `Download` state mark, sidebar aggregate `THROUGHPUT` readout, active filter pill border, and in-flight `Segment` bar fill ahead of the last disk `Checkpoint`.
+- **Selenium Amber** (`#E58A35`): Active `Download` state mark, primary CTAs (`Paste & Probe`, `Download Now`, `Save Settings`), selected row/filter accent bar, and in-flight `Segment` bar fill ahead of the last disk `Checkpoint`.
 
 ### Secondary
-- **Cyanotype Blue** (`#2563EB`): Writer-acknowledged disk `Checkpoint` bar fill, `206 MULTI-SEGMENT` capability badge, and `Probing`/`Queued` state marks.
+- **Cyanotype Blue** (`#3B82F6`): Writer-acknowledged disk `Checkpoint` bar fill, `206 MULTI-SEGMENT` capability badge, and `Probing`/`Queued` state marks.
 
 ### Tertiary
-- **Halide Emerald** (`#15803D`): `Completed` state mark and finished `Segment` fill inside the byte-map ruler.
-- **Errata Vermilion** (`#DC2626`): `Failed` state mark, probe error border, status banner, and the inline `ResourceChanged` errata recovery strip.
+- **Halide Emerald** (`#22C55E`): `Completed` state mark and finished `Segment` fill inside the byte-map ruler.
+- **Errata Vermilion** (`#EF4444`): `Failed` state mark, probe/confirm error borders, dismissible status banner, and the inline diagnostic / `ResourceChanged` errata recovery strip.
 
 ### Neutral
-- **Graphite Emulsion** (`#181715`): Left filter rail, bottom `240px` inspector deck, and modal plates.
-- **Graphite Elevated** (`#22201D`): Selected filter pill background, throughput readout card, and byte-map ruler track.
-- **Graphite Rule** (`#2C2A27`): `1px` structural dividers on dark graphite surfaces.
-- **Silver Halide Ink** (`#EAE6DF`): Primary text on dark graphite surfaces.
-- **Silver Muted** (`#9C968B`): Secondary metadata, labels, and ruler tick text on dark graphite.
-- **Silver Halide Paper** (`#F2EFE9`): Center `Downloads` table work surface and top dispatch toolbar.
-- **Paper Selected / Hover** (`#E6E0D4` / `#ECE8DF`): Selected and hovered `Download` row fills.
-- **Paper Rule** (`#DFDBD2`): `1px` row dividers and empty progress bar tracks.
-- **Carbon Ink / Muted** (`#141413` / `#5C5852`): Primary filenames and secondary byte counters on warm paper.
+- **Graphite Emulsion** (`#141311`): Custom titlebar, left filter rail, bottom inspector deck, recessed URL input, and modal plates.
+- **Graphite Elevated** (`#1B1A17`): Telemetry readout card, validator badges, and segment cards.
+- **Graphite Rule** (`#2A2825`): `1px` structural dividers on `#141311` graphite surfaces.
+- **Silver Halide Ink** (`#EAE6DF`): Primary text across all dark surfaces.
+- **Silver Muted** (`#9B968D`): Secondary metadata, labels, and ruler tick text.
+- **Charcoal Table** (`#1E1D1A` / `#181714` header): Center `Downloads` table work surface and top dispatch toolbar.
+- **Table Selected / Hover** (`#2D2B26` / `#262420`): Selected and hovered `Download` row fills.
+- **Table Rule** (`#2C2A27`): `1px` construction-grid row and column dividers.
+- **Byte Track** (`#0D0C0B`): Deep recessed track for the Graduated Interval Byte-Map Ruler.
 
 ### Named Rules
-**The Dual-Ground Truth Rule.** Never paint active telemetry colors onto decorative backgrounds; Selenium Amber (`#D97724`) and Cyanotype Blue (`#2563EB`) exclusively signify live bytes in flight versus flushed bytes on disk.
+**The Dual-Ground Truth Rule.** Never paint active telemetry colors onto decorative backgrounds; Selenium Amber (`#E58A35`) and Cyanotype Blue (`#3B82F6`) exclusively signify live bytes in flight versus flushed bytes on disk.
 
 ## Typography
 
