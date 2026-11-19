@@ -62,6 +62,37 @@ pub fn resolve_inspector_drag(dragged_height: f32, previous_expanded_height: f32
     }
 }
 
+/// Adaptive layout breakpoints and clamped inspector height for the current right-column size.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LayoutProfile {
+    pub show_eta: bool,
+    pub show_segs: bool,
+    pub compact_toolbar: bool,
+    pub progress_col_width: f32,
+    pub effective_inspector_height: f32,
+}
+
+/// Computes adaptive table/toolbar visibility and viewport-safe inspector height.
+pub fn compute_layout_profile(
+    right_width: f32,
+    viewport_height: f32,
+    inspector_height: f32,
+) -> LayoutProfile {
+    let show_eta = right_width >= 820.0;
+    let show_segs = right_width >= 760.0;
+    let compact_toolbar = right_width < 740.0;
+    let progress_col_width = if right_width < 700.0 { 164.0 } else { 210.0 };
+    let max_for_viewport = (viewport_height - 250.0).max(MIN_INSPECTOR_HEIGHT);
+    let effective_inspector_height = clamp_inspector_height(inspector_height).min(max_for_viewport);
+    LayoutProfile {
+        show_eta,
+        show_segs,
+        compact_toolbar,
+        progress_col_width,
+        effective_inspector_height,
+    }
+}
+
 /// Sidebar queue filter categories.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FilterTab {
@@ -747,5 +778,27 @@ mod tests {
         assert_eq!(resolve_inspector_drag(60.0, 280.0), (true, 280.0));
         assert_eq!(resolve_inspector_drag(90.0, 280.0), (false, MIN_INSPECTOR_HEIGHT));
         assert_eq!(resolve_inspector_drag(320.0, 240.0), (false, 320.0));
+    }
+
+    #[test]
+    fn computes_adaptive_layout_profile_breakpoints() {
+        let wide = compute_layout_profile(960.0, 640.0, 240.0);
+        assert!(wide.show_eta);
+        assert!(wide.show_segs);
+        assert!(!wide.compact_toolbar);
+        assert_eq!(wide.progress_col_width, 210.0);
+        assert_eq!(wide.effective_inspector_height, 240.0);
+
+        let mid = compute_layout_profile(790.0, 640.0, 460.0);
+        assert!(!mid.show_eta);
+        assert!(mid.show_segs);
+        assert!(!mid.compact_toolbar);
+        assert_eq!(mid.effective_inspector_height, 390.0);
+
+        let narrow = compute_layout_profile(630.0, 640.0, 240.0);
+        assert!(!narrow.show_eta);
+        assert!(!narrow.show_segs);
+        assert!(narrow.compact_toolbar);
+        assert_eq!(narrow.progress_col_width, 164.0);
     }
 }

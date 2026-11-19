@@ -32,13 +32,13 @@ use crate::modals::{
 use crate::theme::*;
 use crate::view_model::{
     COLLAPSED_INSPECTOR_HEIGHT, DEFAULT_INSPECTOR_HEIGHT, DEFAULT_SIDEBAR_WIDTH, DownloadRowView,
-    FilterTab, RAIL_SIDEBAR_WIDTH, SortColumn, SortDirection, compute_fifo_ranks,
-    derive_display_filename, filter_and_sort_rows, format_bytes, format_eta, format_speed,
-    parse_settings_inputs, resolve_inspector_drag, resolve_sidebar_drag, state_icon,
+    FilterTab, LayoutProfile, RAIL_SIDEBAR_WIDTH, SortColumn, SortDirection,
+    compute_fifo_ranks, compute_layout_profile, derive_display_filename, filter_and_sort_rows,
+    format_bytes, format_eta, format_speed, parse_settings_inputs, resolve_inspector_drag,
+    resolve_sidebar_drag, state_icon,
 };
 
 const COL_STATE: f32 = 104.0;
-const COL_PROGRESS: f32 = 210.0;
 const COL_SPEED: f32 = 90.0;
 const COL_ETA: f32 = 64.0;
 const COL_SEGS: f32 = 48.0;
@@ -662,7 +662,19 @@ impl PosthazeApp {
 }
 
 impl Render for PosthazeApp {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let viewport = window.viewport_size();
+        let left_width = if self.sidebar_collapsed {
+            RAIL_SIDEBAR_WIDTH
+        } else {
+            self.sidebar_width
+        };
+        let right_width = (f32::from(viewport.width) - left_width - 7.0).max(0.0);
+        let profile = compute_layout_profile(
+            right_width,
+            f32::from(viewport.height),
+            self.inspector_height,
+        );
         let ranks = compute_fifo_ranks(&self.records, &self.live_map);
         let all_rows: Vec<DownloadRowView> = self
             .records
@@ -717,7 +729,7 @@ impl Render for PosthazeApp {
         let inspector = render_inspector(
             selected_row,
             &selected_segments,
-            px(self.inspector_height),
+            px(profile.effective_inspector_height),
             self.inspector_collapsed,
             InspectorCallbacks {
                 on_restart_fresh: move |id: DownloadId, _: &mut Window, cx: &mut App| {
@@ -1040,7 +1052,7 @@ impl Render for PosthazeApp {
                             .flex_1()
                             .h_full()
                             .overflow_hidden()
-                            .child(self.render_toolbar(cx))
+                            .child(self.render_toolbar(profile, cx))
                             .when_some(self.status_banner.clone(), |el, msg| {
                                 el.child(
                                     div()
@@ -1086,7 +1098,7 @@ impl Render for PosthazeApp {
                                         ),
                                 )
                             })
-                            .child(self.render_table(&visible_rows, is_empty_queue, cx))
+                            .child(self.render_table(&visible_rows, is_empty_queue, profile, cx))
                             .child(
                                 div()
                                     .id("inspector-resize")
@@ -1524,7 +1536,7 @@ impl PosthazeApp {
             .into_any_element()
     }
 
-    fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_toolbar(&self, profile: LayoutProfile, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .h(px(54.0))
             .w_full()
@@ -1571,7 +1583,8 @@ impl PosthazeApp {
                     .small()
                     .ghost()
                     .icon(IconName::Play)
-                    .label("Resume All")
+                    .when(!profile.compact_toolbar, |b| b.label("Resume All"))
+                    .tooltip("Resume All")
                     .on_click(cx.listener(|app, _, _, cx| {
                         app.resume_all(cx);
                     })),
@@ -1581,7 +1594,8 @@ impl PosthazeApp {
                     .small()
                     .ghost()
                     .icon(IconName::Pause)
-                    .label("Pause All")
+                    .when(!profile.compact_toolbar, |b| b.label("Pause All"))
+                    .tooltip("Pause All")
                     .on_click(cx.listener(|app, _, _, cx| {
                         app.pause_all(cx);
                     })),
@@ -1591,7 +1605,8 @@ impl PosthazeApp {
                     .small()
                     .ghost()
                     .icon(IconName::Trash)
-                    .label("Clear Completed")
+                    .when(!profile.compact_toolbar, |b| b.label("Clear Completed"))
+                    .tooltip("Clear Completed")
                     .on_click(cx.listener(|app, _, _, cx| {
                         app.request_clear_completed(cx);
                     })),
@@ -1602,6 +1617,7 @@ impl PosthazeApp {
         &self,
         rows: &[DownloadRowView],
         is_empty_queue: bool,
+        profile: LayoutProfile,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         if rows.is_empty() {
@@ -1671,7 +1687,7 @@ impl PosthazeApp {
 
         let mut row_elements = Vec::with_capacity(rows.len());
         for row in rows {
-            row_elements.push(self.render_row(row, cx));
+            row_elements.push(self.render_row(row, profile, cx));
         }
 
         div()
@@ -1697,30 +1713,39 @@ impl PosthazeApp {
                     .text_color(carbon_muted())
                     .child(self.header_cell("STATE", Some(COL_STATE), SortColumn::State, cx))
                     .child(self.header_cell("FILENAME", None, SortColumn::Filename, cx))
-                    .child(self.header_cell("PROGRESS", Some(COL_PROGRESS), SortColumn::Progress, cx))
+                    .child(self.header_cell(
+                        "PROGRESS",
+                        Some(profile.progress_col_width),
+                        SortColumn::Progress,
+                        cx,
+                    ))
                     .child(self.header_cell("SPEED", Some(COL_SPEED), SortColumn::Speed, cx))
-                    .child(
-                        div()
-                            .w(px(COL_ETA))
-                            .h_full()
-                            .flex()
-                            .items_center()
-                            .px_2()
-                            .border_r_1()
-                            .border_color(paper_border())
-                            .child("ETA"),
-                    )
-                    .child(
-                        div()
-                            .w(px(COL_SEGS))
-                            .h_full()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .border_r_1()
-                            .border_color(paper_border())
-                            .child("SEGS"),
-                    )
+                    .when(profile.show_eta, |el| {
+                        el.child(
+                            div()
+                                .w(px(COL_ETA))
+                                .h_full()
+                                .flex()
+                                .items_center()
+                                .px_2()
+                                .border_r_1()
+                                .border_color(paper_border())
+                                .child("ETA"),
+                        )
+                    })
+                    .when(profile.show_segs, |el| {
+                        el.child(
+                            div()
+                                .w(px(COL_SEGS))
+                                .h_full()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .border_r_1()
+                                .border_color(paper_border())
+                                .child("SEGS"),
+                        )
+                    })
                     .child(
                         div()
                             .w(px(COL_ACTIONS))
@@ -1782,7 +1807,12 @@ impl PosthazeApp {
         }
     }
 
-    fn render_row(&self, row: &DownloadRowView, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    fn render_row(
+        &self,
+        row: &DownloadRowView,
+        profile: LayoutProfile,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         let is_selected = self.selected_id.as_ref() == Some(&row.id);
         let (icon_name, label) = state_icon(row.state);
         let state_color = match row.state {
@@ -1901,7 +1931,7 @@ impl PosthazeApp {
             // Dual-tone progress bar + byte/percent readout
             .child(
                 div()
-                    .w(px(COL_PROGRESS))
+                    .w(px(profile.progress_col_width))
                     .h_full()
                     .px_2p5()
                     .border_r_1()
@@ -1986,41 +2016,45 @@ impl PosthazeApp {
                     .child(format_speed(row.bytes_per_sec)),
             )
             // ETA
-            .child(
-                div()
-                    .w(px(COL_ETA))
-                    .h_full()
-                    .px_2()
-                    .border_r_1()
-                    .border_color(paper_border())
-                    .flex()
-                    .items_center()
-                    .font_family(MONO_FONT)
-                    .text_size(TYPE_BODY)
-                    .line_height(px(16.0))
-                    .text_color(carbon_muted())
-                    .child(format_eta(row.eta_secs)),
-            )
+            .when(profile.show_eta, |el| {
+                el.child(
+                    div()
+                        .w(px(COL_ETA))
+                        .h_full()
+                        .px_2()
+                        .border_r_1()
+                        .border_color(paper_border())
+                        .flex()
+                        .items_center()
+                        .font_family(MONO_FONT)
+                        .text_size(TYPE_BODY)
+                        .line_height(px(16.0))
+                        .text_color(carbon_muted())
+                        .child(format_eta(row.eta_secs)),
+                )
+            })
             // Segments
-            .child(
-                div()
-                    .w(px(COL_SEGS))
-                    .h_full()
-                    .border_r_1()
-                    .border_color(paper_border())
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .font_family(MONO_FONT)
-                    .text_size(TYPE_BODY)
-                    .line_height(px(16.0))
-                    .text_color(carbon_muted())
-                    .child(if row.segment_count == 0 {
-                        "—".to_string()
-                    } else {
-                        row.segment_count.to_string()
-                    }),
-            )
+            .when(profile.show_segs, |el| {
+                el.child(
+                    div()
+                        .w(px(COL_SEGS))
+                        .h_full()
+                        .border_r_1()
+                        .border_color(paper_border())
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .font_family(MONO_FONT)
+                        .text_size(TYPE_BODY)
+                        .line_height(px(16.0))
+                        .text_color(carbon_muted())
+                        .child(if row.segment_count == 0 {
+                            "—".to_string()
+                        } else {
+                            row.segment_count.to_string()
+                        }),
+                )
+            })
             // Inline Actions
             .child(
                 div()

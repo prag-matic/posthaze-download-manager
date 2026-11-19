@@ -621,6 +621,7 @@ where
         .id("modal-backdrop")
         .absolute()
         .inset_0()
+        .p_4()
         .bg(rgba(0x141413AA))
         .flex()
         .items_center()
@@ -629,6 +630,8 @@ where
         .child(
             div()
                 .id("modal-card-stop")
+                .max_w_full()
+                .max_h_full()
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(|_, _, cx| cx.stop_propagation())
                 .child(card),
