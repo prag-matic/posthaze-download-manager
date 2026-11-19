@@ -2024,6 +2024,7 @@ impl PosthazeApp {
             // Inline Actions
             .child(
                 div()
+                    .id(SharedString::from(format!("actions-{}", row.id.as_str())))
                     .w(px(COL_ACTIONS))
                     .h_full()
                     .pl_2()
@@ -2031,6 +2032,7 @@ impl PosthazeApp {
                     .items_center()
                     .justify_end()
                     .gap_1()
+                    .on_click(|_, _, cx| cx.stop_propagation())
                     .when(
                         matches!(
                             row.state,

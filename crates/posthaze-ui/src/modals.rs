@@ -592,16 +592,24 @@ fn labeled_input(label: &'static str, state: &Entity<InputState>) -> impl IntoEl
         .child(
             div()
                 .text_size(TYPE_BODY)
-                .line_height(px(16.0))
+                .line_height(px(18.0))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(silver_muted())
                 .child(label),
         )
         .child(
             div()
+                .h(px(32.0))
+                .px_2p5()
+                .bg(table_header_bg())
+                .border_1()
+                .border_color(paper_border())
+                .rounded(px(4.0))
+                .flex()
+                .items_center()
                 .font_family(MONO_FONT)
                 .text_size(TYPE_BODY)
-                .child(Input::new(state)),
+                .child(Input::new(state).appearance(false)),
         )
 }
 
