@@ -1000,35 +1000,8 @@ impl PosthazeApp {
                 .bg(graphite_bg())
                 .py_2p5()
                 .child(
-                    div()
-                        .w_full()
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .gap_3()
-                        .child(
-                            div()
-                                .w_full()
-                                .pb_2()
-                                .border_b_1()
-                                .border_color(graphite_border())
-                                .flex()
-                                .justify_center()
-                                .child(
-                                    Button::new("sidebar-expand")
-                                        .xsmall()
-                                        .ghost()
-                                        .icon(IconName::PanelLeftOpen)
-                                        .tooltip("Expand Sidebar")
-                                        .on_click(cx.listener(|app, _, _, cx| {
-                                            app.sidebar_collapsed = false;
-                                            cx.notify();
-                                        })),
-                                ),
-                        )
-                        .child(
-                            div().w_full().flex().flex_col().gap_1().children(
-                                tabs.into_iter().map(|tab| {
+                    div().w_full().flex().flex_col().gap_1().children(
+                        tabs.into_iter().map(|tab| {
                                     let count =
                                         all_rows.iter().filter(|r| tab.matches(r.state)).count();
                                     let selected = self.filter == tab;
@@ -1085,7 +1058,6 @@ impl PosthazeApp {
                                         )
                                 }),
                             ),
-                        ),
                 )
                 .child(
                     div()
@@ -1096,8 +1068,8 @@ impl PosthazeApp {
                         .flex()
                         .flex_col()
                         .items_center()
-                        .gap_2()
-                        .child(div().w(px(6.0)).h(px(6.0)).bg(if active_slots > 0 {
+                        .gap_1p5()
+                        .child(div().w(px(6.0)).h(px(6.0)).mb_1().bg(if active_slots > 0 {
                             selenium_amber()
                         } else {
                             graphite_border()
@@ -1110,6 +1082,17 @@ impl PosthazeApp {
                                 .tooltip("Engine Settings")
                                 .on_click(cx.listener(|app, _, window, cx| {
                                     app.open_settings_modal(window, cx);
+                                })),
+                        )
+                        .child(
+                            Button::new("sidebar-expand")
+                                .small()
+                                .ghost()
+                                .icon(IconName::PanelLeftOpen)
+                                .tooltip("Expand Sidebar")
+                                .on_click(cx.listener(|app, _, _, cx| {
+                                    app.sidebar_collapsed = false;
+                                    cx.notify();
                                 })),
                         ),
                 )
@@ -1126,42 +1109,8 @@ impl PosthazeApp {
             .bg(graphite_bg())
             .p_3()
             .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_3()
-                    // Compact Queue Header (branding lives in TitleBar)
-                    .child(
-                        div()
-                            .pb_2()
-                            .border_b_1()
-                            .border_color(graphite_border())
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .child(
-                                div()
-                                    .font_family(MONO_FONT)
-                                    .text_size(TYPE_HEADER)
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(silver_muted())
-                                    .child("QUEUE FILTERS"),
-                            )
-                            .child(
-                                Button::new("sidebar-collapse")
-                                    .xsmall()
-                                    .ghost()
-                                    .icon(IconName::PanelLeftClose)
-                                    .tooltip("Collapse to Rail")
-                                    .on_click(cx.listener(|app, _, _, cx| {
-                                        app.sidebar_collapsed = true;
-                                        cx.notify();
-                                    })),
-                            ),
-                    )
-                    // Filter Rail
-                    .child(
-                        div().flex().flex_col().gap_1().children(tabs.into_iter().map(
+                // Filter Rail (starts cleanly at top; branding lives in TitleBar)
+                div().flex().flex_col().gap_1().children(tabs.into_iter().map(
                             |tab| {
                                 let count =
                                     all_rows.iter().filter(|r| tab.matches(r.state)).count();
@@ -1235,7 +1184,6 @@ impl PosthazeApp {
                                     )
                             },
                         )),
-                    ),
             )
             // Global Telemetry Readout
             .child(
@@ -1341,13 +1289,33 @@ impl PosthazeApp {
                             ),
                     )
                     .child(
-                        Button::new("open-settings")
-                            .small()
-                            .icon(IconName::Settings)
-                            .label("Engine Settings")
-                            .on_click(cx.listener(|app, _, window, cx| {
-                                app.open_settings_modal(window, cx);
-                            })),
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1p5()
+                            .child(
+                                div().flex_1().child(
+                                    Button::new("open-settings")
+                                        .small()
+                                        .w_full()
+                                        .icon(IconName::Settings)
+                                        .label("Engine Settings")
+                                        .on_click(cx.listener(|app, _, window, cx| {
+                                            app.open_settings_modal(window, cx);
+                                        })),
+                                ),
+                            )
+                            .child(
+                                Button::new("sidebar-collapse")
+                                    .small()
+                                    .ghost()
+                                    .icon(IconName::PanelLeftClose)
+                                    .tooltip("Collapse to Rail")
+                                    .on_click(cx.listener(|app, _, _, cx| {
+                                        app.sidebar_collapsed = true;
+                                        cx.notify();
+                                    })),
+                            ),
                     ),
             )
             .into_any_element()
