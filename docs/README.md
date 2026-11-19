@@ -5,6 +5,7 @@ Documentation is a first-class part of Posthaze Download Manager.
 ## Architecture & Decisions
 
 - [Architecture Proposal — Windows Download Manager](Architecture%20Proposal%20-%20Windows%20Download%20Manager.md)
+- [Engine & CLI Readiness for GPUI + GPUI Kit Desktop UI (`posthaze-ui`)](engine-gui-readiness.md)
 - [Domain Glossary](../GLOSSARY.md)
 - [Product Context](../PRODUCT.md)
 - Architecture Decision Records (`docs/adr/`):
@@ -15,6 +16,7 @@ Documentation is a first-class part of Posthaze Download Manager.
   - [0005 — Dedicated blocking writer task over a bounded channel](adr/0005-dedicated-writer-channel.md)
   - [0006 — SQLite persistence via `sqlx` with runtime queries](adr/0006-sqlite-persistence-sqlx.md)
   - [0007 — Writer-acknowledged `Checkpoint`s for crash recovery](adr/0007-writer-acked-checkpoints.md)
+  - [0008 — GPUI and GPUI Kit for the desktop UI](adr/0008-gpui-and-gpui-kit-desktop-ui.md)
 
 ## Implemented Milestones & Tickets
 

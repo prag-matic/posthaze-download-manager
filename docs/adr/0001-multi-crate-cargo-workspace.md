@@ -2,7 +2,7 @@
 
 - **Status:** accepted
 
-We will structure the repository as a multi-crate Cargo workspace (separating the core download engine, CLI harness, and Slint desktop UI) from the start rather than beginning with a single crate.
+We will structure the repository as a multi-crate Cargo workspace (separating the core download engine, CLI harness, and desktop UI — `posthaze-ui`, built with GPUI + GPUI Kit per [ADR-0008](0008-gpui-and-gpui-kit-desktop-ui.md)) from the start rather than beginning with a single crate.
 
 ## Considered Options
 
@@ -12,4 +12,4 @@ We will structure the repository as a multi-crate Cargo workspace (separating th
 ## Consequences
 
 - Cross-layer changes require explicit public APIs between crates rather than ad-hoc internal imports.
-- The headless CLI and benchmark suite can depend on the engine crate without pulling in Slint or Windows GUI dependencies.
+- The headless CLI and benchmark suite can depend on the engine crate without pulling in GPUI, GPUI Kit, or Windows GUI dependencies.

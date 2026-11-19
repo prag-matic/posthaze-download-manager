@@ -1,6 +1,6 @@
 # Posthaze Download Manager
 
-Core domain vocabulary for Posthaze Download Manager, a Windows-native multi-connection HTTP/HTTPS download manager with a decoupled Rust engine and Slint desktop UI.
+Core domain vocabulary for Posthaze Download Manager, a Windows-native multi-connection HTTP/HTTPS download manager with a decoupled Rust engine and GPUI + GPUI Kit desktop UI.
 
 ## Language
 

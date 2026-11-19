@@ -1,6 +1,6 @@
 # posthaze-download-manager
 
-A Windows-native, multi-connection HTTP/HTTPS download manager built with a decoupled Rust engine (`posthaze-engine`), a headless CLI (`posthaze-cli`), and a planned Slint desktop interface.
+A Windows-native, multi-connection HTTP/HTTPS download manager built with a decoupled Rust engine (`posthaze-engine`), a headless CLI (`posthaze-cli`), and a planned GPUI + GPUI Kit desktop interface (`posthaze-ui`).
 
 ## Documentation
 
