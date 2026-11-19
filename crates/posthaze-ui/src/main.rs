@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use gpui_kit::assets::{AllAssets, IconName};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::{Icon, Sizable};
+use gpui_kit::component::{Icon, Sizable, Theme, ThemeMode};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use posthaze_engine::{
@@ -45,7 +45,16 @@ fn main() {
     gpui_kit::application()
         .with_assets(AllAssets)
         .run(move |cx| {
-        gpui_kit::init(cx);
+            gpui_kit::init(cx);
+            Theme::change(ThemeMode::Dark, None, cx);
+            {
+                let theme = Theme::global_mut(cx);
+                theme.primary = selenium_amber();
+                theme.primary_hover = rgb(0xD97724).into();
+                theme.primary_active = rgb(0xC2661B).into();
+                theme.primary_foreground = graphite_bg();
+                theme.ring = selenium_amber();
+            }
 
         let window_options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
@@ -753,11 +762,12 @@ impl PosthazeApp {
                             )
                             .child(
                                 div()
+                                    .font_family(MONO_FONT)
                                     .text_size(TYPE_HEADER)
                                     .line_height(px(14.0))
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(silver_muted())
-                                    .child("INTERVAL DOWNLOADER"),
+                                    .child("CHRONOGRAPHIC ENGINE"),
                             ),
                     )
                     // Filter Rail
@@ -767,6 +777,14 @@ impl PosthazeApp {
                                 let count =
                                     all_rows.iter().filter(|r| tab.matches(r.state)).count();
                                 let selected = self.filter == tab;
+                                let (tab_icon, tab_color) = match tab {
+                                    FilterTab::All => (IconName::Folder, silver_text()),
+                                    FilterTab::Active => (IconName::ArrowDown, selenium_amber()),
+                                    FilterTab::Queued => (IconName::Clock, silver_muted()),
+                                    FilterTab::Paused => (IconName::Pause, silver_muted()),
+                                    FilterTab::Completed => (IconName::CircleCheck, halide_emerald()),
+                                    FilterTab::Failed => (IconName::TriangleAlert, errata_vermilion()),
+                                };
                                 div()
                                     .id(SharedString::from(format!("filter-{}", tab.label())))
                                     .flex()
@@ -774,19 +792,19 @@ impl PosthazeApp {
                                     .justify_between()
                                     .px_2p5()
                                     .py_1p5()
-                                    .rounded(px(4.0))
                                     .cursor_pointer()
                                     .bg(if selected {
-                                        graphite_elevated()
+                                        paper_hover()
                                     } else {
                                         graphite_bg()
                                     })
-                                    .border_1()
+                                    .border_l_2()
                                     .border_color(if selected {
                                         selenium_amber()
                                     } else {
                                         graphite_bg()
                                     })
+                                    .hover(|s| s.bg(graphite_elevated()))
                                     .text_size(px(12.5))
                                     .line_height(px(18.0))
                                     .font_weight(if selected {
@@ -803,11 +821,26 @@ impl PosthazeApp {
                                         app.filter = tab;
                                         cx.notify();
                                     }))
-                                    .child(tab.label())
                                     .child(
                                         div()
+                                            .flex()
+                                            .items_center()
+                                            .gap_2()
+                                            .child(
+                                                Icon::new(tab_icon)
+                                                    .size(px(13.0))
+                                                    .text_color(tab_color),
+                                            )
+                                            .child(tab.label()),
+                                    )
+                                    .child(
+                                        div()
+                                            .px_1p5()
+                                            .bg(graphite_bg())
+                                            .border_1()
+                                            .border_color(graphite_border())
                                             .font_family(MONO_FONT)
-                                            .text_size(TYPE_BODY)
+                                            .text_size(TYPE_MICRO)
                                             .text_color(silver_text())
                                             .child(count.to_string()),
                                     )
@@ -827,7 +860,6 @@ impl PosthazeApp {
                     .child(
                         div()
                             .p_2p5()
-                            .rounded(px(4.0))
                             .bg(graphite_elevated())
                             .border_1()
                             .border_color(graphite_border())
@@ -836,38 +868,94 @@ impl PosthazeApp {
                             .gap_1()
                             .child(
                                 div()
-                                    .text_size(TYPE_HEADER)
-                                    .line_height(px(14.0))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(silver_muted())
-                                    .child("THROUGHPUT"),
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .child(
+                                        div()
+                                            .font_family(MONO_FONT)
+                                            .text_size(TYPE_HEADER)
+                                            .line_height(px(14.0))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(silver_muted())
+                                            .child("ACTIVE THROUGHPUT"),
+                                    )
+                                    .child(div().w(px(6.0)).h(px(6.0)).bg(if active_slots > 0 {
+                                        selenium_amber()
+                                    } else {
+                                        graphite_border()
+                                    })),
                             )
                             .child(
                                 div()
                                     .font_family(MONO_FONT)
                                     .text_size(TYPE_DISPLAY)
-                                    .line_height(px(24.0))
+                                    .line_height(px(22.0))
                                     .font_weight(FontWeight::BOLD)
-                                    .text_color(selenium_amber())
+                                    .text_color(silver_text())
                                     .child(format_speed(total_speed)),
                             )
                             .child(
                                 div()
                                     .font_family(MONO_FONT)
                                     .text_size(TYPE_MICRO)
-                                    .line_height(px(16.0))
+                                    .line_height(px(14.0))
                                     .text_color(silver_muted())
                                     .child(format!(
-                                        "SLOTS {active_slots} / {}",
-                                        self.settings.max_concurrent_downloads
+                                        "{:.1} Mbps",
+                                        (total_speed as f64 * 8.0) / 1_000_000.0
                                     )),
+                            )
+                            .child(
+                                div()
+                                    .pt_1p5()
+                                    .mt_1()
+                                    .border_t_1()
+                                    .border_color(graphite_border())
+                                    .flex()
+                                    .flex_col()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .justify_between()
+                                            .font_family(MONO_FONT)
+                                            .text_size(TYPE_MICRO)
+                                            .line_height(px(14.0))
+                                            .child(
+                                                div()
+                                                    .text_color(silver_muted())
+                                                    .child("QUEUE SLOTS"),
+                                            )
+                                            .child(
+                                                div()
+                                                    .font_weight(FontWeight::SEMIBOLD)
+                                                    .text_color(silver_text())
+                                                    .child(format!(
+                                                        "{active_slots} / {}",
+                                                        self.settings.max_concurrent_downloads
+                                                    )),
+                                            ),
+                                    )
+                                    .child(
+                                        div().flex().gap_1().children(
+                                            (0..self.settings.max_concurrent_downloads).map(|i| {
+                                                div().h(px(5.0)).flex_1().bg(if i < active_slots {
+                                                    selenium_amber()
+                                                } else {
+                                                    graphite_border()
+                                                })
+                                            }),
+                                        ),
+                                    ),
                             ),
                     )
                     .child(
                         Button::new("open-settings")
                             .small()
                             .icon(IconName::Settings)
-                            .label("Settings")
+                            .label("Engine Settings")
                             .on_click(cx.listener(|app, _, window, cx| {
                                 app.open_settings_modal(window, cx);
                             })),
@@ -1001,12 +1089,14 @@ impl PosthazeApp {
             // Table Header (shared column constants with render_row)
             .child(
                 div()
-                    .h(px(32.0))
+                    .h(px(28.0))
                     .flex()
                     .items_center()
                     .px_4()
+                    .bg(table_header_bg())
                     .border_b_1()
                     .border_color(paper_border())
+                    .font_family(MONO_FONT)
                     .text_size(TYPE_HEADER)
                     .line_height(px(14.0))
                     .font_weight(FontWeight::SEMIBOLD)
@@ -1015,9 +1105,37 @@ impl PosthazeApp {
                     .child(self.header_cell("FILENAME", None, SortColumn::Filename, cx))
                     .child(self.header_cell("PROGRESS", Some(COL_PROGRESS), SortColumn::Progress, cx))
                     .child(self.header_cell("SPEED", Some(COL_SPEED), SortColumn::Speed, cx))
-                    .child(div().w(px(COL_ETA)).child("ETA"))
-                    .child(div().w(px(COL_SEGS)).child("SEGS"))
-                    .child(div().w(px(COL_ACTIONS)).child("ACTIONS")),
+                    .child(
+                        div()
+                            .w(px(COL_ETA))
+                            .h_full()
+                            .flex()
+                            .items_center()
+                            .px_2()
+                            .border_r_1()
+                            .border_color(paper_border())
+                            .child("ETA"),
+                    )
+                    .child(
+                        div()
+                            .w(px(COL_SEGS))
+                            .h_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .border_r_1()
+                            .border_color(paper_border())
+                            .child("SEGS"),
+                    )
+                    .child(
+                        div()
+                            .w(px(COL_ACTIONS))
+                            .h_full()
+                            .flex()
+                            .items_center()
+                            .justify_end()
+                            .child("ACTIONS"),
+                    ),
             )
             // Scrollable Rows
             .child(
@@ -1047,20 +1165,25 @@ impl PosthazeApp {
         };
         let base = div()
             .id(SharedString::from(format!("hdr-{title}")))
+            .h_full()
             .flex()
             .items_center()
             .gap_1()
+            .pr_2()
+            .border_r_1()
+            .border_color(paper_border())
             .cursor_pointer()
+            .hover(|s| s.text_color(carbon_text()))
             .on_click(cx.listener(move |app, _, _, cx| {
                 app.toggle_sort(col, cx);
             }))
             .child(title)
             .when_some(sort_icon, |el, icon| {
-                el.child(Icon::new(icon).size(px(12.0)).text_color(carbon_text()))
+                el.child(Icon::new(icon).size(px(12.0)).text_color(selenium_amber()))
             });
         match width {
             Some(w) => base.w(px(w)).into_any_element(),
-            None => base.flex_1().min_w(px(120.0)).into_any_element(),
+            None => base.flex_1().min_w(px(120.0)).px_2().into_any_element(),
         }
     }
 
@@ -1087,10 +1210,10 @@ impl PosthazeApp {
 
         div()
             .id(SharedString::from(format!("row-{}", row.id.as_str())))
-            .h(px(40.0))
+            .h(px(38.0))
             .flex()
             .items_center()
-            .px_4()
+            .pr_4()
             .border_b_1()
             .border_color(paper_border())
             .bg(if is_selected {
@@ -1105,10 +1228,26 @@ impl PosthazeApp {
                 app.load_segments_for(id_select.clone(), cx);
                 cx.notify();
             }))
+            // 3px selection accent bar (Selenium Amber)
+            .child(
+                div()
+                    .w(px(3.0))
+                    .h_full()
+                    .mr_3()
+                    .bg(if is_selected {
+                        selenium_amber()
+                    } else {
+                        paper_bg()
+                    }),
+            )
             // State + FIFO rank badge
             .child(
                 div()
                     .w(px(COL_STATE))
+                    .h_full()
+                    .pr_2()
+                    .border_r_1()
+                    .border_color(paper_border())
                     .flex()
                     .items_center()
                     .gap_1p5()
@@ -1119,13 +1258,20 @@ impl PosthazeApp {
                     .text_color(state_color)
                     .child(Icon::new(icon_name).size(px(13.0)).text_color(state_color))
                     .child(if let Some(rank) = row.fifo_rank {
-                        if rank == 1 {
-                            "#1 NEXT".to_string()
-                        } else {
-                            format!("#{rank}")
-                        }
+                        div()
+                            .px_1()
+                            .bg(graphite_elevated())
+                            .border_1()
+                            .border_color(graphite_border())
+                            .text_color(silver_text())
+                            .child(if rank == 1 {
+                                "#1 NEXT".to_string()
+                            } else {
+                                format!("#{rank}")
+                            })
+                            .into_any_element()
                     } else {
-                        label.to_string()
+                        div().child(label).into_any_element()
                     }),
             )
             // Filename
@@ -1133,65 +1279,115 @@ impl PosthazeApp {
                 div()
                     .flex_1()
                     .min_w(px(120.0))
-                    .pr_2()
+                    .h_full()
+                    .px_2()
+                    .border_r_1()
+                    .border_color(paper_border())
+                    .flex()
+                    .items_center()
                     .text_size(TYPE_ROW_PRIMARY)
                     .line_height(px(18.0))
-                    .font_weight(FontWeight::SEMIBOLD)
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(carbon_text())
                     .truncate()
                     .child(row.filename.clone()),
             )
-            // Dual-tone progress bar + byte readout
+            // Dual-tone progress bar + byte/percent readout
             .child(
                 div()
                     .w(px(COL_PROGRESS))
-                    .pr_3()
+                    .h_full()
+                    .px_2p5()
+                    .border_r_1()
+                    .border_color(paper_border())
                     .flex()
                     .flex_col()
+                    .justify_center()
                     .gap_1()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .font_family(MONO_FONT)
+                            .text_size(TYPE_MICRO)
+                            .line_height(px(13.0))
+                            .child(
+                                div()
+                                    .text_color(carbon_muted())
+                                    .child(match row.total_bytes {
+                                        Some(total) => format!(
+                                            "{} / {}",
+                                            format_bytes(row.bytes_downloaded),
+                                            format_bytes(total)
+                                        ),
+                                        None => format!("{} / Stream", format_bytes(row.bytes_downloaded)),
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(carbon_text())
+                                    .child(if row.total_bytes.is_some() {
+                                        format!("{total_pct:.1}%")
+                                    } else {
+                                        "200".to_string()
+                                    }),
+                            ),
+                    )
                     .child(
                         div()
                             .h(px(6.0))
                             .w_full()
-                            .bg(paper_border())
+                            .bg(graphite_bg())
                             .flex()
                             .overflow_hidden()
-                            .child(div().h_full().w(relative(cp_pct / 100.0)).bg(cyanotype_blue()))
+                            .child(
+                                div()
+                                    .h_full()
+                                    .w(relative(cp_pct / 100.0))
+                                    .bg(if row.state == DownloadState::Completed {
+                                        halide_emerald()
+                                    } else if row.state == DownloadState::Failed {
+                                        errata_vermilion()
+                                    } else {
+                                        cyanotype_blue()
+                                    }),
+                            )
                             .child(
                                 div()
                                     .h_full()
                                     .w(relative(inflight_pct / 100.0))
                                     .bg(selenium_amber()),
                             ),
-                    )
-                    .child(
-                        div()
-                            .font_family(MONO_FONT)
-                            .text_size(TYPE_MICRO)
-                            .line_height(px(14.0))
-                            .text_color(carbon_muted())
-                            .child(match row.total_bytes {
-                                Some(total) => format!(
-                                    "{} / {}",
-                                    format_bytes(row.bytes_downloaded),
-                                    format_bytes(total)
-                                ),
-                                None => format_bytes(row.bytes_downloaded),
-                            }),
                     ),
             )
             // Speed
             .child(
                 div()
                     .w(px(COL_SPEED))
+                    .h_full()
+                    .px_2()
+                    .border_r_1()
+                    .border_color(paper_border())
+                    .flex()
+                    .items_center()
                     .font_family(MONO_FONT)
                     .text_size(TYPE_BODY)
                     .line_height(px(16.0))
+                    .text_color(carbon_text())
                     .child(format_speed(row.bytes_per_sec)),
             )
             // ETA
             .child(
                 div()
                     .w(px(COL_ETA))
+                    .h_full()
+                    .px_2()
+                    .border_r_1()
+                    .border_color(paper_border())
+                    .flex()
+                    .items_center()
                     .font_family(MONO_FONT)
                     .text_size(TYPE_BODY)
                     .line_height(px(16.0))
@@ -1202,9 +1398,16 @@ impl PosthazeApp {
             .child(
                 div()
                     .w(px(COL_SEGS))
+                    .h_full()
+                    .border_r_1()
+                    .border_color(paper_border())
+                    .flex()
+                    .items_center()
+                    .justify_center()
                     .font_family(MONO_FONT)
                     .text_size(TYPE_BODY)
                     .line_height(px(16.0))
+                    .text_color(carbon_muted())
                     .child(if row.segment_count == 0 {
                         "—".to_string()
                     } else {
@@ -1215,8 +1418,11 @@ impl PosthazeApp {
             .child(
                 div()
                     .w(px(COL_ACTIONS))
+                    .h_full()
+                    .pl_2()
                     .flex()
                     .items_center()
+                    .justify_end()
                     .gap_1()
                     .when(
                         matches!(

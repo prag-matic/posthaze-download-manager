@@ -51,6 +51,10 @@ where
         .total_bytes
         .map(format_bytes)
         .unwrap_or_else(|| "STREAM".to_string());
+    let cp_ratio = (row.checkpoint_ratio() * 100.0).clamp(0.0, 100.0);
+    let inflight_delta = row
+        .bytes_downloaded
+        .saturating_sub(row.checkpointed_bytes);
 
     let id_restart = row.id.clone();
     let id_delete = row.id.clone();
@@ -62,28 +66,44 @@ where
         .border_t_1()
         .border_color(graphite_border())
         .px_4()
-        .py_3()
+        .py_2p5()
         .flex()
         .flex_col()
         .gap_2()
         .overflow_hidden()
-        // Header strip: filename + stamped HTTP validator badges
+        // Header strip: ID pill + filename + URL + stamped HTTP validator badges
         .child(
             div()
                 .flex()
                 .items_center()
                 .justify_between()
-                .gap_2()
+                .gap_3()
+                .pb_2()
+                .border_b_1()
+                .border_color(graphite_border())
                 .child(
                     div()
                         .flex_1()
                         .flex()
-                        .flex_col()
+                        .items_center()
+                        .gap_2()
                         .overflow_hidden()
                         .child(
                             div()
-                                .text_size(TYPE_HEADING)
-                                .line_height(px(20.0))
+                                .px_1p5()
+                                .py_0p5()
+                                .bg(graphite_elevated())
+                                .border_1()
+                                .border_color(graphite_border())
+                                .font_family(MONO_FONT)
+                                .text_size(TYPE_HEADER)
+                                .text_color(silver_muted())
+                                .child(row.id.as_str().chars().take(8).collect::<String>()),
+                        )
+                        .child(
+                            div()
+                                .text_size(TYPE_BODY)
+                                .line_height(px(18.0))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(silver_text())
                                 .truncate()
@@ -91,6 +111,7 @@ where
                         )
                         .child(
                             div()
+                                .flex_1()
                                 .font_family(MONO_FONT)
                                 .text_size(TYPE_MICRO)
                                 .line_height(px(16.0))
@@ -198,17 +219,30 @@ where
                 .flex()
                 .flex_col()
                 .gap_1()
+                .pb_2()
+                .border_b_1()
+                .border_color(graphite_border())
                 .child(
                     div()
                         .flex()
                         .items_end()
                         .font_family(MONO_FONT)
-                        .text_size(TYPE_MICRO)
+                        .text_size(TYPE_HEADER)
                         .line_height(px(14.0))
                         .text_color(silver_muted())
-                        .child(ruler_quarter_tick("0 B (0%)", true))
-                        .child(ruler_quarter_tick("25%", true))
-                        .child(ruler_quarter_tick("50%", true))
+                        .child(ruler_quarter_tick("0% (0 B)", false))
+                        .child(ruler_quarter_tick(
+                            row.total_bytes
+                                .map(|t| format!("25% ({})", format_bytes(t / 4)))
+                                .unwrap_or_else(|| "25%".to_string()),
+                            true,
+                        ))
+                        .child(ruler_quarter_tick(
+                            row.total_bytes
+                                .map(|t| format!("50% ({})", format_bytes(t / 2)))
+                                .unwrap_or_else(|| "50%".to_string()),
+                            true,
+                        ))
                         .child(
                             div()
                                 .flex_1()
@@ -217,15 +251,19 @@ where
                                 .border_l_1()
                                 .border_color(graphite_border())
                                 .pl_1()
-                                .child("75%")
-                                .child(format!("{total_label} (100%)")),
+                                .child(
+                                    row.total_bytes
+                                        .map(|t| format!("75% ({})", format_bytes((t * 3) / 4)))
+                                        .unwrap_or_else(|| "75%".to_string()),
+                                )
+                                .child(format!("100% ({total_label})")),
                         ),
                 )
                 .child(
                     div()
-                        .h(px(18.0))
+                        .h(px(22.0))
                         .w_full()
-                        .bg(graphite_elevated())
+                        .bg(byte_track_bg())
                         .border_1()
                         .border_color(graphite_border())
                         .flex()
@@ -243,6 +281,8 @@ where
                                         .w(relative(seg.checkpoint_fill_ratio))
                                         .bg(if seg.completed && row.state == DownloadState::Completed {
                                             halide_emerald()
+                                        } else if row.state == DownloadState::Failed {
+                                            errata_vermilion()
                                         } else {
                                             cyanotype_blue()
                                         }),
@@ -254,6 +294,45 @@ where
                                         .bg(selenium_amber()),
                                 )
                         })),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .font_family(MONO_FONT)
+                        .text_size(TYPE_HEADER)
+                        .line_height(px(14.0))
+                        .text_color(silver_muted())
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_4()
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap_1p5()
+                                        .child(div().w(px(9.0)).h(px(9.0)).bg(cyanotype_blue()))
+                                        .child("Disk Checkpoint (Writer-Ack)"),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap_1p5()
+                                        .child(div().w(px(9.0)).h(px(9.0)).bg(selenium_amber()))
+                                        .child("In-Flight Network Cursor"),
+                                ),
+                        )
+                        .child(
+                            div().text_color(silver_text()).child(format!(
+                                "Checkpoint: {} ({cp_ratio:.1}%) · In-Flight: +{}",
+                                format_bytes(row.checkpointed_bytes),
+                                format_bytes(inflight_delta),
+                            )),
+                        ),
                 ),
         )
         // Compact Tabular Segment Grid
@@ -264,8 +343,7 @@ where
                 .overflow_y_scroll()
                 .flex()
                 .flex_wrap()
-                .gap_x_4()
-                .gap_y_1()
+                .gap_1p5()
                 .children(segments.iter().map(|seg| {
                     let span = seg
                         .end
@@ -279,48 +357,68 @@ where
                             .unwrap_or(0)
                             .min(100)
                     };
-                    let seg_status = if seg.completed {
-                        "DONE"
-                    } else if seg.cursor > seg.start {
-                        "ACTIVE"
+                    let (seg_status, seg_color) = if seg.completed {
+                        ("DONE", halide_emerald())
+                    } else if seg.cursor > seg.start && row.state == DownloadState::Active {
+                        ("RECV", selenium_amber())
                     } else {
-                        "WAIT"
+                        ("WAIT", silver_muted())
                     };
                     div()
                         .w(px(300.0))
+                        .px_2p5()
+                        .py_1()
+                        .bg(graphite_elevated())
+                        .border_1()
+                        .border_color(graphite_border())
                         .flex()
                         .items_center()
                         .justify_between()
                         .font_family(MONO_FONT)
-                        .text_size(TYPE_MICRO)
-                        .line_height(px(16.0))
+                        .text_size(TYPE_HEADER)
+                        .line_height(px(15.0))
                         .text_color(silver_muted())
-                        .child(format!(
-                            "#{:02} [{}..{})",
-                            seg.id,
-                            format_bytes(seg.start),
-                            seg.end.map(format_bytes).unwrap_or_else(|| "∞".to_string())
-                        ))
                         .child(
                             div()
-                                .text_color(if seg.completed {
-                                    halide_emerald()
-                                } else {
-                                    silver_text()
-                                })
-                                .child(format!("{cp_pct}% · {seg_status}")),
+                                .flex()
+                                .items_center()
+                                .gap_1p5()
+                                .child(
+                                    div()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(silver_text())
+                                        .child(format!("#{:02}", seg.id)),
+                                )
+                                .child(format!(
+                                    "[{}..{})",
+                                    format_bytes(seg.start),
+                                    seg.end.map(format_bytes).unwrap_or_else(|| "∞".to_string())
+                                )),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(div().text_color(silver_text()).child(format!("{cp_pct}%")))
+                                .child(
+                                    div()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(seg_color)
+                                        .child(seg_status),
+                                ),
                         )
                 })),
         )
         .into_any_element()
 }
 
-fn ruler_quarter_tick(label: &'static str, left_tick: bool) -> impl IntoElement {
+fn ruler_quarter_tick(label: impl Into<SharedString>, left_tick: bool) -> impl IntoElement {
     div()
         .flex_1()
         .when(left_tick, |el| el.border_l_1().border_color(graphite_border()))
         .pl_1()
-        .child(label)
+        .child(label.into())
 }
 
 fn validator_badge(label: impl Into<SharedString>, bg_color: Hsla) -> impl IntoElement {

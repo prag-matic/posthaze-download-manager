@@ -13,77 +13,87 @@ pub const TYPE_BODY: Pixels = px(12.0);
 pub const TYPE_MICRO: Pixels = px(11.0);
 pub const TYPE_HEADER: Pixels = px(10.5);
 
-/// Warm graphite emulsion shell rail & bottom inspector background (`#181715`).
+/// Deep warm graphite emulsion rail & bottom inspector background (`#141311`).
 pub fn graphite_bg() -> Hsla {
-    rgb(0x181715).into()
+    rgb(0x141311).into()
 }
 
-/// Slightly raised graphite surface for cards/inputs on dark rails (`#22201D`).
+/// Slightly raised graphite surface for cards/badges on dark rails (`#1B1A17`).
 pub fn graphite_elevated() -> Hsla {
-    rgb(0x22201D).into()
+    rgb(0x1B1A17).into()
 }
 
-/// Hairline slate rule inside dark graphite surfaces (`#2C2A27`).
+/// Hairline slate rule inside dark graphite surfaces (`#2A2825`).
 pub fn graphite_border() -> Hsla {
-    rgb(0x2C2A27).into()
+    rgb(0x2A2825).into()
 }
 
-/// Silver-halide primary text on dark graphite (`#EAE6DF`).
+/// Silver-halide primary text (`#EAE6DF`).
 pub fn silver_text() -> Hsla {
     rgb(0xEAE6DF).into()
 }
 
-/// Muted metadata text on dark graphite (`#9C968B`).
+/// Muted metadata text (`#9B968D`).
 pub fn silver_muted() -> Hsla {
-    rgb(0x9C968B).into()
+    rgb(0x9B968D).into()
 }
 
-/// Silver-halide warm paper work surface for the Downloads table (`#F2EFE9`).
+/// Warm charcoal table & toolbar work surface (`#1E1D1A`).
 pub fn paper_bg() -> Hsla {
-    rgb(0xF2EFE9).into()
+    rgb(0x1E1D1A).into()
 }
 
-/// Selected row tint on silver-halide paper (`#E6E0D4`).
+/// Recessed modular table header background (`#181714`).
+pub fn table_header_bg() -> Hsla {
+    rgb(0x181714).into()
+}
+
+/// Selected row tint on warm charcoal (`#2D2B26`).
 pub fn paper_selected() -> Hsla {
-    rgb(0xE6E0D4).into()
+    rgb(0x2D2B26).into()
 }
 
-/// Hover row tint on silver-halide paper (`#ECE8DF`).
+/// Hover row tint on warm charcoal (`#262420`).
 pub fn paper_hover() -> Hsla {
-    rgb(0xECE8DF).into()
+    rgb(0x262420).into()
 }
 
-/// Subtle row rule on silver-halide paper (`#DFDBD2`).
+/// Construction-grid row & column rule on warm charcoal (`#2C2A27`).
 pub fn paper_border() -> Hsla {
-    rgb(0xDFDBD2).into()
+    rgb(0x2C2A27).into()
 }
 
-/// Carbon ink primary text on silver-halide paper (`#141413`).
+/// Primary ink on warm charcoal work surface (`#EAE6DF`).
 pub fn carbon_text() -> Hsla {
-    rgb(0x141413).into()
+    rgb(0xEAE6DF).into()
 }
 
-/// Secondary ink on silver-halide paper (`#5C5852`).
+/// Secondary ink on warm charcoal work surface (`#9B968D`).
 pub fn carbon_muted() -> Hsla {
-    rgb(0x5C5852).into()
+    rgb(0x9B968D).into()
 }
 
-/// Selenium Amber for active in-flight `Segment` bytes (`#D97724`).
+/// Deep recessed byte-map ruler track (`#0D0C0B`).
+pub fn byte_track_bg() -> Hsla {
+    rgb(0x0D0C0B).into()
+}
+
+/// Selenium Amber for active in-flight `Segment` bytes & primary CTAs (`#E58A35`).
 pub fn selenium_amber() -> Hsla {
-    rgb(0xD97724).into()
+    rgb(0xE58A35).into()
 }
 
-/// Cyanotype Blue for writer-acknowledged disk `Checkpoint` bytes (`#2563EB`).
+/// Cyanotype Blue for writer-acknowledged disk `Checkpoint` bytes (`#3B82F6`).
 pub fn cyanotype_blue() -> Hsla {
-    rgb(0x2563EB).into()
+    rgb(0x3B82F6).into()
 }
 
-/// Halide Emerald for `Completed` state (`#15803D`).
+/// Halide Emerald for `Completed` state (`#22C55E`).
 pub fn halide_emerald() -> Hsla {
-    rgb(0x15803D).into()
+    rgb(0x22C55E).into()
 }
 
-/// Errata Vermilion for `Failed` / `ResourceChanged` (`#DC2626`).
+/// Errata Vermilion for `Failed` / `ResourceChanged` (`#EF4444`).
 pub fn errata_vermilion() -> Hsla {
-    rgb(0xDC2626).into()
+    rgb(0xEF4444).into()
 }
