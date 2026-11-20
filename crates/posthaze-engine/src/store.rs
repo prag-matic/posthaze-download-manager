@@ -570,6 +570,25 @@ impl DownloadStore {
         Ok(out)
     }
 
+    /// Returns persisted `Segment` counts keyed by [`DownloadId`] in a single query.
+    pub(crate) async fn list_segment_counts(&self) -> Result<HashMap<DownloadId, usize>, EngineError> {
+        let rows = sqlx::query(
+            "SELECT download_id, COUNT(*) AS cnt
+             FROM segments
+             GROUP BY download_id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut counts = HashMap::with_capacity(rows.len());
+        for row in rows {
+            let id: String = row.try_get("download_id")?;
+            let cnt: i64 = row.try_get("cnt")?;
+            counts.insert(DownloadId(id), usize::try_from(cnt).unwrap_or(0));
+        }
+        Ok(counts)
+    }
+
     /// Fetches a single `DownloadRecord` by `DownloadId`.
     pub(crate) async fn get_download(
         &self,
@@ -888,4 +907,62 @@ fn unix_now() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn list_segment_counts_aggregates_per_download_in_one_query() {
+        let dir = std::env::temp_dir().join(format!("posthaze_store_cnt_{}", DownloadId::new()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = DownloadStore::open(&dir.join("state.db")).await.unwrap();
+
+        let id1 = DownloadId::new();
+        let id2 = DownloadId::new();
+        let req = DownloadRequest::new("https://example.com/a.bin", &dir);
+        store.insert_queued(&id1, &req).await.unwrap();
+        store.insert_queued(&id2, &req).await.unwrap();
+
+        let probe = ProbeResult {
+            final_url: "https://example.com/a.bin".to_string(),
+            suggested_filename: "a.bin".to_string(),
+            content_length: Some(3000),
+            supports_ranges: true,
+            etag: None,
+            last_modified: None,
+        };
+        store
+            .record_probed_and_activate(
+                &id1,
+                &probe,
+                &dir.join("a.bin"),
+                &dir.join("a.bin.part"),
+                &[
+                    PlannedSegment { start: 0, end: Some(1000) },
+                    PlannedSegment { start: 1000, end: Some(2000) },
+                    PlannedSegment { start: 2000, end: Some(3000) },
+                ],
+            )
+            .await
+            .unwrap();
+        store
+            .record_probed_and_activate(
+                &id2,
+                &probe,
+                &dir.join("b.bin"),
+                &dir.join("b.bin.part"),
+                &[PlannedSegment { start: 0, end: Some(3000) }],
+            )
+            .await
+            .unwrap();
+
+        let counts = store.list_segment_counts().await.unwrap();
+        assert_eq!(counts.get(&id1), Some(&3));
+        assert_eq!(counts.get(&id2), Some(&1));
+
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

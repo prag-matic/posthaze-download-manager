@@ -344,7 +344,7 @@ mod tests {
             created_at: 1,
             updated_at: 1,
         };
-        DownloadRowView::from_record(&record, None, None, None)
+        DownloadRowView::from_record(&record, None, 0, None)
     }
 
     #[::core::prelude::v1::test]

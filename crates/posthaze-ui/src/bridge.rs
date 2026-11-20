@@ -12,12 +12,12 @@ use posthaze_engine::{
 use tokio::runtime::{Builder, Runtime};
 use tokio::sync::{broadcast, oneshot};
 
-/// Consistent point-in-time read of all `Download` records, `Settings`, and persisted `Segment`s.
+/// Consistent point-in-time read of all `Download` records, `Settings`, and persisted `Segment` counts.
 #[derive(Debug, Clone)]
 pub struct EngineSnapshot {
     pub records: Vec<DownloadRecord>,
     pub settings: Settings,
-    pub segments: HashMap<DownloadId, Vec<SegmentProgress>>,
+    pub segment_counts: HashMap<DownloadId, usize>,
 }
 
 /// Typed mutating commands executed through [`EngineBridge`].
@@ -221,18 +221,11 @@ impl EngineBridge {
 async fn read_snapshot(engine: &DownloadEngine) -> Result<EngineSnapshot, EngineError> {
     let records = engine.list_downloads().await?;
     let settings = engine.get_settings().await?;
-    let mut segments = HashMap::new();
-    for rec in &records {
-        if let Ok(segs) = engine.list_segments(&rec.id).await
-            && !segs.is_empty()
-        {
-            segments.insert(rec.id.clone(), segs);
-        }
-    }
+    let segment_counts = engine.list_segment_counts().await?;
     Ok(EngineSnapshot {
         records,
         settings,
-        segments,
+        segment_counts,
     })
 }
 
@@ -253,6 +246,7 @@ mod tests {
             .expect("channel ok")
             .expect("snapshot ok");
         assert!(initial.records.is_empty());
+        assert!(initial.segment_counts.is_empty());
 
         let mut updated = initial.settings.clone();
         updated.max_concurrent_downloads = 5;

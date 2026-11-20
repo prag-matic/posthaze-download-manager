@@ -204,11 +204,11 @@ pub struct DownloadRowView {
 
 impl DownloadRowView {
     /// Builds a row view from a persisted [`DownloadRecord`], optional live [`ProgressSnapshot`],
-    /// and optional persisted [`SegmentProgress`] slice.
+    /// and persisted `Segment` count.
     pub fn from_record(
         record: &DownloadRecord,
         live: Option<&ProgressSnapshot>,
-        persisted_segments: Option<&[SegmentProgress]>,
+        persisted_segment_count: usize,
         fifo_rank: Option<usize>,
     ) -> Self {
         let state = live.map_or(record.state, |s| s.state);
@@ -217,19 +217,24 @@ impl DownloadRowView {
         let bytes_per_sec = live.map_or(0, |s| s.bytes_per_sec);
         let eta_secs = live.and_then(|s| s.eta_secs);
         let active_workers = live.map_or(0, |s| s.active_workers);
-        let segments: &[SegmentProgress] = live
+        let live_segments: &[SegmentProgress] = live
             .filter(|s| !s.segments.is_empty())
-            .map_or_else(|| persisted_segments.unwrap_or(&[]), |s| s.segments.as_slice());
+            .map_or(&[], |s| s.segments.as_slice());
 
         let checkpointed_bytes = if state == DownloadState::Completed {
             bytes_downloaded
-        } else if !segments.is_empty() {
-            segments
+        } else if !live_segments.is_empty() {
+            live_segments
                 .iter()
                 .map(|s| s.checkpointed_cursor.saturating_sub(s.start))
                 .sum()
         } else {
             record.bytes_downloaded.min(bytes_downloaded)
+        };
+        let segment_count = if !live_segments.is_empty() {
+            live_segments.len()
+        } else {
+            persisted_segment_count
         };
 
         let filename = derive_display_filename(record);
@@ -249,7 +254,7 @@ impl DownloadRowView {
             bytes_per_sec,
             eta_secs,
             active_workers,
-            segment_count: segments.len(),
+            segment_count,
             supports_ranges: record.supports_ranges,
             sync_on_complete: record.sync_on_complete,
             etag: record.etag.clone(),
@@ -393,13 +398,17 @@ pub fn format_eta(eta_secs: Option<u64>) -> String {
 
 /// Filters and sorts [`DownloadRowView`] items for the center table.
 pub fn filter_and_sort_rows(
-    mut rows: Vec<DownloadRowView>,
+    rows: &[DownloadRowView],
     filter: FilterTab,
     sort_col: SortColumn,
     sort_dir: SortDirection,
 ) -> Vec<DownloadRowView> {
-    rows.retain(|r| filter.matches(r.state));
-    rows.sort_by(|a, b| {
+    let mut out: Vec<DownloadRowView> = rows
+        .iter()
+        .filter(|r| filter.matches(r.state))
+        .cloned()
+        .collect();
+    out.sort_by(|a, b| {
         let ord = match sort_col {
             SortColumn::State => a.state.as_str().cmp(b.state.as_str()),
             SortColumn::Filename => a
@@ -418,7 +427,7 @@ pub fn filter_and_sort_rows(
             SortDirection::Descending => ord.reverse(),
         }
     });
-    rows
+    out
 }
 
 /// Normalized geometry for rendering a `Segment` inside the **Graduated Interval Byte-Map Ruler**.
@@ -622,6 +631,7 @@ pub enum UiEffect {
 pub struct QueueController {
     pub records: Vec<DownloadRecord>,
     pub live_map: HashMap<DownloadId, ProgressSnapshot>,
+    pub segment_counts: HashMap<DownloadId, usize>,
     pub persisted_segments: HashMap<DownloadId, Vec<SegmentProgress>>,
     pub settings: Settings,
     pub selected_id: Option<DownloadId>,
@@ -633,12 +643,11 @@ impl QueueController {
     pub fn apply_snapshot(&mut self, snapshot: EngineSnapshot) -> Option<UiEffect> {
         self.records = snapshot.records;
         self.settings = snapshot.settings;
-        self.persisted_segments = snapshot.segments;
+        self.segment_counts = snapshot.segment_counts;
         if self.selected_id.is_none() {
             self.selected_id = self.records.first().map(|r| r.id.clone());
-            return self.selected_id.clone().map(UiEffect::LoadSegments);
         }
-        None
+        self.selected_id.clone().map(UiEffect::LoadSegments)
     }
 
     /// Processes an [`EngineEvent`] and returns any side effects for the UI shell.
@@ -875,7 +884,7 @@ mod tests {
                 },
             ],
         };
-        let row = DownloadRowView::from_record(&rec, Some(&snap), None, None);
+        let row = DownloadRowView::from_record(&rec, Some(&snap), 0, None);
         assert!((row.checkpoint_ratio() - 0.5).abs() < 1e-6);
         assert!((row.total_ratio() - 0.75).abs() < 1e-6);
         assert_eq!(row.segment_count, 2);
@@ -886,17 +895,17 @@ mod tests {
         let r1 = DownloadRowView::from_record(
             &make_record("1", "https://example.com/zeta.bin", DownloadState::Paused, 10),
             None,
-            None,
+            0,
             None,
         );
         let r2 = DownloadRowView::from_record(
             &make_record("2", "https://example.com/alpha.bin", DownloadState::Queued, 20),
             None,
-            None,
+            0,
             Some(1),
         );
         let filtered = filter_and_sort_rows(
-            vec![r1.clone(), r2.clone()],
+            &[r1.clone(), r2.clone()],
             FilterTab::Queued,
             SortColumn::CreatedAt,
             SortDirection::Descending,
@@ -905,7 +914,7 @@ mod tests {
         assert_eq!(filtered[0].filename, "alpha.bin");
 
         let sorted = filter_and_sort_rows(
-            vec![r1, r2],
+            &[r1, r2],
             FilterTab::All,
             SortColumn::Filename,
             SortDirection::Ascending,
@@ -969,11 +978,11 @@ mod tests {
     fn detects_resource_changed_error_for_errata_recovery() {
         let mut rec = make_record("rc", "https://example.com/fw.bin", DownloadState::Failed, 1);
         rec.error_message = Some("remote resource changed: ETag mismatch".to_string());
-        let row = DownloadRowView::from_record(&rec, None, None, None);
+        let row = DownloadRowView::from_record(&rec, None, 0, None);
         assert!(row.is_resource_changed);
 
         rec.error_message = Some("HTTP error: timeout".to_string());
-        let transient_row = DownloadRowView::from_record(&rec, None, None, None);
+        let transient_row = DownloadRowView::from_record(&rec, None, 0, None);
         assert!(!transient_row.is_resource_changed);
         assert_eq!(
             transient_row.error_message.as_deref(),
@@ -983,31 +992,13 @@ mod tests {
 
     #[test]
     fn preserves_persisted_segment_count_when_live_snapshot_absent() {
-        let persisted = vec![
-            SegmentProgress {
-                id: 0,
-                start: 0,
-                cursor: 500,
-                checkpointed_cursor: 500,
-                end: Some(500),
-                completed: true,
-            },
-            SegmentProgress {
-                id: 1,
-                start: 500,
-                cursor: 750,
-                checkpointed_cursor: 750,
-                end: Some(1000),
-                completed: false,
-            },
-        ];
         for state in [
             DownloadState::Paused,
             DownloadState::Failed,
             DownloadState::Completed,
         ] {
             let rec = make_record("s", "https://example.com/archive.bin", state, 1);
-            let row = DownloadRowView::from_record(&rec, None, Some(&persisted), None);
+            let row = DownloadRowView::from_record(&rec, None, 2, None);
             assert_eq!(row.segment_count, 2);
         }
     }

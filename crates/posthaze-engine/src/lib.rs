@@ -449,6 +449,14 @@ impl DownloadEngine {
             .collect())
     }
 
+    /// Returns persisted `Segment` counts keyed by [`DownloadId`] in a single query.
+    pub async fn list_segment_counts(&self) -> Result<HashMap<DownloadId, usize>, EngineError> {
+        match &self.store {
+            Some(store) => store.list_segment_counts().await,
+            None => Ok(HashMap::new()),
+        }
+    }
+
     /// Reads the persisted [`Settings`] for this engine.
     pub async fn get_settings(&self) -> Result<Settings, EngineError> {
         match &self.store {

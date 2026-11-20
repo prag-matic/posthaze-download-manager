@@ -107,6 +107,10 @@ pub(crate) struct PosthazeApp {
     active_resize: Option<ActiveResize>,
     pub(crate) motion: MotionState,
     motion_loop_running: bool,
+    pub(crate) table_scroll_handle: UniformListScrollHandle,
+    refresh_in_flight: bool,
+    refresh_pending: bool,
+    last_progress_notify: Instant,
 }
 
 impl PosthazeApp {
@@ -125,7 +129,7 @@ impl PosthazeApp {
         })
         .detach();
 
-        let app = Self {
+        let mut app = Self {
             bridge,
             window_handle: window.window_handle(),
             url_input,
@@ -146,6 +150,10 @@ impl PosthazeApp {
             active_resize: None,
             motion: MotionState::default(),
             motion_loop_running: false,
+            table_scroll_handle: UniformListScrollHandle::new(),
+            refresh_in_flight: false,
+            refresh_pending: false,
+            last_progress_notify: Instant::now(),
         };
 
         app.refresh_from_engine(cx);
@@ -179,14 +187,25 @@ impl PosthazeApp {
         }
     }
 
-    fn refresh_from_engine(&self, cx: &mut Context<Self>) {
+    fn refresh_from_engine(&mut self, cx: &mut Context<Self>) {
+        if self.refresh_in_flight {
+            self.refresh_pending = true;
+            return;
+        }
+        self.refresh_in_flight = true;
+        self.refresh_pending = false;
         let rx = self.bridge.load_snapshot();
         cx.spawn(async move |this, cx| {
-            if let Ok(Ok(snapshot)) = rx.await {
-                let _ = this.update(cx, |app, cx| {
+            let res = rx.await;
+            let _ = this.update(cx, |app, cx| {
+                app.refresh_in_flight = false;
+                if let Ok(Ok(snapshot)) = res {
                     app.apply_snapshot(snapshot, cx);
-                });
-            }
+                }
+                if app.refresh_pending {
+                    app.refresh_from_engine(cx);
+                }
+            });
         })
         .detach();
     }
@@ -229,11 +248,18 @@ impl PosthazeApp {
                 match events.recv().await {
                     Ok(EngineEvent::ProgressUpdated { id, snapshot }) => {
                         let _ = this.update(cx, |app, cx| {
-                            if app.motion.on_progress(&id, &snapshot, Instant::now()) {
+                            let now = Instant::now();
+                            if app.motion.on_progress(&id, &snapshot, now) {
                                 app.ensure_motion_loop(cx);
                             }
                             app.queue.live_map.insert(id, snapshot);
-                            cx.notify();
+                            if !app.motion_loop_running
+                                && now.duration_since(app.last_progress_notify)
+                                    >= Duration::from_millis(33)
+                            {
+                                app.last_progress_notify = now;
+                                cx.notify();
+                            }
                         });
                     }
                     Ok(EngineEvent::StateChanged {
@@ -963,7 +989,7 @@ impl Render for PosthazeApp {
                 DownloadRowView::from_record(
                     rec,
                     self.queue.live_map.get(&rec.id),
-                    self.queue.persisted_segments.get(&rec.id).map(Vec::as_slice),
+                    self.queue.segment_counts.get(&rec.id).copied().unwrap_or(0),
                     ranks.get(&rec.id).copied(),
                 )
             })
@@ -980,7 +1006,7 @@ impl Render for PosthazeApp {
             .count();
 
         let visible_rows = filter_and_sort_rows(
-            all_rows.clone(),
+            &all_rows,
             self.filter,
             self.sort_col,
             self.sort_dir,
@@ -1262,6 +1288,10 @@ impl Render for PosthazeApp {
                     }
                     KeyboardAction::StepSelection(delta) => {
                         if let Some(next_id) = app.queue.step_selection(&visible_ids, delta) {
+                            if let Some(idx) = visible_ids.iter().position(|id| id == &next_id) {
+                                app.table_scroll_handle
+                                    .scroll_to_item(idx, ScrollStrategy::Nearest);
+                            }
                             app.load_segments_for(next_id, cx);
                             cx.notify();
                         }
@@ -1513,7 +1543,7 @@ impl Render for PosthazeApp {
                                         ),
                                 )
                             })
-                            .child(self.render_table(&visible_rows, is_empty_queue, profile, cx))
+                            .child(self.render_table(visible_rows, is_empty_queue, profile, cx))
                             .child(
                                 div()
                                     .id("inspector-resize")

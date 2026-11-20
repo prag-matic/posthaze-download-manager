@@ -1,5 +1,6 @@
 //! Top toolbar and Download queue table/row views for [PosthazeApp].
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui_kit::assets::IconName;
@@ -107,7 +108,7 @@ impl PosthazeApp {
 
     pub(crate) fn render_table(
         &self,
-        rows: &[DownloadRowView],
+        rows: Vec<DownloadRowView>,
         is_empty_queue: bool,
         profile: LayoutProfile,
         cx: &mut Context<Self>,
@@ -197,10 +198,10 @@ impl PosthazeApp {
                 .into_any_element();
         }
 
-        let mut row_elements = Vec::with_capacity(rows.len());
-        for row in rows {
-            row_elements.push(self.render_row(row, profile, cx));
-        }
+        let visible_rows = Arc::new(rows);
+        let row_count = visible_rows.len();
+        let entity = cx.entity().clone();
+        let scroll_handle = self.table_scroll_handle.clone();
 
         div()
             .flex_1()
@@ -270,13 +271,18 @@ impl PosthazeApp {
                             .child("ACTIONS"),
                     ),
             )
-            // Scrollable Rows
+            // Virtualized Scrollable Rows
             .child(
-                div()
-                    .id("downloads-table-scroll")
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .children(row_elements),
+                uniform_list("downloads-table-scroll", row_count, move |range, _window, cx| {
+                    entity.update(cx, |app, cx| {
+                        range
+                            .map(|idx| app.render_row(&visible_rows[idx], profile, cx).into_any_element())
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .flex_1()
+                .size_full()
+                .track_scroll(&scroll_handle),
             )
             .into_any_element()
     }
