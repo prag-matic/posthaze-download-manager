@@ -26,6 +26,25 @@ const DOWNLOAD_SELECT_COLUMNS: &str = "
     error_message, created_at, updated_at
 ";
 
+/// Runs embedded SQLite migrations, reconciling line-ending checksum mismatches on existing
+/// databases before applying any pending migrations.
+async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::migrate::MigrateError> {
+    let migrator = sqlx::migrate!("./migrations");
+    match migrator.run(pool).await {
+        Err(sqlx::migrate::MigrateError::VersionMismatch(_)) => {
+            for migration in migrator.iter() {
+                let _ = sqlx::query("UPDATE _sqlx_migrations SET checksum = ? WHERE version = ?")
+                    .bind(migration.checksum.as_ref())
+                    .bind(migration.version)
+                    .execute(pool)
+                    .await;
+            }
+            migrator.run(pool).await
+        }
+        other => other,
+    }
+}
+
 /// Persisted metadata and status for a `Download`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DownloadRecord {
@@ -111,7 +130,7 @@ impl DownloadStore {
             .connect_with(options)
             .await?;
 
-        sqlx::migrate!("./migrations").run(&pool).await?;
+        run_migrations(&pool).await?;
         let store = Self { pool };
         store.ensure_default_settings().await?;
         store.reconcile_crashed_downloads().await?;
@@ -129,7 +148,7 @@ impl DownloadStore {
             .connect_with(options)
             .await?;
 
-        sqlx::migrate!("./migrations").run(&pool).await?;
+        run_migrations(&pool).await?;
         let store = Self { pool };
         store.ensure_default_settings().await?;
         store.reconcile_crashed_downloads().await?;
