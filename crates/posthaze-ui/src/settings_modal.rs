@@ -73,17 +73,17 @@ impl SettingsTab {
     }
 }
 
-/// Interactive state for the comprehensive Settings modal.
-pub(crate) struct SettingsModalState {
-    pub active_tab: SettingsTab,
-    pub dir_input: Entity<InputState>,
-    pub workers_input: Entity<InputState>,
-    pub concurrent_input: Entity<InputState>,
-    pub proxy_url_input: Entity<InputState>,
-    pub speed_limit_input: Entity<InputState>,
-    pub auto_retry_input: Entity<InputState>,
-    pub cmd_path_input: Entity<InputState>,
-    pub cmd_args_input: Entity<InputState>,
+/// Pure, headless form draft for [`Settings`] validation without GPUI dependencies.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SettingsDraft {
+    pub dir: String,
+    pub workers: String,
+    pub concurrent: String,
+    pub proxy_url: String,
+    pub speed_limit: String,
+    pub auto_retry: String,
+    pub cmd_path: String,
+    pub cmd_args: String,
     pub sync_on_complete: bool,
     pub proxy_mode: ProxyMode,
     pub auto_categorize_folders: bool,
@@ -98,67 +98,19 @@ pub(crate) struct SettingsModalState {
     pub ui_show_add_paused: bool,
     pub ui_zoom_percent: u16,
     pub ui_theme: String,
-    pub error: Option<String>,
 }
 
-impl SettingsModalState {
-    pub fn from_settings(settings: &Settings, window: &mut Window, cx: &mut App) -> Self {
-        let dir_input = cx.new(|cx| {
-            let mut st = InputState::new(window, cx).placeholder("Default save folder");
-            st.set_value(
-                settings.default_output_dir.to_string_lossy().to_string(),
-                window,
-                cx,
-            );
-            st
-        });
-        let workers_input = cx.new(|cx| {
-            let mut st = InputState::new(window, cx).placeholder("1–32");
-            st.set_value(settings.max_workers.to_string(), window, cx);
-            st
-        });
-        let concurrent_input = cx.new(|cx| {
-            let mut st = InputState::new(window, cx).placeholder("1+");
-            st.set_value(settings.max_concurrent_downloads.to_string(), window, cx);
-            st
-        });
-        let proxy_url_input = cx.new(|cx| {
-            let mut st = InputState::new(window, cx)
-                .placeholder("http://127.0.0.1:8080 or socks5://127.0.0.1:1080");
-            st.set_value(settings.proxy_url.clone(), window, cx);
-            st
-        });
-        let speed_limit_input = cx.new(|cx| {
-            let mut st = InputState::new(window, cx).placeholder("0");
-            st.set_value(settings.download_speed_limit_kib.to_string(), window, cx);
-            st
-        });
-        let auto_retry_input = cx.new(|cx| {
-            let mut st = InputState::new(window, cx).placeholder("0–10");
-            st.set_value(settings.auto_retry_count.to_string(), window, cx);
-            st
-        });
-        let cmd_path_input = cx.new(|cx| {
-            let mut st = InputState::new(window, cx).placeholder("C:\\Path\\To\\Program.exe");
-            st.set_value(settings.completion_cmd_path.clone(), window, cx);
-            st
-        });
-        let cmd_args_input = cx.new(|cx| {
-            let mut st = InputState::new(window, cx).placeholder("%path%");
-            st.set_value(settings.completion_cmd_args.clone(), window, cx);
-            st
-        });
-
+impl SettingsDraft {
+    pub fn from_settings(settings: &Settings) -> Self {
         Self {
-            active_tab: SettingsTab::General,
-            dir_input,
-            workers_input,
-            concurrent_input,
-            proxy_url_input,
-            speed_limit_input,
-            auto_retry_input,
-            cmd_path_input,
-            cmd_args_input,
+            dir: settings.default_output_dir.to_string_lossy().to_string(),
+            workers: settings.max_workers.to_string(),
+            concurrent: settings.max_concurrent_downloads.to_string(),
+            proxy_url: settings.proxy_url.clone(),
+            speed_limit: settings.download_speed_limit_kib.to_string(),
+            auto_retry: settings.auto_retry_count.to_string(),
+            cmd_path: settings.completion_cmd_path.clone(),
+            cmd_args: settings.completion_cmd_args.clone(),
             sync_on_complete: settings.sync_on_complete,
             proxy_mode: settings.proxy_mode,
             auto_categorize_folders: settings.auto_categorize_folders,
@@ -173,79 +125,16 @@ impl SettingsModalState {
             ui_show_add_paused: settings.ui_show_add_paused,
             ui_zoom_percent: settings.ui_zoom_percent,
             ui_theme: settings.ui_theme.clone(),
-            error: None,
         }
     }
 
-    pub fn handle_action(&mut self, action: SettingsAction, window: &mut Window, cx: &mut App) {
-        match action {
-            SettingsAction::SelectTab(tab) => self.active_tab = tab,
-            SettingsAction::SetProxyMode(mode) => self.proxy_mode = mode,
-            SettingsAction::SetSpeedPreset(kib) => {
-                self.speed_limit_input.update(cx, |st, cx| {
-                    st.set_value(kib.to_string(), window, cx);
-                });
-            }
-            SettingsAction::SetCollisionPolicy(policy) => self.collision_policy = policy,
-            SettingsAction::SetDeleteDefault(def) => self.delete_action_default = def,
-            SettingsAction::SetZoom(zoom) => self.ui_zoom_percent = zoom,
-            SettingsAction::ToggleSyncOnComplete => {
-                self.sync_on_complete = !self.sync_on_complete;
-            }
-            SettingsAction::ToggleAutoCategorize => {
-                self.auto_categorize_folders = !self.auto_categorize_folders;
-            }
-            SettingsAction::ToggleCompletionCmd => {
-                self.completion_cmd_enabled = !self.completion_cmd_enabled;
-            }
-            SettingsAction::ApplyDefenderPreset => {
-                self.completion_cmd_enabled = true;
-                self.cmd_path_input.update(cx, |st, cx| {
-                    st.set_value(
-                        r"C:\Program Files\Windows Defender\MpCmdRun.exe".to_string(),
-                        window,
-                        cx,
-                    );
-                });
-                self.cmd_args_input.update(cx, |st, cx| {
-                    st.set_value("-Scan -ScanType 3 -File \"%path%\"".to_string(), window, cx);
-                });
-            }
-            SettingsAction::ToggleNotifyAdded => self.notify_on_added = !self.notify_on_added,
-            SettingsAction::ToggleNotifyCompleted => {
-                self.notify_on_completed = !self.notify_on_completed;
-            }
-            SettingsAction::ToggleNotifyFailed => self.notify_on_failed = !self.notify_on_failed,
-            SettingsAction::ToggleNotifyOnlyInactive => {
-                self.notify_only_inactive = !self.notify_only_inactive;
-            }
-            SettingsAction::ToggleClickOpensInspector => {
-                self.ui_click_row_opens_inspector = !self.ui_click_row_opens_inspector;
-            }
-            SettingsAction::ToggleShowAddPaused => {
-                self.ui_show_add_paused = !self.ui_show_add_paused;
-            }
-            SettingsAction::SetTheme(theme_id) => {
-                let palette = crate::theme::apply_theme(&theme_id, Some(window), cx);
-                self.ui_theme = palette.id.to_string();
-            }
-            SettingsAction::ResetToDefaults => {
-                *self = Self::from_settings(&Settings::default(), window, cx);
-                self.active_tab = SettingsTab::Reset;
-                crate::theme::apply_theme(&self.ui_theme, Some(window), cx);
-            }
-        }
-    }
-
-    pub fn apply_to_settings(&self, cx: &App) -> Result<Settings, String> {
-        let dir = self.dir_input.read(cx).value().trim().to_string();
+    pub fn into_settings(self) -> Result<Settings, String> {
+        let dir = self.dir.trim().to_string();
         if dir.is_empty() {
             return Err("Save folder cannot be empty.".to_string());
         }
         let max_workers = self
-            .workers_input
-            .read(cx)
-            .value()
+            .workers
             .trim()
             .parse::<usize>()
             .map_err(|_| "Workers per download must be an integer between 1 and 32.".to_string())?;
@@ -253,30 +142,17 @@ impl SettingsModalState {
             return Err("Workers per download must be between 1 and 32.".to_string());
         }
         let max_concurrent_downloads = self
-            .concurrent_input
-            .read(cx)
-            .value()
+            .concurrent
             .trim()
             .parse::<usize>()
             .map_err(|_| "Parallel downloads must be at least 1.".to_string())?;
-        if max_concurrent_downloads == 0 {
-            return Err("Parallel downloads must be at least 1.".to_string());
-        }
-        let proxy_url = self.proxy_url_input.read(cx).value().trim().to_string();
-        if self.proxy_mode == ProxyMode::Manual && proxy_url.is_empty() {
-            return Err("Manual proxy mode requires a proxy URL.".to_string());
-        }
         let download_speed_limit_kib = self
-            .speed_limit_input
-            .read(cx)
-            .value()
+            .speed_limit
             .trim()
             .parse::<u64>()
             .map_err(|_| "Speed limit must be a non-negative integer (KiB/s).".to_string())?;
         let auto_retry_count = self
-            .auto_retry_input
-            .read(cx)
-            .value()
+            .auto_retry
             .trim()
             .parse::<u32>()
             .map_err(|_| "Auto-retry count must be between 0 and 10.".to_string())?;
@@ -284,19 +160,19 @@ impl SettingsModalState {
             return Err("Auto-retry count cannot exceed 10.".to_string());
         }
 
-        let completion_cmd_path = self.cmd_path_input.read(cx).value().trim().to_string();
-        let completion_cmd_args = self.cmd_args_input.read(cx).value().trim().to_string();
+        let completion_cmd_path = self.cmd_path.trim().to_string();
+        let completion_cmd_args = self.cmd_args.trim().to_string();
         if self.completion_cmd_enabled && completion_cmd_path.is_empty() {
             return Err("Program path is required when post-download command is enabled.".to_string());
         }
 
-        Ok(Settings {
+        let settings = Settings {
             default_output_dir: PathBuf::from(dir),
             max_workers,
             max_concurrent_downloads,
             sync_on_complete: self.sync_on_complete,
             proxy_mode: self.proxy_mode,
-            proxy_url,
+            proxy_url: self.proxy_url.trim().to_string(),
             download_speed_limit_kib,
             auto_categorize_folders: self.auto_categorize_folders,
             collision_policy: self.collision_policy,
@@ -316,8 +192,163 @@ impl SettingsModalState {
             ui_click_row_opens_inspector: self.ui_click_row_opens_inspector,
             ui_show_add_paused: self.ui_show_add_paused,
             ui_zoom_percent: self.ui_zoom_percent,
-            ui_theme: self.ui_theme.clone(),
-        })
+            ui_theme: self.ui_theme,
+        };
+        settings.validate().map_err(|e| e.to_string())?;
+        Ok(settings)
+    }
+}
+
+/// Interactive state for the comprehensive Settings modal.
+pub(crate) struct SettingsModalState {
+    pub active_tab: SettingsTab,
+    pub dir_input: Entity<InputState>,
+    pub workers_input: Entity<InputState>,
+    pub concurrent_input: Entity<InputState>,
+    pub proxy_url_input: Entity<InputState>,
+    pub speed_limit_input: Entity<InputState>,
+    pub auto_retry_input: Entity<InputState>,
+    pub cmd_path_input: Entity<InputState>,
+    pub cmd_args_input: Entity<InputState>,
+    pub draft: SettingsDraft,
+    pub error: Option<String>,
+}
+
+impl SettingsModalState {
+    pub fn from_settings(settings: &Settings, window: &mut Window, cx: &mut App) -> Self {
+        let draft = SettingsDraft::from_settings(settings);
+        let dir_input = cx.new(|cx| {
+            let mut st = InputState::new(window, cx).placeholder("Default save folder");
+            st.set_value(draft.dir.clone(), window, cx);
+            st
+        });
+        let workers_input = cx.new(|cx| {
+            let mut st = InputState::new(window, cx).placeholder("1–32");
+            st.set_value(draft.workers.clone(), window, cx);
+            st
+        });
+        let concurrent_input = cx.new(|cx| {
+            let mut st = InputState::new(window, cx).placeholder("1+");
+            st.set_value(draft.concurrent.clone(), window, cx);
+            st
+        });
+        let proxy_url_input = cx.new(|cx| {
+            let mut st = InputState::new(window, cx)
+                .placeholder("http://127.0.0.1:8080 or socks5://127.0.0.1:1080");
+            st.set_value(draft.proxy_url.clone(), window, cx);
+            st
+        });
+        let speed_limit_input = cx.new(|cx| {
+            let mut st = InputState::new(window, cx).placeholder("0");
+            st.set_value(draft.speed_limit.clone(), window, cx);
+            st
+        });
+        let auto_retry_input = cx.new(|cx| {
+            let mut st = InputState::new(window, cx).placeholder("0–10");
+            st.set_value(draft.auto_retry.clone(), window, cx);
+            st
+        });
+        let cmd_path_input = cx.new(|cx| {
+            let mut st = InputState::new(window, cx).placeholder("C:\\Path\\To\\Program.exe");
+            st.set_value(draft.cmd_path.clone(), window, cx);
+            st
+        });
+        let cmd_args_input = cx.new(|cx| {
+            let mut st = InputState::new(window, cx).placeholder("%path%");
+            st.set_value(draft.cmd_args.clone(), window, cx);
+            st
+        });
+
+        Self {
+            active_tab: SettingsTab::General,
+            dir_input,
+            workers_input,
+            concurrent_input,
+            proxy_url_input,
+            speed_limit_input,
+            auto_retry_input,
+            cmd_path_input,
+            cmd_args_input,
+            draft,
+            error: None,
+        }
+    }
+
+    pub fn handle_action(&mut self, action: SettingsAction, window: &mut Window, cx: &mut App) {
+        match action {
+            SettingsAction::SelectTab(tab) => self.active_tab = tab,
+            SettingsAction::SetProxyMode(mode) => self.draft.proxy_mode = mode,
+            SettingsAction::SetSpeedPreset(kib) => {
+                self.speed_limit_input.update(cx, |st, cx| {
+                    st.set_value(kib.to_string(), window, cx);
+                });
+            }
+            SettingsAction::SetCollisionPolicy(policy) => self.draft.collision_policy = policy,
+            SettingsAction::SetDeleteDefault(def) => self.draft.delete_action_default = def,
+            SettingsAction::SetZoom(zoom) => self.draft.ui_zoom_percent = zoom,
+            SettingsAction::ToggleSyncOnComplete => {
+                self.draft.sync_on_complete = !self.draft.sync_on_complete;
+            }
+            SettingsAction::ToggleAutoCategorize => {
+                self.draft.auto_categorize_folders = !self.draft.auto_categorize_folders;
+            }
+            SettingsAction::ToggleCompletionCmd => {
+                self.draft.completion_cmd_enabled = !self.draft.completion_cmd_enabled;
+            }
+            SettingsAction::ApplyDefenderPreset => {
+                self.draft.completion_cmd_enabled = true;
+                self.cmd_path_input.update(cx, |st, cx| {
+                    st.set_value(
+                        r"C:\Program Files\Windows Defender\MpCmdRun.exe".to_string(),
+                        window,
+                        cx,
+                    );
+                });
+                self.cmd_args_input.update(cx, |st, cx| {
+                    st.set_value("-Scan -ScanType 3 -File \"%path%\"".to_string(), window, cx);
+                });
+            }
+            SettingsAction::ToggleNotifyAdded => {
+                self.draft.notify_on_added = !self.draft.notify_on_added;
+            }
+            SettingsAction::ToggleNotifyCompleted => {
+                self.draft.notify_on_completed = !self.draft.notify_on_completed;
+            }
+            SettingsAction::ToggleNotifyFailed => {
+                self.draft.notify_on_failed = !self.draft.notify_on_failed;
+            }
+            SettingsAction::ToggleNotifyOnlyInactive => {
+                self.draft.notify_only_inactive = !self.draft.notify_only_inactive;
+            }
+            SettingsAction::ToggleClickOpensInspector => {
+                self.draft.ui_click_row_opens_inspector = !self.draft.ui_click_row_opens_inspector;
+            }
+            SettingsAction::ToggleShowAddPaused => {
+                self.draft.ui_show_add_paused = !self.draft.ui_show_add_paused;
+            }
+            SettingsAction::SetTheme(theme_id) => {
+                let palette = crate::theme::apply_theme(&theme_id, Some(window), cx);
+                self.draft.ui_theme = palette.id.to_string();
+            }
+            SettingsAction::ResetToDefaults => {
+                *self = Self::from_settings(&Settings::default(), window, cx);
+                self.active_tab = SettingsTab::Reset;
+                crate::theme::apply_theme(&self.draft.ui_theme, Some(window), cx);
+            }
+        }
+    }
+
+    pub fn apply_to_settings(&self, cx: &App) -> Result<Settings, String> {
+        let mut draft = self.draft.clone();
+        draft.dir = self.dir_input.read(cx).value().to_string();
+        draft.workers = self.workers_input.read(cx).value().to_string();
+        draft.concurrent = self.concurrent_input.read(cx).value().to_string();
+        draft.proxy_url = self.proxy_url_input.read(cx).value().to_string();
+        draft.speed_limit = self.speed_limit_input.read(cx).value().to_string();
+        draft.auto_retry = self.auto_retry_input.read(cx).value().to_string();
+        draft.cmd_path = self.cmd_path_input.read(cx).value().to_string();
+        draft.cmd_args = self.cmd_args_input.read(cx).value().to_string();
+        draft.into_settings()
     }
 }
 
@@ -358,458 +389,13 @@ where
     let on_backdrop_close = on_cancel.clone();
 
     let body = match state.active_tab {
-        SettingsTab::General => div()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .child(labeled_input("Save Folder", &state.dir_input))
-            .child(toggle_row(
-                "settings-auto-categorize",
-                "Sort by File Type",
-                "Route files into Archives, Video, Audio, Documents, and Programs subfolders.",
-                state.auto_categorize_folders,
-                SettingsAction::ToggleAutoCategorize,
-                on_action.clone(),
-            )),
-
-        SettingsTab::Downloads => div()
-            .flex()
-            .flex_col()
-            .child(setting_row(
-                "When File Exists",
-                "Action when the destination filename already exists on disk.",
-                segmented_track()
-                    .child(choice_btn(
-                        "coll-rename",
-                        "Rename Copy",
-                        state.collision_policy == CollisionPolicy::Rename,
-                        SettingsAction::SetCollisionPolicy(CollisionPolicy::Rename),
-                        on_action.clone(),
-                    ))
-                    .child(choice_btn(
-                        "coll-overwrite",
-                        "Overwrite",
-                        state.collision_policy == CollisionPolicy::Overwrite,
-                        SettingsAction::SetCollisionPolicy(CollisionPolicy::Overwrite),
-                        on_action.clone(),
-                    ))
-                    .child(choice_btn(
-                        "coll-ask",
-                        "Ask Each Time",
-                        state.collision_policy == CollisionPolicy::Ask,
-                        SettingsAction::SetCollisionPolicy(CollisionPolicy::Ask),
-                        on_action.clone(),
-                    )),
-            ))
-            .child(setting_row(
-                "Remove Button Action",
-                "Default behavior for the row Trash icon (right-click always shows both).",
-                segmented_track()
-                    .child(choice_btn(
-                        "del-ask",
-                        "Ask Each Time",
-                        state.delete_action_default == DeleteDefaultAction::Ask,
-                        SettingsAction::SetDeleteDefault(DeleteDefaultAction::Ask),
-                        on_action.clone(),
-                    ))
-                    .child(choice_btn(
-                        "del-remove",
-                        "Remove Entry",
-                        state.delete_action_default == DeleteDefaultAction::Remove,
-                        SettingsAction::SetDeleteDefault(DeleteDefaultAction::Remove),
-                        on_action.clone(),
-                    ))
-                    .child(choice_btn(
-                        "del-file",
-                        "Delete File",
-                        state.delete_action_default == DeleteDefaultAction::DeleteFile,
-                        SettingsAction::SetDeleteDefault(DeleteDefaultAction::DeleteFile),
-                        on_action.clone(),
-                    )),
-            ))
-            .child(setting_row(
-                "Auto-Retry on Error",
-                "Automatic retry attempts (0–10) after a transient failure.",
-                compact_input(&state.auto_retry_input, px(88.0), Some("retries")),
-            )),
-
-        SettingsTab::Network => div()
-            .flex()
-            .flex_col()
-            .child(setting_row(
-                "Proxy",
-                "How HTTP/HTTPS requests are routed.",
-                segmented_track()
-                    .child(choice_btn(
-                        "proxy-sys",
-                        "System",
-                        state.proxy_mode == ProxyMode::System,
-                        SettingsAction::SetProxyMode(ProxyMode::System),
-                        on_action.clone(),
-                    ))
-                    .child(choice_btn(
-                        "proxy-none",
-                        "Direct",
-                        state.proxy_mode == ProxyMode::None,
-                        SettingsAction::SetProxyMode(ProxyMode::None),
-                        on_action.clone(),
-                    ))
-                    .child(choice_btn(
-                        "proxy-manual",
-                        "Manual",
-                        state.proxy_mode == ProxyMode::Manual,
-                        SettingsAction::SetProxyMode(ProxyMode::Manual),
-                        on_action.clone(),
-                    )),
-            ))
-            .when(state.proxy_mode == ProxyMode::Manual, |el| {
-                el.child(
-                    div()
-                        .py_2p5()
-                        .border_b_1()
-                        .border_color(graphite_border())
-                        .child(labeled_input("Proxy URL", &state.proxy_url_input)),
-                )
-            })
-            .child(
-                div()
-                    .py_2p5()
-                    .border_b_1()
-                    .border_color(graphite_border())
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .gap_4()
-                            .child(setting_text(
-                                "Speed Limit",
-                                "Global bandwidth cap across active workers (0 = Unlimited).",
-                            ))
-                            .child(compact_input(&state.speed_limit_input, px(108.0), Some("KiB/s"))),
-                    )
-                    .child(
-                        segmented_track()
-                            .child(preset_btn(
-                                "spd-unlim",
-                                "Unlimited",
-                                SettingsAction::SetSpeedPreset(0),
-                                on_action.clone(),
-                            ))
-                            .child(preset_btn(
-                                "spd-low",
-                                "Low · 256 KiB/s",
-                                SettingsAction::SetSpeedPreset(256),
-                                on_action.clone(),
-                            ))
-                            .child(preset_btn(
-                                "spd-med",
-                                "Medium · 2 MiB/s",
-                                SettingsAction::SetSpeedPreset(2048),
-                                on_action.clone(),
-                            ))
-                            .child(preset_btn(
-                                "spd-high",
-                                "High · 8 MiB/s",
-                                SettingsAction::SetSpeedPreset(8192),
-                                on_action.clone(),
-                            )),
-                    ),
-            )
-            .child(setting_row(
-                "Workers per Download",
-                "Maximum concurrent byte-range segments per file (1–32).",
-                compact_input(&state.workers_input, px(88.0), Some("workers")),
-            ))
-            .child(setting_row(
-                "Parallel Downloads",
-                "Maximum active downloads running at the same time (1+).",
-                compact_input(&state.concurrent_input, px(88.0), Some("slots")),
-            ))
-            .child(
-                div().pt_2p5().child(toggle_row(
-                    "settings-sync",
-                    "Flush File Buffers on Finish",
-                    "Call sync_all before finalizing each download to protect against power loss.",
-                    state.sync_on_complete,
-                    SettingsAction::ToggleSyncOnComplete,
-                    on_action.clone(),
-                )),
-            ),
-
-        SettingsTab::Notifications => div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(toggle_row(
-                "notify-added",
-                "Download Added",
-                "Show a Windows notification when a new download is queued.",
-                state.notify_on_added,
-                SettingsAction::ToggleNotifyAdded,
-                on_action.clone(),
-            ))
-            .child(toggle_row(
-                "notify-completed",
-                "Download Completed",
-                "Show a Windows notification when a file finishes.",
-                state.notify_on_completed,
-                SettingsAction::ToggleNotifyCompleted,
-                on_action.clone(),
-            ))
-            .child(toggle_row(
-                "notify-failed",
-                "Download Failed",
-                "Show a Windows notification if a transfer stops with an error.",
-                state.notify_on_failed,
-                SettingsAction::ToggleNotifyFailed,
-                on_action.clone(),
-            ))
-            .child(div().h(px(1.0)).w_full().my_1().bg(graphite_border()))
-            .child(toggle_row(
-                "notify-inactive",
-                "Only When Window Is Unfocused",
-                "Suppress notifications while you are actively viewing Posthaze.",
-                state.notify_only_inactive,
-                SettingsAction::ToggleNotifyOnlyInactive,
-                on_action.clone(),
-            )),
-
-        SettingsTab::Automation => div()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(section_heading("Run After Completion"))
-                    .child({
-                        let act = on_action.clone();
-                        Button::new("settings-defender-preset")
-                            .small()
-                            .secondary()
-                            .icon(IconName::ShieldCheck)
-                            .label("Use Windows Defender")
-                            .on_click(move |_, window, cx| {
-                                act(SettingsAction::ApplyDefenderPreset, window, cx);
-                            })
-                    }),
-            )
-            .child(toggle_row(
-                "cmd-enabled",
-                "Launch Program on Finish",
-                "Run an antivirus scanner or script when a download completes.",
-                state.completion_cmd_enabled,
-                SettingsAction::ToggleCompletionCmd,
-                on_action.clone(),
-            ))
-            .when(state.completion_cmd_enabled, |el| {
-                el.child(
-                    div()
-                        .pt_1()
-                        .flex()
-                        .flex_col()
-                        .gap_2p5()
-                        .child(labeled_input("Program Path", &state.cmd_path_input))
-                        .child(labeled_input(
-                            "Arguments (%path% = completed file)",
-                            &state.cmd_args_input,
-                        )),
-                )
-            }),
-
-        SettingsTab::Interface => div()
-            .flex()
-            .flex_col()
-            .child(
-                div()
-                    .pb_2p5()
-                    .border_b_1()
-                    .border_color(graphite_border())
-                    .flex()
-                    .flex_col()
-                    .gap_2p5()
-                    .child(toggle_row(
-                        "ui-click-insp",
-                        "Open Byte-Map Inspector on Click",
-                        "Automatically expand the bottom inspector when selecting a download row.",
-                        state.ui_click_row_opens_inspector,
-                        SettingsAction::ToggleClickOpensInspector,
-                        on_action.clone(),
-                    ))
-                    .child(toggle_row(
-                        "ui-add-paused",
-                        "Show \"Add Paused\" in Pre-Flight",
-                        "Include the Add Paused button alongside Download Now.",
-                        state.ui_show_add_paused,
-                        SettingsAction::ToggleShowAddPaused,
-                        on_action.clone(),
-                    )),
-            )
-            .child(setting_row(
-                "Interface Scale",
-                "Adjust overall text and control sizing.",
-                segmented_track()
-                    .child(choice_btn(
-                        "zoom-90",
-                        "90%",
-                        state.ui_zoom_percent == 90,
-                        SettingsAction::SetZoom(90),
-                        on_action.clone(),
-                    ))
-                    .child(choice_btn(
-                        "zoom-100",
-                        "100%",
-                        state.ui_zoom_percent == 100,
-                        SettingsAction::SetZoom(100),
-                        on_action.clone(),
-                    ))
-                    .child(choice_btn(
-                        "zoom-110",
-                        "110%",
-                        state.ui_zoom_percent == 110,
-                        SettingsAction::SetZoom(110),
-                        on_action.clone(),
-                    ))
-                    .child(choice_btn(
-                        "zoom-125",
-                        "125%",
-                        state.ui_zoom_percent == 125,
-                        SettingsAction::SetZoom(125),
-                        on_action.clone(),
-                    )),
-            ))
-            .child(
-                div()
-                    .pt_3()
-                    .border_t_1()
-                    .border_color(graphite_border())
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child(section_heading("Appearance Theme"))
-                    .child(
-                        div()
-                            .text_size(TYPE_MICRO)
-                            .text_color(silver_muted())
-                            .child("Select a color theme (previews immediately; Cancel reverts)."),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .gap_2()
-                            .children(BUILTIN_THEMES.iter().map(|palette| {
-                                let is_selected = state.ui_theme == palette.id
-                                    || (find_theme(&state.ui_theme).id == palette.id
-                                        && state.ui_theme.is_empty());
-                                let theme_id = palette.id.to_string();
-                                let act = on_action.clone();
-                                let tone_label = match palette.tone {
-                                    PaletteTone::Dark => "DARK",
-                                    PaletteTone::Light => "LIGHT",
-                                };
-                                div()
-                                    .id(SharedString::from(format!("theme-{}", palette.id)))
-                                    .w(px(236.0))
-                                    .px_3()
-                                    .py_2()
-                                    .rounded(px(4.0))
-                                    .cursor_pointer()
-                                    .bg(if is_selected {
-                                        paper_selected()
-                                    } else {
-                                        graphite_elevated()
-                                    })
-                                    .border_1()
-                                    .border_color(if is_selected {
-                                        selenium_amber()
-                                    } else {
-                                        graphite_border()
-                                    })
-                                    .hover(|s| s.bg(paper_hover()))
-                                    .on_click(move |_, window, cx| {
-                                        act(SettingsAction::SetTheme(theme_id.clone()), window, cx);
-                                    })
-                                    .flex()
-                                    .flex_col()
-                                    .gap_1()
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .justify_between()
-                                            .gap_2()
-                                            .child(
-                                                div()
-                                                    .text_size(TYPE_BODY)
-                                                    .font_weight(FontWeight::SEMIBOLD)
-                                                    .text_color(silver_text())
-                                                    .child(palette.name),
-                                            )
-                                            .child(
-                                                div()
-                                                    .flex()
-                                                    .items_center()
-                                                    .gap_1()
-                                                    .child(swatch_dot(palette.graphite_bg))
-                                                    .child(swatch_dot(palette.paper_bg))
-                                                    .child(swatch_dot(palette.accent))
-                                                    .child(
-                                                        div()
-                                                            .ml_1()
-                                                            .font_family(MONO_FONT)
-                                                            .text_size(TYPE_HEADER)
-                                                            .text_color(silver_muted())
-                                                            .child(tone_label),
-                                                    ),
-                                            ),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_size(TYPE_MICRO)
-                                            .text_color(silver_muted())
-                                            .truncate()
-                                            .child(palette.description),
-                                    )
-                            })),
-                    ),
-            ),
-
-        SettingsTab::Reset => div()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .child(
-                div()
-                    .p_3p5()
-                    .bg(graphite_elevated())
-                    .border_1()
-                    .border_color(graphite_border())
-                    .rounded(px(4.0))
-                    .text_xs()
-                    .line_height(px(18.0))
-                    .text_color(silver_muted())
-                    .child("Restores save folder, collision and removal rules, proxy, speed limit, notifications, post-download command, and interface scale to factory defaults. Downloads in your Queue are kept untouched."),
-            )
-            .child(
-                div().flex().child({
-                    let act = on_action.clone();
-                    Button::new("settings-reset-defaults")
-                        .small()
-                        .danger()
-                        .icon(IconName::RotateCcw)
-                        .label("Restore Default Settings")
-                        .on_click(move |_, window, cx| {
-                            act(SettingsAction::ResetToDefaults, window, cx);
-                        })
-                }),
-            ),
+        SettingsTab::General => render_general_tab(state, on_action.clone()),
+        SettingsTab::Downloads => render_downloads_tab(state, on_action.clone()),
+        SettingsTab::Network => render_network_tab(state, on_action.clone()),
+        SettingsTab::Notifications => render_notifications_tab(state, on_action.clone()),
+        SettingsTab::Automation => render_automation_tab(state, on_action.clone()),
+        SettingsTab::Interface => render_interface_tab(state, on_action.clone()),
+        SettingsTab::Reset => render_reset_tab(on_action.clone()),
     };
 
     let card = div()
@@ -1179,4 +765,547 @@ fn swatch_dot(hex: u32) -> impl IntoElement {
         .bg(rgb(hex))
         .border_1()
         .border_color(graphite_border())
+}
+
+fn render_general_tab<F>(state: &SettingsModalState, on_action: F) -> AnyElement
+where
+    F: Fn(SettingsAction, &mut Window, &mut App) + Clone + 'static,
+{
+    div()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .child(labeled_input("Save Folder", &state.dir_input))
+        .child(toggle_row(
+            "settings-auto-categorize",
+            "Sort by File Type",
+            "Route files into Archives, Video, Audio, Documents, and Programs subfolders.",
+            state.draft.auto_categorize_folders,
+            SettingsAction::ToggleAutoCategorize,
+            on_action,
+        ))
+        .into_any_element()
+}
+
+fn render_downloads_tab<F>(state: &SettingsModalState, on_action: F) -> AnyElement
+where
+    F: Fn(SettingsAction, &mut Window, &mut App) + Clone + 'static,
+{
+    div()
+        .flex()
+        .flex_col()
+        .child(setting_row(
+            "When File Exists",
+            "Action when the destination filename already exists on disk.",
+            segmented_track()
+                .child(choice_btn(
+                    "coll-rename",
+                    "Rename Copy",
+                    state.draft.collision_policy == CollisionPolicy::Rename,
+                    SettingsAction::SetCollisionPolicy(CollisionPolicy::Rename),
+                    on_action.clone(),
+                ))
+                .child(choice_btn(
+                    "coll-overwrite",
+                    "Overwrite",
+                    state.draft.collision_policy == CollisionPolicy::Overwrite,
+                    SettingsAction::SetCollisionPolicy(CollisionPolicy::Overwrite),
+                    on_action.clone(),
+                ))
+                .child(choice_btn(
+                    "coll-ask",
+                    "Ask Each Time",
+                    state.draft.collision_policy == CollisionPolicy::Ask,
+                    SettingsAction::SetCollisionPolicy(CollisionPolicy::Ask),
+                    on_action.clone(),
+                )),
+        ))
+        .child(setting_row(
+            "Remove Button Action",
+            "Default behavior for the row Trash icon (right-click always shows both).",
+            segmented_track()
+                .child(choice_btn(
+                    "del-ask",
+                    "Ask Each Time",
+                    state.draft.delete_action_default == DeleteDefaultAction::Ask,
+                    SettingsAction::SetDeleteDefault(DeleteDefaultAction::Ask),
+                    on_action.clone(),
+                ))
+                .child(choice_btn(
+                    "del-remove",
+                    "Remove Entry",
+                    state.draft.delete_action_default == DeleteDefaultAction::Remove,
+                    SettingsAction::SetDeleteDefault(DeleteDefaultAction::Remove),
+                    on_action.clone(),
+                ))
+                .child(choice_btn(
+                    "del-file",
+                    "Delete File",
+                    state.draft.delete_action_default == DeleteDefaultAction::DeleteFile,
+                    SettingsAction::SetDeleteDefault(DeleteDefaultAction::DeleteFile),
+                    on_action,
+                )),
+        ))
+        .child(setting_row(
+            "Auto-Retry on Error",
+            "Automatic retry attempts (0–10) after a transient failure.",
+            compact_input(&state.auto_retry_input, px(88.0), Some("retries")),
+        ))
+        .into_any_element()
+}
+
+fn render_network_tab<F>(state: &SettingsModalState, on_action: F) -> AnyElement
+where
+    F: Fn(SettingsAction, &mut Window, &mut App) + Clone + 'static,
+{
+    div()
+        .flex()
+        .flex_col()
+        .child(setting_row(
+            "Proxy",
+            "How HTTP/HTTPS requests are routed.",
+            segmented_track()
+                .child(choice_btn(
+                    "proxy-sys",
+                    "System",
+                    state.draft.proxy_mode == ProxyMode::System,
+                    SettingsAction::SetProxyMode(ProxyMode::System),
+                    on_action.clone(),
+                ))
+                .child(choice_btn(
+                    "proxy-none",
+                    "Direct",
+                    state.draft.proxy_mode == ProxyMode::None,
+                    SettingsAction::SetProxyMode(ProxyMode::None),
+                    on_action.clone(),
+                ))
+                .child(choice_btn(
+                    "proxy-manual",
+                    "Manual",
+                    state.draft.proxy_mode == ProxyMode::Manual,
+                    SettingsAction::SetProxyMode(ProxyMode::Manual),
+                    on_action.clone(),
+                )),
+        ))
+        .when(state.draft.proxy_mode == ProxyMode::Manual, |el| {
+            el.child(
+                div()
+                    .py_2p5()
+                    .border_b_1()
+                    .border_color(graphite_border())
+                    .child(labeled_input("Proxy URL", &state.proxy_url_input)),
+            )
+        })
+        .child(
+            div()
+                .py_2p5()
+                .border_b_1()
+                .border_color(graphite_border())
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_4()
+                        .child(setting_text(
+                            "Speed Limit",
+                            "Global bandwidth cap across active workers (0 = Unlimited).",
+                        ))
+                        .child(compact_input(&state.speed_limit_input, px(108.0), Some("KiB/s"))),
+                )
+                .child(
+                    segmented_track()
+                        .child(preset_btn(
+                            "spd-unlim",
+                            "Unlimited",
+                            SettingsAction::SetSpeedPreset(0),
+                            on_action.clone(),
+                        ))
+                        .child(preset_btn(
+                            "spd-low",
+                            "Low · 256 KiB/s",
+                            SettingsAction::SetSpeedPreset(256),
+                            on_action.clone(),
+                        ))
+                        .child(preset_btn(
+                            "spd-med",
+                            "Medium · 2 MiB/s",
+                            SettingsAction::SetSpeedPreset(2048),
+                            on_action.clone(),
+                        ))
+                        .child(preset_btn(
+                            "spd-high",
+                            "High · 8 MiB/s",
+                            SettingsAction::SetSpeedPreset(8192),
+                            on_action.clone(),
+                        )),
+                ),
+        )
+        .child(setting_row(
+            "Workers per Download",
+            "Maximum concurrent byte-range segments per file (1–32).",
+            compact_input(&state.workers_input, px(88.0), Some("workers")),
+        ))
+        .child(setting_row(
+            "Parallel Downloads",
+            "Maximum active downloads running at the same time (1+).",
+            compact_input(&state.concurrent_input, px(88.0), Some("slots")),
+        ))
+        .child(
+            div().pt_2p5().child(toggle_row(
+                "settings-sync",
+                "Flush File Buffers on Finish",
+                "Call sync_all before finalizing each download to protect against power loss.",
+                state.draft.sync_on_complete,
+                SettingsAction::ToggleSyncOnComplete,
+                on_action,
+            )),
+        )
+        .into_any_element()
+}
+
+fn render_notifications_tab<F>(state: &SettingsModalState, on_action: F) -> AnyElement
+where
+    F: Fn(SettingsAction, &mut Window, &mut App) + Clone + 'static,
+{
+    div()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(toggle_row(
+            "notify-added",
+            "Download Added",
+            "Show a Windows notification when a new download is queued.",
+            state.draft.notify_on_added,
+            SettingsAction::ToggleNotifyAdded,
+            on_action.clone(),
+        ))
+        .child(toggle_row(
+            "notify-completed",
+            "Download Completed",
+            "Show a Windows notification when a file finishes.",
+            state.draft.notify_on_completed,
+            SettingsAction::ToggleNotifyCompleted,
+            on_action.clone(),
+        ))
+        .child(toggle_row(
+            "notify-failed",
+            "Download Failed",
+            "Show a Windows notification if a Download stops with an error.",
+            state.draft.notify_on_failed,
+            SettingsAction::ToggleNotifyFailed,
+            on_action.clone(),
+        ))
+        .child(div().h(px(1.0)).w_full().my_1().bg(graphite_border()))
+        .child(toggle_row(
+            "notify-inactive",
+            "Only When Window Is Unfocused",
+            "Suppress notifications while you are actively viewing Posthaze.",
+            state.draft.notify_only_inactive,
+            SettingsAction::ToggleNotifyOnlyInactive,
+            on_action,
+        ))
+        .into_any_element()
+}
+
+fn render_automation_tab<F>(state: &SettingsModalState, on_action: F) -> AnyElement
+where
+    F: Fn(SettingsAction, &mut Window, &mut App) + Clone + 'static,
+{
+    div()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(section_heading("Run After Completion"))
+                .child({
+                    let act = on_action.clone();
+                    Button::new("settings-defender-preset")
+                        .small()
+                        .secondary()
+                        .icon(IconName::ShieldCheck)
+                        .label("Use Windows Defender")
+                        .on_click(move |_, window, cx| {
+                            act(SettingsAction::ApplyDefenderPreset, window, cx);
+                        })
+                }),
+        )
+        .child(toggle_row(
+            "cmd-enabled",
+            "Launch Program on Finish",
+            "Run an antivirus scanner or script when a download completes.",
+            state.draft.completion_cmd_enabled,
+            SettingsAction::ToggleCompletionCmd,
+            on_action,
+        ))
+        .when(state.draft.completion_cmd_enabled, |el| {
+            el.child(
+                div()
+                    .pt_1()
+                    .flex()
+                    .flex_col()
+                    .gap_2p5()
+                    .child(labeled_input("Program Path", &state.cmd_path_input))
+                    .child(labeled_input(
+                        "Arguments (%path% = completed file)",
+                        &state.cmd_args_input,
+                    )),
+            )
+        })
+        .into_any_element()
+}
+
+fn render_interface_tab<F>(state: &SettingsModalState, on_action: F) -> AnyElement
+where
+    F: Fn(SettingsAction, &mut Window, &mut App) + Clone + 'static,
+{
+    div()
+        .flex()
+        .flex_col()
+        .child(
+            div()
+                .pb_2p5()
+                .border_b_1()
+                .border_color(graphite_border())
+                .flex()
+                .flex_col()
+                .gap_2p5()
+                .child(toggle_row(
+                    "ui-click-insp",
+                    "Open Byte-Map Inspector on Click",
+                    "Automatically expand the bottom inspector when selecting a download row.",
+                    state.draft.ui_click_row_opens_inspector,
+                    SettingsAction::ToggleClickOpensInspector,
+                    on_action.clone(),
+                ))
+                .child(toggle_row(
+                    "ui-add-paused",
+                    "Show \"Add Paused\" in Pre-Flight",
+                    "Include the Add Paused button alongside Download Now.",
+                    state.draft.ui_show_add_paused,
+                    SettingsAction::ToggleShowAddPaused,
+                    on_action.clone(),
+                )),
+        )
+        .child(setting_row(
+            "Interface Scale",
+            "Adjust overall text and control sizing.",
+            segmented_track()
+                .child(choice_btn(
+                    "zoom-90",
+                    "90%",
+                    state.draft.ui_zoom_percent == 90,
+                    SettingsAction::SetZoom(90),
+                    on_action.clone(),
+                ))
+                .child(choice_btn(
+                    "zoom-100",
+                    "100%",
+                    state.draft.ui_zoom_percent == 100,
+                    SettingsAction::SetZoom(100),
+                    on_action.clone(),
+                ))
+                .child(choice_btn(
+                    "zoom-110",
+                    "110%",
+                    state.draft.ui_zoom_percent == 110,
+                    SettingsAction::SetZoom(110),
+                    on_action.clone(),
+                ))
+                .child(choice_btn(
+                    "zoom-125",
+                    "125%",
+                    state.draft.ui_zoom_percent == 125,
+                    SettingsAction::SetZoom(125),
+                    on_action.clone(),
+                )),
+        ))
+        .child(
+            div()
+                .pt_3()
+                .border_t_1()
+                .border_color(graphite_border())
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(section_heading("Appearance Theme"))
+                .child(
+                    div()
+                        .text_size(TYPE_MICRO)
+                        .text_color(silver_muted())
+                        .child("Select a color theme (previews immediately; Cancel reverts)."),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap_2()
+                        .children(BUILTIN_THEMES.iter().map(|palette| {
+                            let is_selected = state.draft.ui_theme == palette.id
+                                || (find_theme(&state.draft.ui_theme).id == palette.id
+                                    && state.draft.ui_theme.is_empty());
+                            let theme_id = palette.id.to_string();
+                            let act = on_action.clone();
+                            let tone_label = match palette.tone {
+                                PaletteTone::Dark => "DARK",
+                                PaletteTone::Light => "LIGHT",
+                            };
+                            div()
+                                .id(SharedString::from(format!("theme-{}", palette.id)))
+                                .w(px(236.0))
+                                .px_3()
+                                .py_2()
+                                .rounded(px(4.0))
+                                .cursor_pointer()
+                                .bg(if is_selected {
+                                    paper_selected()
+                                } else {
+                                    graphite_elevated()
+                                })
+                                .border_1()
+                                .border_color(if is_selected {
+                                    selenium_amber()
+                                } else {
+                                    graphite_border()
+                                })
+                                .hover(|s| s.bg(paper_hover()))
+                                .on_click(move |_, window, cx| {
+                                    act(SettingsAction::SetTheme(theme_id.clone()), window, cx);
+                                })
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .justify_between()
+                                        .gap_2()
+                                        .child(
+                                            div()
+                                                .text_size(TYPE_BODY)
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .text_color(silver_text())
+                                                .child(palette.name),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .items_center()
+                                                .gap_1()
+                                                .child(swatch_dot(palette.graphite_bg))
+                                                .child(swatch_dot(palette.paper_bg))
+                                                .child(swatch_dot(palette.accent))
+                                                .child(
+                                                    div()
+                                                        .ml_1()
+                                                        .font_family(MONO_FONT)
+                                                        .text_size(TYPE_HEADER)
+                                                        .text_color(silver_muted())
+                                                        .child(tone_label),
+                                                ),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(TYPE_MICRO)
+                                        .text_color(silver_muted())
+                                        .truncate()
+                                        .child(palette.description),
+                                )
+                        })),
+                ),
+        )
+        .into_any_element()
+}
+
+fn render_reset_tab<F>(on_action: F) -> AnyElement
+where
+    F: Fn(SettingsAction, &mut Window, &mut App) + 'static,
+{
+    div()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .child(
+            div()
+                .p_3p5()
+                .bg(graphite_elevated())
+                .border_1()
+                .border_color(graphite_border())
+                .rounded(px(4.0))
+                .text_xs()
+                .line_height(px(18.0))
+                .text_color(silver_muted())
+                .child("Restores save folder, collision and removal rules, proxy, speed limit, notifications, post-download command, and interface scale to factory defaults. Downloads in your Queue are kept untouched."),
+        )
+        .child(
+            div().flex().child(
+                Button::new("settings-reset-defaults")
+                    .small()
+                    .danger()
+                    .icon(IconName::RotateCcw)
+                    .label("Restore Default Settings")
+                    .on_click(move |_, window, cx| {
+                        on_action(SettingsAction::ResetToDefaults, window, cx);
+                    }),
+            ),
+        )
+        .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SettingsDraft;
+    use posthaze_engine::{ProxyMode, Settings};
+
+    #[test]
+    fn settings_draft_round_trips_and_delegates_validation() {
+        let defaults = Settings::default();
+        let mut draft = SettingsDraft::from_settings(&defaults);
+        draft.workers = "16".to_string();
+        draft.concurrent = "4".to_string();
+        draft.cmd_args = "   ".to_string();
+        let parsed = draft.into_settings().expect("valid draft");
+        assert_eq!(parsed.max_workers, 16);
+        assert_eq!(parsed.max_concurrent_downloads, 4);
+        assert_eq!(parsed.completion_cmd_args, "%path%");
+
+        let mut bad_workers = SettingsDraft::from_settings(&defaults);
+        bad_workers.workers = "33".to_string();
+        assert!(bad_workers.into_settings().is_err());
+
+        let mut bad_concurrent = SettingsDraft::from_settings(&defaults);
+        bad_concurrent.concurrent = "0".to_string();
+        assert!(bad_concurrent.into_settings().is_err());
+
+        let mut bad_proxy = SettingsDraft::from_settings(&defaults);
+        bad_proxy.proxy_mode = ProxyMode::Manual;
+        bad_proxy.proxy_url = "   ".to_string();
+        assert!(bad_proxy.into_settings().is_err());
+
+        let mut bad_cmd = SettingsDraft::from_settings(&defaults);
+        bad_cmd.completion_cmd_enabled = true;
+        bad_cmd.cmd_path = "".to_string();
+        assert!(bad_cmd.into_settings().is_err());
+
+        let mut bad_dir = SettingsDraft::from_settings(&defaults);
+        bad_dir.dir = "   ".to_string();
+        assert!(bad_dir.into_settings().is_err());
+
+        let mut bad_retry = SettingsDraft::from_settings(&defaults);
+        bad_retry.auto_retry = "11".to_string();
+        assert!(bad_retry.into_settings().is_err());
+
+        let mut bad_speed = SettingsDraft::from_settings(&defaults);
+        bad_speed.speed_limit = "abc".to_string();
+        assert!(bad_speed.into_settings().is_err());
+    }
 }
