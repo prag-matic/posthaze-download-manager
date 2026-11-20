@@ -41,66 +41,52 @@ impl PosthazeApp {
                     .w_full()
                     .flex()
                     .items_center()
-                    .pl_4()
                     .pr(px(20.0))
                     .bg(paper_bg())
                     .border_b_1()
                     .border_color(paper_border())
-                    // STATE-aligned ADD URL button cell (in front of the URL field)
+                    // STATE-aligned ADD URL button cell (fills full cell width & height)
                     .child(
                         div()
-                            .w(px(COL_STATE))
+                            .id("add-url-btn")
+                            .w(px(16.0 + COL_STATE))
                             .flex_shrink_0()
                             .h_full()
-                            .pr_2()
                             .border_r_1()
                             .border_color(paper_border())
+                            .bg(table_header_bg())
+                            .hover(|s| {
+                                s.bg(selenium_amber())
+                                    .text_color(rgb(active_theme().accent_foreground))
+                            })
+                            .cursor_pointer()
                             .flex()
                             .items_center()
-                            .child(
-                                div()
-                                    .id("add-url-btn")
-                                    .w_full()
-                                    .h(px(26.0))
-                                    .px_2()
-                                    .rounded(px(2.0))
-                                    .bg(graphite_elevated())
-                                    .border_1()
-                                    .border_color(paper_border())
-                                    .hover(|s| s.bg(paper_hover()).border_color(selenium_amber()))
-                                    .cursor_pointer()
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .gap_1p5()
-                                    .font_family(MONO_FONT)
-                                    .text_size(TYPE_MICRO)
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(carbon_text())
-                                    .tooltip(|window, cx| {
-                                        Tooltip::new("Probe entered URL, or Paste & Probe from clipboard")
-                                            .build(window, cx)
-                                    })
-                                    .on_click(cx.listener(|app, _, window, cx| {
-                                        let has_text = !app
-                                            .url_input
-                                            .read(cx)
-                                            .value()
-                                            .trim()
-                                            .is_empty();
-                                        if has_text {
-                                            app.submit_url_from_input(window, cx);
-                                        } else {
-                                            app.paste_and_probe_from_clipboard(window, cx);
-                                        }
-                                    }))
-                                    .child(
-                                        Icon::new(IconName::Plus)
-                                            .size(px(12.0))
-                                            .text_color(selenium_amber()),
-                                    )
-                                    .child("ADD URL"),
-                            ),
+                            .justify_center()
+                            .gap_1p5()
+                            .font_family(MONO_FONT)
+                            .text_size(TYPE_MICRO)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(carbon_text())
+                            .tooltip(|window, cx| {
+                                Tooltip::new("Probe entered URL, or Paste & Probe from clipboard")
+                                    .build(window, cx)
+                            })
+                            .on_click(cx.listener(|app, _, window, cx| {
+                                let has_text = !app
+                                    .url_input
+                                    .read(cx)
+                                    .value()
+                                    .trim()
+                                    .is_empty();
+                                if has_text {
+                                    app.submit_url_from_input(window, cx);
+                                } else {
+                                    app.paste_and_probe_from_clipboard(window, cx);
+                                }
+                            }))
+                            .child(Icon::new(IconName::Plus).size(px(12.0)))
+                            .child("ADD URL"),
                     )
                     // FILENAME-aligned URL intake cell
                     .child(
