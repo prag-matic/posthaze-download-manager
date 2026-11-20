@@ -45,7 +45,7 @@ impl PreflightWindow {
         cascade_idx: usize,
         cx: &mut App,
     ) {
-        let mut bounds = Bounds::centered(None, size(px(460.0), px(252.0)), cx);
+        let mut bounds = Bounds::centered(None, size(px(460.0), px(226.0)), cx);
         let cascade = ((cascade_idx % 6) as f32) * 28.0;
         bounds.origin.x += px(cascade);
         bounds.origin.y += px(cascade);
@@ -55,7 +55,7 @@ impl PreflightWindow {
             focus: true,
             show: true,
             kind: WindowKind::Normal,
-            window_min_size: Some(size(px(420.0), px(230.0))),
+            window_min_size: Some(size(px(420.0), px(210.0))),
             ..TitleBar::window_options()
         };
 
@@ -432,7 +432,28 @@ impl PreflightWindow {
         }
     }
 
-    fn render_titlebar(&self) -> impl IntoElement {
+    fn select_tab(&mut self, tab: PreflightTab, window: &mut Window, cx: &mut Context<Self>) {
+        if let PreflightModalState::Resolved { active_tab, .. } = &mut self.state
+            && *active_tab != tab
+        {
+            *active_tab = tab;
+            let target_h = match tab {
+                PreflightTab::General => 226.0,
+                PreflightTab::Options => 372.0,
+            };
+            window.resize(size(px(460.0), px(target_h)));
+            cx.notify();
+        }
+    }
+
+    fn render_titlebar(&self, cx: &Context<Self>) -> impl IntoElement {
+        let active_tab = match &self.state {
+            PreflightModalState::Resolved { active_tab, .. } => Some(*active_tab),
+            _ => None,
+        };
+        let e_add = cx.entity().clone();
+        let e_opts = cx.entity().clone();
+
         TitleBar::new()
             .bg(graphite_bg())
             .border_color(graphite_border())
@@ -466,19 +487,85 @@ impl PreflightWindow {
                                     .child("POSTHAZE"),
                             ),
                     )
-                    .child(
-                        div()
-                            .h_full()
-                            .px_2p5()
-                            .border_r_1()
-                            .border_color(graphite_border())
-                            .flex()
-                            .items_center()
-                            .font_family(MONO_FONT)
-                            .text_size(TYPE_HEADER)
-                            .text_color(silver_muted())
-                            .child("ADD DOWNLOAD"),
-                    ),
+                    .when_some(active_tab, |el, tab| {
+                        el.child(
+                            div()
+                                .id("pf-tb-add")
+                                .h_full()
+                                .px_2p5()
+                                .border_r_1()
+                                .border_color(graphite_border())
+                                .flex()
+                                .items_center()
+                                .font_family(MONO_FONT)
+                                .text_size(TYPE_HEADER)
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .cursor_pointer()
+                                .when(tab == PreflightTab::General, |el| {
+                                    el.bg(graphite_elevated())
+                                        .text_color(silver_text())
+                                        .border_b_2()
+                                        .border_color(selenium_amber())
+                                })
+                                .when(tab != PreflightTab::General, |el| {
+                                    el.text_color(silver_muted())
+                                        .hover(|s| s.bg(graphite_elevated()).text_color(silver_text()))
+                                })
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                .on_click(move |_, window, cx| {
+                                    e_add.update(cx, |win, cx| {
+                                        win.select_tab(PreflightTab::General, window, cx);
+                                    });
+                                })
+                                .child("ADD DOWNLOAD"),
+                        )
+                        .child(
+                            div()
+                                .id("pf-tb-options")
+                                .h_full()
+                                .px_2p5()
+                                .border_r_1()
+                                .border_color(graphite_border())
+                                .flex()
+                                .items_center()
+                                .font_family(MONO_FONT)
+                                .text_size(TYPE_HEADER)
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .cursor_pointer()
+                                .when(tab == PreflightTab::Options, |el| {
+                                    el.bg(graphite_elevated())
+                                        .text_color(silver_text())
+                                        .border_b_2()
+                                        .border_color(selenium_amber())
+                                })
+                                .when(tab != PreflightTab::Options, |el| {
+                                    el.text_color(silver_muted())
+                                        .hover(|s| s.bg(graphite_elevated()).text_color(silver_text()))
+                                })
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                .on_click(move |_, window, cx| {
+                                    e_opts.update(cx, |win, cx| {
+                                        win.select_tab(PreflightTab::Options, window, cx);
+                                    });
+                                })
+                                .child("OPTIONS"),
+                        )
+                    })
+                    .when(active_tab.is_none(), |el| {
+                        el.child(
+                            div()
+                                .h_full()
+                                .px_2p5()
+                                .border_r_1()
+                                .border_color(graphite_border())
+                                .flex()
+                                .items_center()
+                                .font_family(MONO_FONT)
+                                .text_size(TYPE_HEADER)
+                                .text_color(silver_muted())
+                                .child("ADD DOWNLOAD"),
+                        )
+                    }),
             )
     }
 }
@@ -490,7 +577,6 @@ impl Render for PreflightWindow {
         let entity_delta = cx.entity().clone();
         let entity_confirm = cx.entity().clone();
         let entity_edit = cx.entity().clone();
-        let entity_tab = cx.entity().clone();
         let entity_browse_dir = cx.entity().clone();
         let entity_ext_lock = cx.entity().clone();
 
@@ -534,21 +620,6 @@ impl Render for PreflightWindow {
                     });
                 });
                 window.remove_window();
-            },
-            move |tab, window, cx| {
-                entity_tab.update(cx, |win, cx| {
-                    if let PreflightModalState::Resolved { active_tab, .. } = &mut win.state {
-                        if *active_tab != tab {
-                            *active_tab = tab;
-                            let target_h = match tab {
-                                PreflightTab::General => 252.0,
-                                PreflightTab::Options => 398.0,
-                            };
-                            window.resize(size(px(460.0), px(target_h)));
-                            cx.notify();
-                        }
-                    }
-                });
             },
             move |window, cx| {
                 entity_browse_dir.update(cx, |win, cx| {
@@ -617,7 +688,7 @@ impl Render for PreflightWindow {
                     }
                 }
             }))
-            .child(self.render_titlebar())
+            .child(self.render_titlebar(cx))
             .child(card)
             .when_some(overwrite_overlay, |el, overlay| el.child(overlay))
     }

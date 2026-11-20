@@ -100,7 +100,7 @@ pub(crate) enum FileOpModalState {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn render_preflight_card<F1, F2, F3, F4, F5, F6, F7, F8>(
+pub(crate) fn render_preflight_card<F1, F2, F3, F4, F5, F6, F7>(
     state: &PreflightModalState,
     show_add_paused: bool,
     on_close: F1,
@@ -108,9 +108,8 @@ pub(crate) fn render_preflight_card<F1, F2, F3, F4, F5, F6, F7, F8>(
     on_worker_delta: F3,
     on_confirm: F4,
     on_edit_url: F5,
-    on_select_tab: F6,
-    on_browse_dir: F7,
-    on_toggle_ext_lock: F8,
+    on_browse_dir: F6,
+    on_toggle_ext_lock: F7,
 ) -> AnyElement
 where
     F1: Fn(&mut Window, &mut App) + Clone + 'static,
@@ -118,9 +117,8 @@ where
     F3: Fn(isize, &mut Window, &mut App) + Clone + 'static,
     F4: Fn(bool, &mut Window, &mut App) + Clone + 'static,
     F5: Fn(String, &mut Window, &mut App) + 'static,
-    F6: Fn(PreflightTab, &mut Window, &mut App) + Clone + 'static,
+    F6: Fn(&mut Window, &mut App) + 'static,
     F7: Fn(&mut Window, &mut App) + 'static,
-    F8: Fn(&mut Window, &mut App) + 'static,
 {
     match state {
         PreflightModalState::Probing { url, headers } => div()
@@ -393,15 +391,7 @@ where
             };
             let confirm_now = on_confirm.clone();
             let confirm_queue = on_confirm;
-            let tab_general = on_select_tab.clone();
-            let tab_options = on_select_tab;
-            let header_count = headers.len();
             let header_summary = (!headers.is_empty()).then(|| mask_header_summary(headers));
-            let options_label = if header_count > 0 {
-                format!("OPTIONS · {segment_count}W · cURL")
-            } else {
-                format!("OPTIONS · {segment_count}W")
-            };
             let ext_is_locked = *extension_locked;
             let ext_has_value = locked_extension.is_some();
             let ext_badge_label = if ext_is_locked {
@@ -469,78 +459,6 @@ where
                         .text_color(silver_muted())
                         .truncate()
                         .child(info.final_url.clone()),
-                )
-                .child(
-                    div()
-                        .w_full()
-                        .h(px(26.0))
-                        .bg(graphite_bg())
-                        .border_1()
-                        .border_color(graphite_border())
-                        .flex()
-                        .items_stretch()
-                        .child(
-                            div()
-                                .id("pf-tab-general")
-                                .flex_1()
-                                .h_full()
-                                .px_2()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .font_family(MONO_FONT)
-                                .text_size(TYPE_MICRO)
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .cursor_pointer()
-                                .when(*active_tab == PreflightTab::General, |el| {
-                                    el.bg(graphite_elevated())
-                                        .text_color(silver_text())
-                                        .border_b_2()
-                                        .border_color(selenium_amber())
-                                })
-                                .when(*active_tab != PreflightTab::General, |el| {
-                                    el.text_color(silver_muted())
-                                        .hover(|s| s.bg(graphite_elevated()).text_color(silver_text()))
-                                })
-                                .on_click(move |_, window, cx| {
-                                    tab_general(PreflightTab::General, window, cx);
-                                })
-                                .child("GENERAL"),
-                        )
-                        .child(
-                            div()
-                                .id("pf-tab-options")
-                                .flex_1()
-                                .h_full()
-                                .px_2()
-                                .border_l_1()
-                                .border_color(graphite_border())
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .font_family(MONO_FONT)
-                                .text_size(TYPE_MICRO)
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .cursor_pointer()
-                                .when(*active_tab == PreflightTab::Options, |el| {
-                                    el.bg(graphite_elevated())
-                                        .text_color(silver_text())
-                                        .border_b_2()
-                                        .border_color(selenium_amber())
-                                })
-                                .when(*active_tab != PreflightTab::Options, |el| {
-                                    el.text_color(if header_count > 0 {
-                                        selenium_amber()
-                                    } else {
-                                        silver_muted()
-                                    })
-                                    .hover(|s| s.bg(graphite_elevated()).text_color(silver_text()))
-                                })
-                                .on_click(move |_, window, cx| {
-                                    tab_options(PreflightTab::Options, window, cx);
-                                })
-                                .child(options_label),
-                        ),
                 )
                 .when(*active_tab == PreflightTab::General, |el| {
                     el.child(compact_input_row_with_action(
