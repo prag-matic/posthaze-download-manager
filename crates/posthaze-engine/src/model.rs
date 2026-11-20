@@ -509,25 +509,61 @@ impl Settings {
     }
 }
 
-/// Returns the default SQLite state database path (`%LOCALAPPDATA%\posthaze\state.db`).
-pub fn default_db_path() -> PathBuf {
-    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA")
-        && !local_app_data.is_empty()
+/// Marker filename beside the executable that enables self-contained portable data storage.
+pub const PORTABLE_MARKER_FILE: &str = "posthaze.portable";
+
+/// Resolves Posthaze's persistent data directory given optional executable directory and
+/// `LOCALAPPDATA` / `HOME` environment values.
+///
+/// When [`PORTABLE_MARKER_FILE`] exists in `exe_dir`, returns `exe_dir/data`. Otherwise falls back
+/// to `LOCALAPPDATA/posthaze`, `HOME/.local/share/posthaze`, or `.` when neither is set.
+pub fn resolve_data_dir(
+    exe_dir: Option<&Path>,
+    local_app_data: Option<&std::ffi::OsStr>,
+    home: Option<&std::ffi::OsStr>,
+) -> PathBuf {
+    if let Some(dir) = exe_dir
+        && dir.join(PORTABLE_MARKER_FILE).is_file()
     {
-        return PathBuf::from(local_app_data)
-            .join("posthaze")
-            .join("state.db");
+        return dir.join("data");
     }
-    if let Some(home) = std::env::var_os("HOME")
-        && !home.is_empty()
+    if let Some(local) = local_app_data
+        && !local.is_empty()
     {
-        return PathBuf::from(home)
+        return PathBuf::from(local).join("posthaze");
+    }
+    if let Some(home_dir) = home
+        && !home_dir.is_empty()
+    {
+        return PathBuf::from(home_dir)
             .join(".local")
             .join("share")
-            .join("posthaze")
-            .join("state.db");
+            .join("posthaze");
     }
-    PathBuf::from("posthaze-state.db")
+    PathBuf::from(".")
+}
+
+/// Returns the active Posthaze data directory (portable `./data` or `%LOCALAPPDATA%\posthaze`).
+pub fn default_data_dir() -> PathBuf {
+    let exe_path = std::env::current_exe().ok();
+    let exe_dir = exe_path.as_deref().and_then(Path::parent);
+    let local_app_data = std::env::var_os("LOCALAPPDATA");
+    let home = std::env::var_os("HOME");
+    resolve_data_dir(exe_dir, local_app_data.as_deref(), home.as_deref())
+}
+
+/// Returns the default diagnostic logs directory (`<data_dir>\logs`).
+pub fn default_logs_dir() -> PathBuf {
+    default_data_dir().join("logs")
+}
+
+/// Returns the default SQLite state database path (`<data_dir>\state.db`).
+pub fn default_db_path() -> PathBuf {
+    let data_dir = default_data_dir();
+    if data_dir == Path::new(".") {
+        return PathBuf::from("posthaze-state.db");
+    }
+    data_dir.join("state.db")
 }
 
 /// Result of resolving a target file path under a [`CollisionPolicy`].
@@ -870,5 +906,45 @@ mod tests {
             FailureKind::Resumable
         );
         assert!(default_db_path().ends_with("state.db") || default_db_path().ends_with("posthaze-state.db"));
+    }
+
+    #[test]
+    fn resolve_data_dir_switches_between_portable_and_standard_paths() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("posthaze-portable-test-{}", uuid::Uuid::new_v4()));
+        let exe_dir = temp_dir.join("bin");
+        let local_app_data = temp_dir.join("LocalAppData");
+        let home = temp_dir.join("Home");
+        std::fs::create_dir_all(&exe_dir).unwrap();
+
+        // Without marker file -> uses LocalAppData/posthaze.
+        let standard = resolve_data_dir(
+            Some(&exe_dir),
+            Some(local_app_data.as_os_str()),
+            Some(home.as_os_str()),
+        );
+        assert_eq!(standard, local_app_data.join("posthaze"));
+        assert_eq!(standard.join("state.db"), local_app_data.join("posthaze").join("state.db"));
+        assert_eq!(standard.join("logs"), local_app_data.join("posthaze").join("logs"));
+
+        // Without LocalAppData -> falls back to Home/.local/share/posthaze.
+        let home_fallback = resolve_data_dir(Some(&exe_dir), None, Some(home.as_os_str()));
+        assert_eq!(
+            home_fallback,
+            home.join(".local").join("share").join("posthaze")
+        );
+
+        // With posthaze.portable marker beside executable -> uses exe_dir/data.
+        std::fs::write(exe_dir.join(PORTABLE_MARKER_FILE), b"").unwrap();
+        let portable = resolve_data_dir(
+            Some(&exe_dir),
+            Some(local_app_data.as_os_str()),
+            Some(home.as_os_str()),
+        );
+        assert_eq!(portable, exe_dir.join("data"));
+        assert_eq!(portable.join("state.db"), exe_dir.join("data").join("state.db"));
+        assert_eq!(portable.join("logs"), exe_dir.join("data").join("logs"));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

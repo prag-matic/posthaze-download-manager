@@ -8,6 +8,7 @@ A Windows-native, multi-connection HTTP/HTTPS download manager built with a deco
 - [Comprehensive Settings, Custom Headers & Context Menu](docs/settings-and-context-menu.md) — 7-tab Settings, proxy/throttling, Paste as cURL, notifications/hooks, and row context menu
 - [Table-Grid Cell UI System & Interface Customization](docs/table-grid-ui-and-customization.md) — `grid_cells.rs` primitives, scrubber minimap, multi-select, density/columns, and accent overrides
 - [Independent Pre-Flight Window, Folder Picker & Extension Lock](docs/preflight-window-and-pickers.md) — Standalone `PreflightWindow`, `ADD DOWNLOAD` / `OPTIONS` titlebar tabs, native folder picker, and extension lock
+- [Release Packaging & Portable Mode](docs/release-packaging-and-portable-mode.md) — Release profile, console-free Windows GUI subsystem, and `posthaze.portable` data routing
 - [Creating Themes for Posthaze](docs/creating-themes.md) — 5 built-in themes, `ThemePalette` token reference, and guide to adding new themes
 - [Milestone 03 — Queue, Settings, Telemetry & GPUI Desktop UI](docs/milestone-03-desktop-ui.md) — FIFO `Queue`, `Settings`, `probe()`, `EngineEvent`s, and `posthaze-ui`
 - [Milestone 02 — Persistence, Pause/Resume, and Crash Recovery](docs/milestone-02-persistence.md) — SQLite store, `Checkpoint`s, `Validator`s, and CLI persistence commands

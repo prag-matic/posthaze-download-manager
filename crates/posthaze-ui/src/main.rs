@@ -1,5 +1,7 @@
 //! Posthaze Download Manager desktop UI powered by GPUI and GPUI Kit.
 
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod assets;
 mod bridge;
 mod context_menu;
