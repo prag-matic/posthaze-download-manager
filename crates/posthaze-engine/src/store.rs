@@ -16,7 +16,7 @@ use crate::model::{PlannedSegment, SegmentCheckpoint};
 use crate::probe::ProbeResult;
 use crate::{
     CollisionPolicy, DeleteDefaultAction, DownloadId, DownloadRequest, DownloadState, EngineError,
-    ProxyMode, Settings,
+    FailureKind, ProxyMode, Settings,
 };
 
 const DOWNLOAD_SELECT_COLUMNS: &str = "
@@ -65,6 +65,23 @@ pub struct DownloadRecord {
     pub created_at: i64,
     /// Unix timestamp (seconds) when the record was last updated.
     pub updated_at: i64,
+}
+
+impl DownloadRecord {
+    /// Classifies a persisted `Failed` `Download`'s error message into a [`FailureKind`].
+    pub fn failure_kind(&self) -> Option<FailureKind> {
+        if self.state != DownloadState::Failed {
+            return None;
+        }
+        let msg = self.error_message.as_deref()?;
+        if msg.contains("remote resource changed") {
+            Some(FailureKind::ResourceChanged)
+        } else if msg.contains("invalid download state") {
+            Some(FailureKind::NonResumable)
+        } else {
+            Some(FailureKind::Resumable)
+        }
+    }
 }
 
 /// SQLite-backed persistence store for `Download`s and `Segment`s.

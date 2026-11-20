@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use gpui_kit::assets::IconName;
 use posthaze_engine::{
-    DownloadId, DownloadRecord, DownloadState, ProgressSnapshot, SegmentProgress,
+    DownloadId, DownloadRecord, DownloadState, FailureKind, ProgressSnapshot, SegmentProgress,
 };
 #[cfg(test)]
 use posthaze_engine::Settings;
@@ -233,10 +233,7 @@ impl DownloadRowView {
 
         let filename = derive_display_filename(record);
         let is_resource_changed = state == DownloadState::Failed
-            && record
-                .error_message
-                .as_deref()
-                .is_some_and(|msg| msg.contains("remote resource changed"));
+            && record.failure_kind() == Some(FailureKind::ResourceChanged);
 
         Self {
             id: record.id.clone(),

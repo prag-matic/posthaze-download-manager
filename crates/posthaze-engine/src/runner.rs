@@ -10,7 +10,7 @@ use tokio::sync::{Mutex, broadcast, mpsc, watch};
 
 use crate::model::{
     DownloadId, DownloadOutcome, DownloadRequest, DownloadState, EngineError, EngineEvent,
-    PlannedSegment, ProgressSnapshot, SegmentCheckpoint, SegmentProgress,
+    FailureKind, PlannedSegment, ProgressSnapshot, SegmentCheckpoint, SegmentProgress,
 };
 use crate::probe::{ProbeResult, probe_url_with_headers};
 use crate::queue::QueueCoordinator;
@@ -125,6 +125,7 @@ pub(crate) async fn spawn_queued_download(
         id: id.clone(),
         state: DownloadState::Queued,
         error: None,
+        failure_kind: None,
     });
     let _ = ctx.event_tx.send(EngineEvent::QueueUpdated);
 
@@ -313,7 +314,7 @@ async fn execute_download(
     let downloaded = Arc::new(AtomicU64::new(initial_bytes));
     let active_workers = Arc::new(AtomicUsize::new(0));
 
-    sink.emit_state(DownloadState::Active, None);
+    sink.emit_state(DownloadState::Active, None, None);
     sink.send(ProgressSnapshot::status(
         DownloadState::Active,
         initial_bytes,
@@ -568,11 +569,17 @@ impl ProgressSink {
         });
     }
 
-    fn emit_state(&self, state: DownloadState, error: Option<String>) {
+    fn emit_state(
+        &self,
+        state: DownloadState,
+        error: Option<String>,
+        failure_kind: Option<FailureKind>,
+    ) {
         let _ = self.event_tx.send(EngineEvent::StateChanged {
             id: self.id.clone(),
             state,
             error,
+            failure_kind,
         });
     }
 }
@@ -586,10 +593,11 @@ async fn fail_download(
     err: EngineError,
 ) -> EngineError {
     let err_msg = err.to_string();
+    let kind = err.failure_kind();
     if let Some(store) = store {
         let _ = store.mark_failed(id, bytes, &err_msg).await;
     }
-    sink.emit_state(DownloadState::Failed, Some(err_msg));
+    sink.emit_state(DownloadState::Failed, Some(err_msg), Some(kind));
     emit_failed(sink, bytes, total);
     err
 }
@@ -608,7 +616,7 @@ async fn cancel_download(
     if let Some(store) = store {
         let _ = store.mark_cancelled(id).await;
     }
-    sink.emit_state(DownloadState::Cancelled, None);
+    sink.emit_state(DownloadState::Cancelled, None, None);
     sink.send(ProgressSnapshot::status(
         DownloadState::Cancelled,
         bytes,
@@ -635,7 +643,7 @@ async fn probe_with_control(
     {
         return Err(fail_download(&None, sink, id, initial_bytes, initial_total, err).await);
     }
-    sink.emit_state(DownloadState::Probing, None);
+    sink.emit_state(DownloadState::Probing, None, None);
     sink.send(ProgressSnapshot::status(
         DownloadState::Probing,
         initial_bytes,
@@ -662,7 +670,7 @@ async fn probe_with_control(
                         if let Some(store) = store {
                             let _ = store.set_state(id, prev).await;
                         }
-                        sink.emit_state(prev, None);
+                        sink.emit_state(prev, None, None);
                         sink.send(ProgressSnapshot::status(prev, initial_bytes, initial_total, 0));
                         Err(EngineError::Paused)
                     } else {
@@ -796,7 +804,7 @@ async fn finalize_transfer(
                     } else {
                         bytes
                     };
-                    sink.emit_state(DownloadState::Paused, None);
+                    sink.emit_state(DownloadState::Paused, None, None);
                     sink.send(ProgressSnapshot::status(
                         DownloadState::Paused,
                         persisted_bytes,
@@ -837,14 +845,16 @@ async fn finalize_transfer(
                         {
                             acked_bytes = persisted;
                         }
-                        sink.emit_state(DownloadState::Failed, Some(err.to_string()));
+                        let kind = err.failure_kind();
+                        sink.emit_state(DownloadState::Failed, Some(err.to_string()), Some(kind));
                         emit_failed(sink, acked_bytes, probe.content_length);
                         return Err(err);
                     }
                     if let Some(store) = store {
                         let _ = store.mark_failed(id, bytes, &err.to_string()).await;
                     }
-                    sink.emit_state(DownloadState::Failed, Some(err.to_string()));
+                    let kind = err.failure_kind();
+                    sink.emit_state(DownloadState::Failed, Some(err.to_string()), Some(kind));
                     emit_failed(sink, bytes, probe.content_length);
                     return Err(err);
                 }
@@ -888,7 +898,7 @@ async fn finalize_transfer(
     let transfer_duration = transfer_start.elapsed();
     let total_duration = total_start.elapsed();
 
-    sink.emit_state(DownloadState::Completed, None);
+    sink.emit_state(DownloadState::Completed, None, None);
     sink.send(ProgressSnapshot::status(
         DownloadState::Completed,
         res.bytes_written,
@@ -1017,7 +1027,7 @@ async fn finalize_queued_interruption(
             if let Some(store) = store {
                 let _ = store.set_state(id, DownloadState::Paused).await;
             }
-            sink.emit_state(DownloadState::Paused, None);
+            sink.emit_state(DownloadState::Paused, None, None);
             sink.send(ProgressSnapshot::status(
                 DownloadState::Paused,
                 bytes_downloaded,

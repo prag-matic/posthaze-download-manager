@@ -28,11 +28,12 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use posthaze_engine::{
     CollisionPolicy, DeleteDefaultAction, DownloadId, DownloadRecord, DownloadRequest,
-    DownloadState, EngineEvent, ProgressSnapshot, SegmentProgress, Settings, categorize_subfolder,
+    DownloadState, EngineEvent, FailureKind, ProgressSnapshot, SegmentProgress, Settings,
+    categorize_subfolder, default_db_path, resolve_target_path,
 };
 
 use crate::assets::{BRAND_LOGO_SVG, PosthazeAssets};
-use crate::bridge::{EngineBridge, default_db_path};
+use crate::bridge::EngineBridge;
 use crate::context_menu::{ContextMenuAction, ContextMenuState, render_context_menu};
 use crate::curl_parser::{find_header_value, parse_url_or_curl, set_or_remove_header};
 use crate::inspector::{InspectorCallbacks, render_inspector};
@@ -41,7 +42,7 @@ use crate::modals::{
     render_file_op_modal, render_preflight_modal,
 };
 use crate::motion::{MotionState, RowMotionSample};
-use crate::platform_hooks::{disambiguate_ui_path, spawn_completion_hook, spawn_windows_toast};
+use crate::platform_hooks::{spawn_completion_hook, spawn_windows_toast};
 use crate::settings_modal::{SettingsAction, SettingsModalState, render_settings_modal};
 use crate::theme::*;
 use crate::view_model::{
@@ -255,7 +256,12 @@ impl PosthazeApp {
                             cx.notify();
                         });
                     }
-                    Ok(EngineEvent::StateChanged { id, state, error }) => {
+                    Ok(EngineEvent::StateChanged {
+                        id,
+                        state,
+                        error: _,
+                        failure_kind,
+                    }) => {
                         let _ = this.update(cx, |app, cx| {
                             let rec = app.records.iter().find(|r| r.id == id).cloned();
                             let total_bytes = rec.as_ref().and_then(|r| r.content_length);
@@ -297,9 +303,8 @@ impl PosthazeApp {
                                     }
                                 }
                             } else if state == DownloadState::Failed {
-                                let is_resource_changed = error
-                                    .as_deref()
-                                    .is_some_and(|e| e.contains("remote resource changed"));
+                                let is_resource_changed =
+                                    failure_kind == Some(FailureKind::ResourceChanged);
                                 let used = app.auto_retries_used.get(&id).copied().unwrap_or(0);
                                 if !is_resource_changed && used < app.settings.auto_retry_count {
                                     app.auto_retries_used.insert(id.clone(), used + 1);
@@ -581,24 +586,12 @@ impl PosthazeApp {
         let mut req = DownloadRequest::new(info.original_url, &out_dir);
         let mut ask_overwrite_name: Option<String> = None;
         if !filename.is_empty() {
-            let target = out_dir.join(&filename);
-            let resolved_target = match self.settings.collision_policy {
-                CollisionPolicy::Overwrite => target,
-                CollisionPolicy::Rename => {
-                    if target.exists() {
-                        disambiguate_ui_path(&out_dir, &filename)
-                    } else {
-                        target
-                    }
-                }
-                CollisionPolicy::Ask => {
-                    if target.exists() {
-                        ask_overwrite_name = Some(filename.clone());
-                    }
-                    target
-                }
-            };
-            req.output_path = Some(resolved_target);
+            let resolution =
+                resolve_target_path(&out_dir, &filename, self.settings.collision_policy);
+            if resolution.needs_overwrite_prompt {
+                ask_overwrite_name = Some(filename.clone());
+            }
+            req.output_path = Some(resolution.path);
         }
         req.max_workers = if info.supports_ranges { workers } else { 1 };
         req.sync_on_complete = self.settings.sync_on_complete;
@@ -1465,10 +1458,8 @@ impl Render for PosthazeApp {
                                 | DownloadState::Probing => app.pause_download(id, cx),
                                 DownloadState::Paused => app.resume_download(id, cx),
                                 DownloadState::Failed => {
-                                    let is_rc = rec
-                                        .error_message
-                                        .as_deref()
-                                        .is_some_and(|m| m.contains("remote resource changed"));
+                                    let is_rc =
+                                        rec.failure_kind() == Some(FailureKind::ResourceChanged);
                                     if is_rc {
                                         app.restart_fresh_download(id, cx);
                                     } else {

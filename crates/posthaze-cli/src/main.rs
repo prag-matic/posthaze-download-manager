@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use clap::{Parser, Subcommand};
 use posthaze_engine::{
     DownloadEngine, DownloadHandle, DownloadId, DownloadOutcome, DownloadRequest, DownloadState,
-    EngineError, ProgressSnapshot,
+    EngineError, ProgressSnapshot, default_db_path,
 };
 use serde::Serialize;
 
@@ -338,26 +338,6 @@ async fn main() -> ExitCode {
             .await
         }
     }
-}
-
-fn default_db_path() -> PathBuf {
-    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA")
-        && !local_app_data.is_empty()
-    {
-        return PathBuf::from(local_app_data)
-            .join("posthaze")
-            .join("state.db");
-    }
-    if let Ok(home) = std::env::var("HOME")
-        && !home.is_empty()
-    {
-        return PathBuf::from(home)
-            .join(".local")
-            .join("share")
-            .join("posthaze")
-            .join("state.db");
-    }
-    PathBuf::from("posthaze-state.db")
 }
 
 async fn run_list(db_path: PathBuf) -> ExitCode {

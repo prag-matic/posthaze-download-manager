@@ -13,7 +13,6 @@ mod transfer;
 pub mod writer;
 
 use std::collections::HashMap;
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -199,6 +198,7 @@ impl DownloadEngine {
             id: id.clone(),
             state: DownloadState::Paused,
             error: None,
+            failure_kind: None,
         });
         let _ = self.event_tx.send(EngineEvent::QueueUpdated);
         Ok(id)
@@ -327,6 +327,7 @@ impl DownloadEngine {
             id: id.clone(),
             state: DownloadState::Cancelled,
             error: None,
+            failure_kind: None,
         });
         let _ = self.event_tx.send(EngineEvent::QueueUpdated);
         Ok(())
@@ -458,16 +459,7 @@ impl DownloadEngine {
 
     /// Validates and persists updated [`Settings`] for this engine.
     pub async fn update_settings(&self, settings: Settings) -> Result<(), EngineError> {
-        if settings.max_workers == 0 {
-            return Err(EngineError::InvalidState(
-                "max_workers must be at least 1".to_string(),
-            ));
-        }
-        if settings.max_concurrent_downloads == 0 {
-            return Err(EngineError::InvalidState(
-                "max_concurrent_downloads must be at least 1".to_string(),
-            ));
-        }
+        settings.validate()?;
         let rebuilt_client = build_http_client(settings.proxy_mode, &settings.proxy_url)?;
         match &self.store {
             Some(store) => store.update_settings(&settings).await?,
@@ -653,39 +645,5 @@ pub(crate) async fn remove_file_if_exists(path: &Path) -> Result<(), EngineError
         Ok(()) => Ok(()),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(EngineError::Io(err)),
-    }
-}
-
-pub(crate) fn make_part_path(final_path: &Path) -> PathBuf {
-    let mut os: OsString = final_path.as_os_str().to_os_string();
-    os.push(".part");
-    PathBuf::from(os)
-}
-
-pub(crate) fn disambiguate_output_path(output_dir: &Path, filename: &str) -> PathBuf {
-    let initial = output_dir.join(filename);
-    if !initial.exists() && !make_part_path(&initial).exists() {
-        return initial;
-    }
-
-    let file_path = Path::new(filename);
-    let stem = file_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .filter(|s| !s.is_empty())
-        .unwrap_or(filename);
-    let ext = file_path.extension().and_then(|e| e.to_str());
-
-    let mut counter: usize = 1;
-    loop {
-        let numbered = match ext {
-            Some(ext) if !ext.is_empty() => format!("{stem} ({counter}).{ext}"),
-            _ => format!("{stem} ({counter})"),
-        };
-        let candidate = output_dir.join(numbered);
-        if !candidate.exists() && !make_part_path(&candidate).exists() {
-            return candidate;
-        }
-        counter += 1;
     }
 }

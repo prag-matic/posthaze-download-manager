@@ -8,19 +8,6 @@ use posthaze_engine::{DownloadEngine, EngineError, EngineEvent};
 use tokio::runtime::{Builder, Runtime};
 use tokio::sync::{broadcast, oneshot};
 
-/// Returns the default SQLite state database path (`%LOCALAPPDATA%\posthaze\state.db`).
-pub fn default_db_path() -> PathBuf {
-    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
-        return PathBuf::from(local_app_data)
-            .join("posthaze")
-            .join("state.db");
-    }
-    if let Some(home) = std::env::var_os("HOME") {
-        return PathBuf::from(home).join(".posthaze").join("state.db");
-    }
-    PathBuf::from("posthaze-state.db")
-}
-
 /// Bridges a background multi-thread Tokio [`DownloadEngine`] into GPUI's async executor.
 #[derive(Clone)]
 pub struct EngineBridge {

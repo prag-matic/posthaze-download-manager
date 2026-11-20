@@ -1,28 +1,6 @@
-//! Platform-specific OS helpers for path disambiguation, Windows notifications, and completion hooks.
+//! Platform-specific OS helpers for Windows notifications and post-completion hooks.
 
-use std::path::{Path, PathBuf};
-
-/// Returns a non-colliding file path in `dir` by appending ` (1)`, ` (2)`, etc. when needed.
-pub(crate) fn disambiguate_ui_path(dir: &Path, filename: &str) -> PathBuf {
-    let candidate = dir.join(filename);
-    if !candidate.exists() {
-        return candidate;
-    }
-    let path = Path::new(filename);
-    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or(filename);
-    let ext = path.extension().and_then(|e| e.to_str());
-    for idx in 1..=1000 {
-        let numbered = match ext {
-            Some(ext) if !ext.is_empty() => format!("{stem} ({idx}).{ext}"),
-            _ => format!("{stem} ({idx})"),
-        };
-        let next = dir.join(numbered);
-        if !next.exists() {
-            return next;
-        }
-    }
-    candidate
-}
+use std::path::Path;
 
 /// Dispatches a non-blocking Windows Toast notification via PowerShell WinRT.
 pub(crate) fn spawn_windows_toast(title: &str, body: &str) {

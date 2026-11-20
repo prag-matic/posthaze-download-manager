@@ -1,5 +1,6 @@
 //! Pure domain types and configuration models for [`DownloadEngine`](crate::DownloadEngine).
 
+use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -153,6 +154,33 @@ pub enum EngineError {
     /// Background `Download` execution failed to join.
     #[error("download task join error: {0}")]
     TaskJoin(String),
+}
+
+/// Classification of a `Failed` `Download` used by callers without matching error text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FailureKind {
+    /// Server `Validator` or `Content-Length` changed since pause; requires starting fresh.
+    ResourceChanged,
+    /// Failure is potentially resumable or retryable.
+    Resumable,
+    /// Failure is not resumable (e.g. invalid state or non-range `Download`).
+    NonResumable,
+}
+
+impl EngineError {
+    /// Classifies this error into a structured [`FailureKind`].
+    pub fn failure_kind(&self) -> FailureKind {
+        match self {
+            Self::ResourceChanged(_) => FailureKind::ResourceChanged,
+            Self::InvalidState(_) => FailureKind::NonResumable,
+            Self::HttpStatus { status, .. }
+                if *status != 408 && *status != 429 && !(500..=599).contains(status) =>
+            {
+                FailureKind::NonResumable
+            }
+            _ => FailureKind::Resumable,
+        }
+    }
 }
 
 /// Request parameters for starting a `Download`.
@@ -388,6 +416,122 @@ impl Default for Settings {
     }
 }
 
+impl Settings {
+    /// Validates engine-level `Settings` invariants before persisting or applying them.
+    pub fn validate(&self) -> Result<(), EngineError> {
+        if self.max_workers == 0 {
+            return Err(EngineError::InvalidState(
+                "max_workers must be at least 1".to_string(),
+            ));
+        }
+        if self.max_concurrent_downloads == 0 {
+            return Err(EngineError::InvalidState(
+                "max_concurrent_downloads must be at least 1".to_string(),
+            ));
+        }
+        if self.proxy_mode == ProxyMode::Manual && self.proxy_url.trim().is_empty() {
+            return Err(EngineError::InvalidState(
+                "manual proxy mode requires a proxy URL".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Returns the default SQLite state database path (`%LOCALAPPDATA%\posthaze\state.db`).
+pub fn default_db_path() -> PathBuf {
+    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA")
+        && !local_app_data.is_empty()
+    {
+        return PathBuf::from(local_app_data)
+            .join("posthaze")
+            .join("state.db");
+    }
+    if let Some(home) = std::env::var_os("HOME")
+        && !home.is_empty()
+    {
+        return PathBuf::from(home)
+            .join(".local")
+            .join("share")
+            .join("posthaze")
+            .join("state.db");
+    }
+    PathBuf::from("posthaze-state.db")
+}
+
+/// Result of resolving a target file path under a [`CollisionPolicy`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TargetPathResolution {
+    /// Resolved destination file path.
+    pub path: PathBuf,
+    /// Whether an existing target or `.part` file requires user confirmation (`CollisionPolicy::Ask`).
+    pub needs_overwrite_prompt: bool,
+}
+
+/// Returns the `.part` sidecar path corresponding to `final_path`.
+pub(crate) fn make_part_path(final_path: &Path) -> PathBuf {
+    let mut os: OsString = final_path.as_os_str().to_os_string();
+    os.push(".part");
+    PathBuf::from(os)
+}
+
+/// Returns a collision-free file path in `output_dir`, checking both target and `.part` paths.
+pub fn disambiguate_output_path(output_dir: &Path, filename: &str) -> PathBuf {
+    let initial = output_dir.join(filename);
+    if !initial.exists() && !make_part_path(&initial).exists() {
+        return initial;
+    }
+
+    let file_path = Path::new(filename);
+    let stem = file_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(filename);
+    let ext = file_path.extension().and_then(|e| e.to_str());
+
+    let mut counter: usize = 1;
+    loop {
+        let numbered = match ext {
+            Some(ext) if !ext.is_empty() => format!("{stem} ({counter}).{ext}"),
+            _ => format!("{stem} ({counter})"),
+        };
+        let candidate = output_dir.join(numbered);
+        if !candidate.exists() && !make_part_path(&candidate).exists() {
+            return candidate;
+        }
+        counter += 1;
+    }
+}
+
+/// Resolves a target path in `output_dir` for `filename` according to `policy`.
+pub fn resolve_target_path(
+    output_dir: &Path,
+    filename: &str,
+    policy: CollisionPolicy,
+) -> TargetPathResolution {
+    let target = output_dir.join(filename);
+    let collides = target.exists() || make_part_path(&target).exists();
+    match policy {
+        CollisionPolicy::Overwrite => TargetPathResolution {
+            path: target,
+            needs_overwrite_prompt: false,
+        },
+        CollisionPolicy::Rename => TargetPathResolution {
+            path: if collides {
+                disambiguate_output_path(output_dir, filename)
+            } else {
+                target
+            },
+            needs_overwrite_prompt: false,
+        },
+        CollisionPolicy::Ask => TargetPathResolution {
+            path: target,
+            needs_overwrite_prompt: collides,
+        },
+    }
+}
+
 fn default_downloads_dir() -> PathBuf {
     if let Some(profile) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
         let downloads = PathBuf::from(&profile).join("Downloads");
@@ -500,6 +644,8 @@ pub enum EngineEvent {
         state: DownloadState,
         /// Optional failure message when `state` is [`DownloadState::Failed`].
         error: Option<String>,
+        /// Structured failure classification when `state` is [`DownloadState::Failed`].
+        failure_kind: Option<FailureKind>,
     },
     /// Periodic or terminal [`ProgressSnapshot`] update for a `Download`.
     ProgressUpdated {
@@ -572,4 +718,86 @@ pub(crate) struct SegmentCheckpoint {
     pub cursor: u64,
     pub end: Option<u64>,
     pub completed: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_validate_rejects_invalid_bounds_and_empty_manual_proxy() {
+        let mut s = Settings::default();
+        assert!(s.validate().is_ok());
+
+        s.max_workers = 0;
+        assert!(matches!(s.validate(), Err(EngineError::InvalidState(_))));
+
+        s.max_workers = 4;
+        s.max_concurrent_downloads = 0;
+        assert!(matches!(s.validate(), Err(EngineError::InvalidState(_))));
+
+        s.max_concurrent_downloads = 2;
+        s.proxy_mode = ProxyMode::Manual;
+        s.proxy_url = "   ".to_string();
+        assert!(matches!(s.validate(), Err(EngineError::InvalidState(_))));
+
+        s.proxy_url = "http://127.0.0.1:8080".to_string();
+        assert!(s.validate().is_ok());
+    }
+
+    #[test]
+    fn resolve_target_path_checks_both_target_and_part_files() {
+        let temp_dir = std::env::temp_dir().join(format!("posthaze_path_test_{}", DownloadId::new()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let part_only = temp_dir.join("archive.zip.part");
+        std::fs::write(&part_only, b"partial").unwrap();
+
+        let renamed = resolve_target_path(&temp_dir, "archive.zip", CollisionPolicy::Rename);
+        assert_eq!(renamed.path, temp_dir.join("archive (1).zip"));
+        assert!(!renamed.needs_overwrite_prompt);
+
+        let asked = resolve_target_path(&temp_dir, "archive.zip", CollisionPolicy::Ask);
+        assert_eq!(asked.path, temp_dir.join("archive.zip"));
+        assert!(asked.needs_overwrite_prompt);
+
+        let overwrite = resolve_target_path(&temp_dir, "archive.zip", CollisionPolicy::Overwrite);
+        assert_eq!(overwrite.path, temp_dir.join("archive.zip"));
+        assert!(!overwrite.needs_overwrite_prompt);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn failure_kind_and_default_db_path_classify_and_resolve_cleanly() {
+        assert_eq!(
+            EngineError::ResourceChanged("etag".to_string()).failure_kind(),
+            FailureKind::ResourceChanged
+        );
+        assert_eq!(
+            EngineError::InvalidState("bad".to_string()).failure_kind(),
+            FailureKind::NonResumable
+        );
+        assert_eq!(
+            EngineError::HttpStatus {
+                status: 404,
+                url: "https://example.com".to_string()
+            }
+            .failure_kind(),
+            FailureKind::NonResumable
+        );
+        assert_eq!(
+            EngineError::HttpStatus {
+                status: 503,
+                url: "https://example.com".to_string()
+            }
+            .failure_kind(),
+            FailureKind::Resumable
+        );
+        assert_eq!(
+            EngineError::Writer("disk".to_string()).failure_kind(),
+            FailureKind::Resumable
+        );
+        assert!(default_db_path().ends_with("state.db") || default_db_path().ends_with("posthaze-state.db"));
+    }
 }
