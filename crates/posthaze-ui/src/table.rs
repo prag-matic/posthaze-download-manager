@@ -373,6 +373,7 @@ impl PosthazeApp {
 
         div()
             .id(SharedString::from(format!("row-{}", row.id.as_str())))
+            .w_full()
             .h(px(38.0))
             .flex()
             .items_center()
