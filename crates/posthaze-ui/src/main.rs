@@ -1779,35 +1779,99 @@ impl Render for PosthazeApp {
 
 impl PosthazeApp {
     fn render_titlebar(&self) -> impl IntoElement {
+        let active_slots = self
+            .queue
+            .records
+            .iter()
+            .filter(|r| matches!(r.state, DownloadState::Active | DownloadState::Probing))
+            .count();
+        let total_speed: u64 = self
+            .queue
+            .records
+            .iter()
+            .filter(|r| r.state == DownloadState::Active)
+            .filter_map(|r| self.queue.live_map.get(&r.id))
+            .map(|s| s.bytes_per_sec)
+            .sum();
+        let total_count = self.queue.records.len();
+
         TitleBar::new()
             .bg(graphite_bg())
             .border_color(graphite_border())
             .child(
                 div()
+                    .h_full()
                     .flex()
                     .items_center()
-                    .gap_2()
-                    .child(
-                        svg()
-                            .path(BRAND_LOGO_SVG)
-                            .w(px(16.0))
-                            .h(px(14.0))
-                            .text_color(selenium_amber()),
-                    )
+                    // Brand cell
                     .child(
                         div()
-                            .font_family(MONO_FONT)
-                            .text_size(TYPE_MICRO)
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(silver_text())
-                            .child("POSTHAZE"),
+                            .h_full()
+                            .pr_3()
+                            .border_r_1()
+                            .border_color(graphite_border())
+                            .bg(graphite_elevated())
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(div().w(px(3.0)).h_full().mr_1().bg(selenium_amber()))
+                            .child(
+                                svg()
+                                    .path(BRAND_LOGO_SVG)
+                                    .w(px(15.0))
+                                    .h(px(13.0))
+                                    .text_color(selenium_amber()),
+                            )
+                            .child(
+                                div()
+                                    .font_family(MONO_FONT)
+                                    .text_size(TYPE_MICRO)
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(silver_text())
+                                    .child("POSTHAZE"),
+                            ),
                     )
+                    // Version cell
                     .child(
                         div()
+                            .h_full()
+                            .px_2p5()
+                            .border_r_1()
+                            .border_color(graphite_border())
+                            .flex()
+                            .items_center()
                             .font_family(MONO_FONT)
                             .text_size(TYPE_HEADER)
                             .text_color(silver_muted())
                             .child("v0.3.0"),
+                    )
+                    // Engine / Queue telemetry cell
+                    .child(
+                        div()
+                            .h_full()
+                            .px_3()
+                            .border_r_1()
+                            .border_color(graphite_border())
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .font_family(MONO_FONT)
+                            .text_size(TYPE_HEADER)
+                            .text_color(silver_muted())
+                            .child(div().w(px(6.0)).h(px(6.0)).bg(if active_slots > 0 {
+                                selenium_amber()
+                            } else {
+                                graphite_border()
+                            }))
+                            .child(if active_slots > 0 {
+                                format!(
+                                    "ACTIVE {active_slots}/{} · {}",
+                                    self.queue.settings.max_concurrent_downloads,
+                                    view_model::format_speed(total_speed)
+                                )
+                            } else {
+                                format!("IDLE · {total_count} QUEUED")
+                            }),
                     ),
             )
     }
