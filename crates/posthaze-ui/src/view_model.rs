@@ -789,6 +789,13 @@ impl QueueController {
         self.selection_anchor = Some(id);
     }
 
+    /// Clears all active row selections and the range anchor.
+    pub fn clear_selection(&mut self) {
+        self.selected_id = None;
+        self.selected_ids.clear();
+        self.selection_anchor = None;
+    }
+
     /// Toggles `id` in the multi-selection (`Ctrl+Click`).
     pub fn toggle_select(&mut self, id: DownloadId) {
         if self.selected_ids.is_empty()
@@ -1382,5 +1389,11 @@ mod tests {
         // Ctrl+A selects all visible.
         ctrl.select_all(&visible);
         assert_eq!(ctrl.selected_list(), visible);
+
+        // Clear removes all selections and anchor.
+        ctrl.clear_selection();
+        assert!(ctrl.selected_list().is_empty());
+        assert_eq!(ctrl.selected_id, None);
+        assert_eq!(ctrl.selection_anchor, None);
     }
 }

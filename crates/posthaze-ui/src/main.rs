@@ -694,7 +694,7 @@ impl PosthazeApp {
         cx.notify();
     }
 
-    fn request_delete_selected(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn request_delete_selected(&mut self, cx: &mut Context<Self>) {
         let selected = self.queue.selected_list();
         if selected.len() <= 1 {
             if let Some(id) = selected.into_iter().next()
