@@ -514,6 +514,7 @@ impl PosthazeApp {
     pub(crate) fn render_table(
         &self,
         rows: Vec<DownloadRowView>,
+        visible_ids: Arc<Vec<DownloadId>>,
         is_empty_queue: bool,
         profile: LayoutProfile,
         cx: &mut Context<Self>,
@@ -625,8 +626,6 @@ impl PosthazeApp {
         }
 
         let visible_rows = Arc::new(rows);
-        let visible_ids: Arc<Vec<DownloadId>> =
-            Arc::new(visible_rows.iter().map(|r| r.id.clone()).collect());
         let row_count = visible_rows.len();
         let entity = cx.entity().clone();
         let scroll_handle = self.table_scroll_handle.clone();

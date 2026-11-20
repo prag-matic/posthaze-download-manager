@@ -30,6 +30,19 @@ impl PosthazeApp {
             FilterTab::Completed,
             FilterTab::Failed,
         ];
+        let mut counts = [0usize; 6];
+        counts[0] = all_rows.len();
+        for r in all_rows {
+            match r.state {
+                posthaze_engine::DownloadState::Active
+                | posthaze_engine::DownloadState::Probing => counts[1] += 1,
+                posthaze_engine::DownloadState::Queued => counts[2] += 1,
+                posthaze_engine::DownloadState::Paused => counts[3] += 1,
+                posthaze_engine::DownloadState::Completed => counts[4] += 1,
+                posthaze_engine::DownloadState::Failed => counts[5] += 1,
+                posthaze_engine::DownloadState::Cancelled => {}
+            }
+        }
 
         let target_width = if self.sidebar_collapsed {
             RAIL_SIDEBAR_WIDTH
@@ -49,8 +62,8 @@ impl PosthazeApp {
                 .items_center()
                 .bg(graphite_bg())
                 .child(
-                    div().w_full().flex().flex_col().children(tabs.into_iter().map(|tab| {
-                        let count = all_rows.iter().filter(|r| tab.matches(r.state)).count();
+                    div().w_full().flex().flex_col().children(tabs.into_iter().enumerate().map(|(i, tab)| {
+                        let count = counts[i];
                         let selected = self.filter == tab;
                         let tab_icon = filter_tab_icon(tab);
                         let tab_color = if selected {
@@ -182,8 +195,8 @@ impl PosthazeApp {
                     .flex()
                     .flex_col()
                     .child(grid_section_header("QUEUE FILTER", GridTone::Graphite))
-                    .children(tabs.into_iter().map(|tab| {
-                        let count = all_rows.iter().filter(|r| tab.matches(r.state)).count();
+                    .children(tabs.into_iter().enumerate().map(|(i, tab)| {
+                        let count = counts[i];
                         let selected = self.filter == tab;
                         let tab_icon = filter_tab_icon(tab);
                         let tab_color = if selected {

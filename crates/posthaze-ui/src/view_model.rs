@@ -418,6 +418,27 @@ pub fn filter_and_sort_rows(
     filter_and_sort_rows_with_query(rows, filter, "", sort_col, sort_dir)
 }
 
+fn contains_ascii_case_insensitive(haystack: &str, needle_lower: &str) -> bool {
+    let n = needle_lower.as_bytes();
+    if n.is_empty() {
+        return true;
+    }
+    haystack
+        .as_bytes()
+        .windows(n.len())
+        .any(|w| w.eq_ignore_ascii_case(n))
+}
+
+fn cmp_ascii_case_insensitive(a: &str, b: &str) -> std::cmp::Ordering {
+    for (ba, bb) in a.bytes().zip(b.bytes()) {
+        let ord = ba.to_ascii_lowercase().cmp(&bb.to_ascii_lowercase());
+        if ord != std::cmp::Ordering::Equal {
+            return ord;
+        }
+    }
+    a.len().cmp(&b.len())
+}
+
 /// Filters `rows` by tab and optional search `query` (matching filename or URL), then sorts.
 pub fn filter_and_sort_rows_with_query(
     rows: &[DownloadRowView],
@@ -432,18 +453,15 @@ pub fn filter_and_sort_rows_with_query(
         .filter(|r| {
             filter.matches(r.state)
                 && (q.is_empty()
-                    || r.filename.to_ascii_lowercase().contains(&q)
-                    || r.url.to_ascii_lowercase().contains(&q))
+                    || contains_ascii_case_insensitive(&r.filename, &q)
+                    || contains_ascii_case_insensitive(&r.url, &q))
         })
         .cloned()
         .collect();
     out.sort_by(|a, b| {
         let ord = match sort_col {
             SortColumn::State => a.state.as_str().cmp(b.state.as_str()),
-            SortColumn::Filename => a
-                .filename
-                .to_ascii_lowercase()
-                .cmp(&b.filename.to_ascii_lowercase()),
+            SortColumn::Filename => cmp_ascii_case_insensitive(&a.filename, &b.filename),
             SortColumn::Progress => a
                 .total_ratio()
                 .partial_cmp(&b.total_ratio())

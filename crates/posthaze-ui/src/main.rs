@@ -1324,7 +1324,10 @@ impl Render for PosthazeApp {
         let resizing_sidebar = matches!(active_resize, Some(ActiveResize::Sidebar { .. }));
         let resizing_inspector = matches!(active_resize, Some(ActiveResize::Inspector { .. }));
 
-        let visible_ids: Vec<DownloadId> = visible_rows.iter().map(|r| r.id.clone()).collect();
+        let visible_ids: std::sync::Arc<Vec<DownloadId>> =
+            std::sync::Arc::new(visible_rows.iter().map(|r| r.id.clone()).collect());
+        let visible_ids_kbd = visible_ids.clone();
+        let total_count = all_rows.len();
 
         div()
             .relative()
@@ -1360,7 +1363,7 @@ impl Render for PosthazeApp {
                     && !kb_ctx.has_file_op_modal
                     && !kb_ctx.url_input_focused
                 {
-                    app.queue.select_all(&visible_ids);
+                    app.queue.select_all(&visible_ids_kbd);
                     if let Some(lead) = app.queue.selected_id.clone() {
                         app.load_segments_for(lead, cx);
                     }
@@ -1413,9 +1416,9 @@ impl Render for PosthazeApp {
                     KeyboardAction::StepSelection(delta) => {
                         if let Some(next_id) =
                             app.queue
-                                .step_selection_extending(&visible_ids, delta, shift)
+                                .step_selection_extending(&visible_ids_kbd, delta, shift)
                         {
-                            if let Some(idx) = visible_ids.iter().position(|id| id == &next_id) {
+                            if let Some(idx) = visible_ids_kbd.iter().position(|id| id == &next_id) {
                                 let row_height = app.queue.settings.ui_table_density.row_height_px();
                                 let (scroll_top, viewport_h, max_scroll) = {
                                     let inner = app.table_scroll_handle.0.borrow();
@@ -1530,7 +1533,7 @@ impl Render for PosthazeApp {
                     }
                 }),
             )
-            .child(self.render_titlebar())
+            .child(self.render_titlebar(active_slots, total_speed, total_count))
             .child(
                 div()
                     .flex_1()
@@ -1690,7 +1693,13 @@ impl Render for PosthazeApp {
                                         ),
                                 )
                             })
-                            .child(self.render_table(visible_rows, is_empty_queue, profile, cx))
+                            .child(self.render_table(
+                                visible_rows,
+                                visible_ids,
+                                is_empty_queue,
+                                profile,
+                                cx,
+                            ))
                             .child(
                                 div()
                                     .id("inspector-resize")
@@ -1802,22 +1811,12 @@ impl Render for PosthazeApp {
 }
 
 impl PosthazeApp {
-    fn render_titlebar(&self) -> impl IntoElement {
-        let active_slots = self
-            .queue
-            .records
-            .iter()
-            .filter(|r| matches!(r.state, DownloadState::Active | DownloadState::Probing))
-            .count();
-        let total_speed: u64 = self
-            .queue
-            .records
-            .iter()
-            .filter(|r| r.state == DownloadState::Active)
-            .filter_map(|r| self.queue.live_map.get(&r.id))
-            .map(|s| s.bytes_per_sec)
-            .sum();
-        let total_count = self.queue.records.len();
+    fn render_titlebar(
+        &self,
+        active_slots: usize,
+        total_speed: u64,
+        total_count: usize,
+    ) -> impl IntoElement {
 
         TitleBar::new()
             .bg(graphite_bg())
