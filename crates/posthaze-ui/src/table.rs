@@ -114,7 +114,7 @@ impl PosthazeApp {
                     .child(self.render_toolbar_tools(profile, cx)),
             )
             // Contextual second row for selected download(s)
-            .when_some(self.render_selection_toolbar_row(profile, cx), |el, row| {
+            .when_some(self.render_selection_toolbar_row(cx), |el, row| {
                 el.child(row)
             })
             // Merged full-width separator row between toolbar and download list
@@ -128,11 +128,7 @@ impl PosthazeApp {
             )
     }
 
-    fn render_selection_toolbar_row(
-        &self,
-        profile: LayoutProfile,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
+    fn render_selection_toolbar_row(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let selected: Vec<_> = self
             .queue
             .records
@@ -188,8 +184,6 @@ impl PosthazeApp {
         } else {
             format!("{count} downloads selected")
         };
-
-        let compact = profile.compact_toolbar;
 
         Some(
             div()
@@ -248,7 +242,7 @@ impl PosthazeApp {
                             el.child(self.toolbar_cell_button(
                                 "sel-pause",
                                 IconName::Pause,
-                                (!compact).then_some("PAUSE"),
+                                None,
                                 "Pause Selected",
                                 true,
                                 cx.listener(move |app, _, _, cx| {
@@ -263,7 +257,7 @@ impl PosthazeApp {
                             el.child(self.toolbar_cell_button(
                                 "sel-resume",
                                 IconName::Play,
-                                (!compact).then_some("RESUME"),
+                                None,
                                 "Resume Selected",
                                 true,
                                 cx.listener(move |app, _, _, cx| {
@@ -278,7 +272,7 @@ impl PosthazeApp {
                             el.child(self.toolbar_cell_button(
                                 "sel-restart",
                                 IconName::RotateCcw,
-                                (!compact).then_some("RESTART"),
+                                None,
                                 "Restart Fresh",
                                 true,
                                 cx.listener(move |app, _, _, cx| {
@@ -293,7 +287,7 @@ impl PosthazeApp {
                             el.child(self.toolbar_cell_button(
                                 "sel-cancel",
                                 IconName::X,
-                                (!compact).then_some("CANCEL"),
+                                None,
                                 "Cancel Selected",
                                 true,
                                 cx.listener(move |app, _, _, cx| {
@@ -311,7 +305,7 @@ impl PosthazeApp {
                                 el.child(self.toolbar_cell_button(
                                     "sel-open-file",
                                     IconName::File,
-                                    (!compact).then_some("OPEN FILE"),
+                                    None,
                                     "Open File",
                                     true,
                                     cx.listener(move |app, _, _, cx| {
@@ -321,7 +315,7 @@ impl PosthazeApp {
                                 .child(self.toolbar_cell_button(
                                     "sel-open-dir",
                                     IconName::FolderOpen,
-                                    (!compact).then_some("OPEN DIR"),
+                                    None,
                                     "Open Folder",
                                     true,
                                     cx.listener(move |app, _, _, cx| {
@@ -335,7 +329,7 @@ impl PosthazeApp {
                             el.child(self.toolbar_cell_button(
                                 "sel-copy-url",
                                 IconName::Copy,
-                                (!compact).then_some("COPY URL"),
+                                None,
                                 "Copy URL",
                                 true,
                                 cx.listener(move |_, _, _, cx| {
@@ -346,7 +340,7 @@ impl PosthazeApp {
                         .child(self.toolbar_cell_button(
                             "sel-delete",
                             IconName::Trash,
-                            (!compact).then_some("DELETE"),
+                            None,
                             "Delete Selected",
                             true,
                             cx.listener(|app, _, _, cx| {
