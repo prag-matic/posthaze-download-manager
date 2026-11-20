@@ -79,7 +79,7 @@ pub(crate) enum FileOpModalState {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn render_preflight_modal<F1, F2, F3, F4, F5, F6>(
+pub(crate) fn render_preflight_card<F1, F2, F3, F4, F5, F6>(
     state: &PreflightModalState,
     show_add_paused: bool,
     on_close: F1,
@@ -97,17 +97,16 @@ where
     F5: Fn(String, &mut Window, &mut App) + 'static,
     F6: Fn(&mut Window, &mut App) + 'static,
 {
-    let on_backdrop_close = on_close.clone();
-    let card = match state {
+    match state {
         PreflightModalState::Probing { url, headers } => div()
-            .w(px(520.0))
+            .w_full()
+            .flex_1()
+            .min_h_0()
             .p_5()
             .bg(graphite_bg())
-            .border_1()
-            .border_color(graphite_border())
-            .rounded(px(6.0))
             .flex()
             .flex_col()
+            .justify_between()
             .gap_3()
             .child(
                 div()
@@ -188,14 +187,16 @@ where
             let url_edit = url.clone();
             let is_forbidden = message.contains("403");
             div()
-                .w(px(520.0))
+                .w_full()
+                .flex_1()
+                .min_h_0()
                 .p_5()
                 .bg(graphite_bg())
-                .border_1()
+                .border_t_2()
                 .border_color(errata_vermilion())
-                .rounded(px(6.0))
                 .flex()
                 .flex_col()
+                .justify_between()
                 .gap_3()
                 .child(
                     div()
@@ -306,14 +307,14 @@ where
             let header_summary = (!headers.is_empty()).then(|| mask_header_summary(headers));
 
             div()
-                .w(px(560.0))
+                .w_full()
+                .flex_1()
+                .min_h_0()
                 .p_5()
                 .bg(graphite_bg())
-                .border_1()
-                .border_color(graphite_border())
-                .rounded(px(6.0))
                 .flex()
                 .flex_col()
+                .justify_between()
                 .gap_3()
                 .child(
                     div()
@@ -513,9 +514,8 @@ where
                         )),
                 )
         }
-    };
-
-    modal_backdrop(card, on_backdrop_close)
+    }
+    .into_any_element()
 }
 
 pub(crate) fn render_file_op_modal<F1, F2, F3>(

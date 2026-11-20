@@ -10,6 +10,7 @@ mod ipc;
 mod modals;
 mod motion;
 mod platform_hooks;
+mod preflight_window;
 mod settings_modal;
 mod sidebar;
 mod table;
@@ -25,24 +26,24 @@ use gpui_kit::component::{Icon, InteractiveElementExt as _, TitleBar};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use posthaze_engine::{
-    CollisionPolicy, DeleteDefaultAction, DownloadId, DownloadRequest, DownloadState, EngineEvent,
-    SegmentProgress, categorize_subfolder, default_db_path, resolve_target_path,
+    DeleteDefaultAction, DownloadId, DownloadRequest, DownloadState, EngineEvent, SegmentProgress,
+    default_db_path,
 };
 
 use crate::assets::{BRAND_LOGO_SVG, PosthazeAssets};
 use crate::bridge::{EngineBridge, EngineCommand, EngineSnapshot};
 use crate::context_menu::{ContextMenuAction, ContextMenuState, render_context_menu};
-use crate::curl_parser::{find_header_value, parse_url_or_curl, set_or_remove_header};
+use crate::curl_parser::parse_url_or_curl;
 use crate::grid_cells::{CellBorder, GridTone, grid_cell_button};
 use crate::inspector::{InspectorCallbacks, render_inspector};
 use crate::modals::{
-    ConfirmAction, FileOpModalState, PreflightModalState, render_confirm_modal,
-    render_file_op_modal, render_preflight_modal,
+    ConfirmAction, FileOpModalState, render_confirm_modal, render_file_op_modal,
 };
 use crate::motion::MotionState;
 use crate::platform_hooks::{
     open_file_in_shell, open_folder_in_shell, spawn_completion_hook, spawn_windows_toast,
 };
+use crate::preflight_window::PreflightWindow;
 use crate::settings_modal::{SettingsAction, SettingsModalState, render_settings_modal};
 use crate::theme::*;
 use crate::view_model::{
@@ -98,11 +99,11 @@ pub(crate) struct PosthazeApp {
     pub(crate) sort_col: SortColumn,
     pub(crate) sort_dir: SortDirection,
     status_banner: Option<String>,
-    preflight_modal: Option<PreflightModalState>,
     settings_modal: Option<SettingsModalState>,
     confirm_modal: Option<ConfirmAction>,
     file_op_modal: Option<FileOpModalState>,
     context_menu: Option<ContextMenuState>,
+    next_probe_cascade: usize,
     pub(crate) sidebar_width: f32,
     pub(crate) sidebar_collapsed: bool,
     pub(crate) inspector_height: f32,
@@ -154,11 +155,11 @@ impl PosthazeApp {
             sort_col: SortColumn::CreatedAt,
             sort_dir: SortDirection::Descending,
             status_banner: None,
-            preflight_modal: None,
             settings_modal: None,
             confirm_modal: None,
             file_op_modal: None,
             context_menu: None,
+            next_probe_cascade: 0,
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
             sidebar_collapsed: true,
             inspector_height: DEFAULT_INSPECTOR_HEIGHT,
@@ -254,15 +255,29 @@ impl PosthazeApp {
     fn start_ipc_listener(&self, cx: &mut Context<Self>) {
         let mut rx = ipc::start_named_pipe_server(self.bridge.runtime());
         let window_handle = self.window_handle;
+        let bridge = self.bridge.clone();
         cx.spawn(async move |this, cx| {
             while let Some(req) = rx.recv().await {
-                let _ = cx.update_window(window_handle, |_, window, cx| {
-                    let _ = this.update(cx, |app, cx| {
-                        app.url_input.update(cx, |state, cx| {
-                            state.set_value(req.url.clone(), window, cx);
-                        });
-                        app.begin_probe(req.url, req.headers, window, cx);
-                    });
+                let bridge_for_win = bridge.clone();
+                let main_app = this.clone();
+                let _ = cx.update(|cx| {
+                    let (settings, cascade) = main_app
+                        .update(cx, |app, _| {
+                            let idx = app.next_probe_cascade;
+                            app.next_probe_cascade = app.next_probe_cascade.wrapping_add(1);
+                            (app.queue.settings.clone(), idx)
+                        })
+                        .unwrap_or_default();
+                    PreflightWindow::open(
+                        bridge_for_win,
+                        settings,
+                        req.url,
+                        req.headers,
+                        window_handle,
+                        main_app,
+                        cascade,
+                        cx,
+                    );
                 });
             }
         })
@@ -431,198 +446,26 @@ impl PosthazeApp {
         cx: &mut Context<Self>,
     ) {
         self.status_banner = None;
-        self.preflight_modal = Some(PreflightModalState::Probing {
-            url: url.clone(),
-            headers: headers.clone(),
-        });
-        cx.notify();
-
-        let out_dir = self.queue.settings.default_output_dir.clone();
-        let default_workers = self.queue.settings.max_workers.clamp(1, 32);
-        let window_handle = window.window_handle();
-        let probe_headers = headers.clone();
-        let rx = self.bridge.probe(url.clone(), out_dir, probe_headers);
-
-        cx.spawn(async move |this, cx| {
-            let res = rx.await;
-            let _ = cx.update_window(window_handle, |_, window, cx| {
-                let _ = this.update(cx, |app, cx| {
-                    // Only apply if user has not closed the probing modal.
-                    if !matches!(app.preflight_modal, Some(PreflightModalState::Probing { .. })) {
-                        return;
-                    }
-                    match res {
-                        Ok(Ok(info)) => {
-                            let initial_name =
-                                if app.queue.settings.collision_policy == CollisionPolicy::Rename {
-                                    info.disambiguated_output_path
-                                        .file_name()
-                                        .and_then(|n| n.to_str())
-                                        .unwrap_or(&info.suggested_filename)
-                                        .to_string()
-                                } else {
-                                    info.suggested_filename.clone()
-                                };
-                            let base_dir = info
-                                .disambiguated_output_path
-                                .parent()
-                                .map(PathBuf::from)
-                                .unwrap_or_else(|| app.queue.settings.default_output_dir.clone());
-                            let categorized_dir = if app.queue.settings.auto_categorize_folders {
-                                if let Some(sub) = categorize_subfolder(&initial_name) {
-                                    base_dir.join(sub)
-                                } else {
-                                    base_dir
-                                }
-                            } else {
-                                base_dir
-                            };
-                            let initial_dir = categorized_dir.to_string_lossy().to_string();
-                            let filename_input = cx.new(|cx| {
-                                let mut st = InputState::new(window, cx);
-                                st.set_value(initial_name, window, cx);
-                                st
-                            });
-                            let dir_input = cx.new(|cx| {
-                                let mut st = InputState::new(window, cx);
-                                st.set_value(initial_dir, window, cx);
-                                st
-                            });
-                            let initial_cookie = find_header_value(&headers, "Cookie").to_string();
-                            let initial_referer = find_header_value(&headers, "Referer").to_string();
-                            let initial_ua = find_header_value(&headers, "User-Agent").to_string();
-                            let cookie_input = cx.new(|cx| {
-                                let mut st = InputState::new(window, cx)
-                                    .placeholder("Optional Cookie header...");
-                                st.set_value(initial_cookie, window, cx);
-                                st
-                            });
-                            let referer_input = cx.new(|cx| {
-                                let mut st = InputState::new(window, cx)
-                                    .placeholder("Optional Referer URL...");
-                                st.set_value(initial_referer, window, cx);
-                                st
-                            });
-                            let user_agent_input = cx.new(|cx| {
-                                let mut st = InputState::new(window, cx)
-                                    .placeholder("Optional User-Agent override...");
-                                st.set_value(initial_ua, window, cx);
-                                st
-                            });
-                            let workers = if info.supports_ranges {
-                                default_workers
-                            } else {
-                                1
-                            };
-                            app.preflight_modal = Some(PreflightModalState::Resolved {
-                                info: Box::new(info),
-                                filename_input,
-                                dir_input,
-                                cookie_input,
-                                referer_input,
-                                user_agent_input,
-                                headers,
-                                editing_headers: false,
-                                workers,
-                            });
-                        }
-                        Ok(Err(err)) => {
-                            app.preflight_modal = Some(PreflightModalState::Error {
-                                url,
-                                headers,
-                                message: err.to_string(),
-                            });
-                        }
-                        Err(_) => {
-                            app.preflight_modal = Some(PreflightModalState::Error {
-                                url,
-                                headers,
-                                message: "Engine bridge channel closed".to_string(),
-                            });
-                        }
-                    }
-                    cx.notify();
-                });
-            });
-        })
-        .detach();
-    }
-
-    fn confirm_preflight(
-        &mut self,
-        start_immediately: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(PreflightModalState::Resolved {
-            info,
-            filename_input,
-            dir_input,
-            cookie_input,
-            referer_input,
-            user_agent_input,
-            mut headers,
-            workers,
-            ..
-        }) = self.preflight_modal.take()
-        else {
-            return;
-        };
-
-        let filename = filename_input.read(cx).value().trim().to_string();
-        let dir_str = dir_input.read(cx).value().trim().to_string();
-        let cookie_val = cookie_input.read(cx).value().to_string();
-        let referer_val = referer_input.read(cx).value().to_string();
-        let ua_val = user_agent_input.read(cx).value().to_string();
-        set_or_remove_header(&mut headers, "Cookie", &cookie_val);
-        set_or_remove_header(&mut headers, "Referer", &referer_val);
-        set_or_remove_header(&mut headers, "User-Agent", &ua_val);
-
-        let out_dir = if dir_str.is_empty() {
-            self.queue.settings.default_output_dir.clone()
-        } else {
-            PathBuf::from(dir_str)
-        };
-
-        let mut req = DownloadRequest::new(info.original_url, &out_dir);
-        let mut ask_overwrite_name: Option<String> = None;
-        if !filename.is_empty() {
-            let resolution =
-                resolve_target_path(&out_dir, &filename, self.queue.settings.collision_policy);
-            if resolution.needs_overwrite_prompt {
-                ask_overwrite_name = Some(filename.clone());
-            }
-            req.output_path = Some(resolution.path);
-        }
-        req.max_workers = if info.supports_ranges { workers } else { 1 };
-        req.sync_on_complete = self.queue.settings.sync_on_complete;
-        req.headers = headers;
-
+        let cascade_idx = self.next_probe_cascade;
+        self.next_probe_cascade = self.next_probe_cascade.wrapping_add(1);
+        let bridge = self.bridge.clone();
+        let settings = self.queue.settings.clone();
+        let main_window = window.window_handle();
+        let main_app = cx.entity().downgrade();
+        PreflightWindow::open(
+            bridge,
+            settings,
+            url,
+            headers,
+            main_window,
+            main_app,
+            cascade_idx,
+            cx,
+        );
         self.url_input.update(cx, |state, cx| {
             state.set_value(String::new(), window, cx);
         });
-
-        if let Some(collision_name) = ask_overwrite_name {
-            self.confirm_modal = Some(ConfirmAction::OverwriteCollision {
-                request: Box::new(req),
-                start_immediately,
-                filename: collision_name,
-            });
-            cx.notify();
-            return;
-        }
-
-        if self.queue.settings.notify_on_added {
-            let allow_notify = !self.queue.settings.notify_only_inactive || !window.is_window_active();
-            if allow_notify {
-                spawn_windows_toast(
-                    "Posthaze — Download Added",
-                    &format!("Queued {}", if filename.is_empty() { "download" } else { &filename }),
-                );
-            }
-        }
-
-        self.dispatch_download_request(req, start_immediately, cx);
+        cx.notify();
     }
 
     fn dispatch_download_request(
@@ -1173,62 +1016,6 @@ impl Render for PosthazeApp {
             },
         );
 
-        let preflight_overlay = self.preflight_modal.as_ref().map(|modal| {
-            let e_close = cx.entity().clone();
-            let e_retry = cx.entity().clone();
-            let e_delta = cx.entity().clone();
-            let e_confirm = cx.entity().clone();
-            let e_edit = cx.entity().clone();
-            let e_toggle_headers = cx.entity().clone();
-            render_preflight_modal(
-                modal,
-                self.queue.settings.ui_show_add_paused,
-                move |_, cx| {
-                    e_close.update(cx, |app, cx| {
-                        app.preflight_modal = None;
-                        cx.notify();
-                    });
-                },
-                move |url, headers, window, cx| {
-                    e_retry.update(cx, |app, cx| app.begin_probe(url, headers, window, cx));
-                },
-                move |delta, _, cx| {
-                    e_delta.update(cx, |app, cx| {
-                        if let Some(PreflightModalState::Resolved { workers, .. }) =
-                            &mut app.preflight_modal
-                        {
-                            *workers = (*workers as isize + delta).clamp(1, 32) as usize;
-                            cx.notify();
-                        }
-                    });
-                },
-                move |focus_new, window, cx| {
-                    e_confirm.update(cx, |app, cx| app.confirm_preflight(focus_new, window, cx));
-                },
-                move |url, window, cx| {
-                    e_edit.update(cx, |app, cx| {
-                        app.preflight_modal = None;
-                        app.url_input.update(cx, |st, cx| {
-                            st.set_value(url, window, cx);
-                            st.focus(window, cx);
-                        });
-                        cx.notify();
-                    });
-                },
-                move |_, cx| {
-                    e_toggle_headers.update(cx, |app, cx| {
-                        if let Some(PreflightModalState::Resolved {
-                            editing_headers, ..
-                        }) = &mut app.preflight_modal
-                        {
-                            *editing_headers = !*editing_headers;
-                            cx.notify();
-                        }
-                    });
-                },
-            )
-        });
-
         let settings_overlay = self.settings_modal.as_ref().map(|modal| {
             let e_action = cx.entity().clone();
             let e_cancel = cx.entity().clone();
@@ -1341,11 +1128,8 @@ impl Render for PosthazeApp {
                 let key = event.keystroke.key.as_str();
                 let kb_ctx = KeyboardContext {
                     has_confirm_modal: app.confirm_modal.is_some(),
-                    has_preflight_resolved: matches!(
-                        app.preflight_modal,
-                        Some(PreflightModalState::Resolved { .. })
-                    ),
-                    has_any_preflight: app.preflight_modal.is_some(),
+                    has_preflight_resolved: false,
+                    has_any_preflight: false,
                     has_settings_modal: app.settings_modal.is_some(),
                     has_file_op_modal: app.file_op_modal.is_some(),
                     url_input_focused: app.url_input.read(cx).focus_handle(cx).is_focused(window)
@@ -1377,9 +1161,6 @@ impl Render for PosthazeApp {
                         if app.confirm_modal.take().is_some() {
                             changed = true;
                         }
-                        if app.preflight_modal.take().is_some() {
-                            changed = true;
-                        }
                         if app.settings_modal.take().is_some() {
                             theme::apply_theme_with_accent(
                                 &app.queue.settings.ui_theme,
@@ -1402,11 +1183,6 @@ impl Render for PosthazeApp {
                     KeyboardAction::ConfirmActiveModal => {
                         if app.confirm_modal.is_some() {
                             app.execute_confirmed_action(cx);
-                        } else if matches!(
-                            app.preflight_modal,
-                            Some(PreflightModalState::Resolved { .. })
-                        ) {
-                            app.confirm_preflight(true, window, cx);
                         } else if app.settings_modal.is_some() {
                             app.save_settings_modal(cx);
                         } else if app.file_op_modal.is_some() {
@@ -1803,7 +1579,6 @@ impl Render for PosthazeApp {
                     ),
             )
             .when_some(context_menu_overlay, |el, overlay| el.child(overlay))
-            .when_some(preflight_overlay, |el, overlay| el.child(overlay))
             .when_some(settings_overlay, |el, overlay| el.child(overlay))
             .when_some(file_op_overlay, |el, overlay| el.child(overlay))
             .when_some(confirm_overlay, |el, overlay| el.child(overlay))
