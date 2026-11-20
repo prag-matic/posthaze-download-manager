@@ -868,11 +868,14 @@ where
         .id("modal-backdrop")
         .absolute()
         .inset_0()
+        .occlude()
         .p_4()
         .bg(rgba(0x141413AA))
         .flex()
         .items_center()
         .justify_center()
+        .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+        .on_scroll(|_, _, cx| cx.stop_propagation())
         .on_click(move |_, window, cx| on_close(window, cx))
         .child(
             div()
@@ -880,6 +883,7 @@ where
                 .max_w_full()
                 .max_h_full()
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
                 .on_click(|_, _, cx| cx.stop_propagation())
                 .child(card)
                 .with_animation(
