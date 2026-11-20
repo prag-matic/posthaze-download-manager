@@ -9,7 +9,10 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use posthaze_engine::{CollisionPolicy, DeleteDefaultAction, ProxyMode, Settings, TableDensity};
 
-use crate::grid_cells::{CellBorder, GridTone, grid_cell_button, grid_section_header};
+use crate::grid_cells::{
+    CellBorder, GridTone, grid_boxed_button, grid_cell_button, grid_modal_footer,
+    grid_section_header,
+};
 use crate::modals::{labeled_input, modal_backdrop};
 use crate::theme::*;
 
@@ -658,7 +661,7 @@ where
                     .w_full()
                     .px_4()
                     .py_2()
-                    .bg(rgba(0xEF444420))
+                    .bg(errata_surface_bg())
                     .border_t_1()
                     .border_color(errata_vermilion())
                     .font_family(MONO_FONT)
@@ -668,12 +671,8 @@ where
             )
         })
         .child(
-            div()
+            grid_modal_footer(GridTone::Graphite)
                 .h(px(36.0))
-                .border_t_1()
-                .border_color(graphite_border())
-                .flex()
-                .justify_end()
                 .child(grid_cell_button(
                     "settings-cancel",
                     Some(IconName::X),
@@ -878,20 +877,16 @@ fn preset_btn<F>(
 where
     F: Fn(SettingsAction, &mut Window, &mut App) + 'static,
 {
-    div()
-        .h(px(28.0))
-        .border_1()
-        .border_color(graphite_border())
-        .child(grid_cell_button(
-            id,
-            None,
-            Some(label),
-            None,
-            GridTone::Graphite,
-            CellBorder::None,
-            true,
-            move |_, window, cx| on_action(action.clone(), window, cx),
-        ))
+    grid_boxed_button(
+        id,
+        px(28.0),
+        None,
+        Some(label),
+        None,
+        GridTone::Graphite,
+        true,
+        move |_, window, cx| on_action(action.clone(), window, cx),
+    )
 }
 
 fn swatch_dot(hex: u32) -> impl IntoElement {
@@ -1164,22 +1159,18 @@ where
                 .child(section_heading("Run After Completion"))
                 .child({
                     let act = on_action.clone();
-                    div()
-                        .h(px(28.0))
-                        .border_1()
-                        .border_color(graphite_border())
-                        .child(grid_cell_button(
-                            "settings-defender-preset",
-                            Some(IconName::ShieldCheck),
-                            Some("USE WINDOWS DEFENDER"),
-                            None,
-                            GridTone::Graphite,
-                            CellBorder::None,
-                            true,
-                            move |_, window, cx| {
-                                act(SettingsAction::ApplyDefenderPreset, window, cx);
-                            },
-                        ))
+                    grid_boxed_button(
+                        "settings-defender-preset",
+                        px(28.0),
+                        Some(IconName::ShieldCheck),
+                        Some("USE WINDOWS DEFENDER"),
+                        None,
+                        GridTone::Graphite,
+                        true,
+                        move |_, window, cx| {
+                            act(SettingsAction::ApplyDefenderPreset, window, cx);
+                        },
+                    )
                 }),
         )
         .child(toggle_row(
@@ -1552,41 +1543,31 @@ where
                 .gap_2()
                 .child({
                     let act = on_action.clone();
-                    div()
-                        .h(px(32.0))
-                        .border_1()
-                        .border_color(graphite_border())
-                        .child(grid_cell_button(
-                            "settings-copy-json",
-                            Some(IconName::Copy),
-                            Some("COPY CONFIG JSON"),
-                            Some("Copy current settings as formatted JSON"),
-                            GridTone::Graphite,
-                            CellBorder::None,
-                            false,
-                            move |_, window, cx| {
-                                act(SettingsAction::CopyConfigJson, window, cx);
-                            },
-                        ))
+                    grid_boxed_button(
+                        "settings-copy-json",
+                        px(32.0),
+                        Some(IconName::Copy),
+                        Some("COPY CONFIG JSON"),
+                        Some("Copy current settings as formatted JSON"),
+                        GridTone::Graphite,
+                        false,
+                        move |_, window, cx| {
+                            act(SettingsAction::CopyConfigJson, window, cx);
+                        },
+                    )
                 })
-                .child(
-                    div()
-                        .h(px(32.0))
-                        .border_1()
-                        .border_color(graphite_border())
-                        .child(grid_cell_button(
-                            "settings-reset-defaults",
-                            Some(IconName::RotateCcw),
-                            Some("RESTORE DEFAULT SETTINGS"),
-                            None,
-                            GridTone::Danger,
-                            CellBorder::None,
-                            false,
-                            move |_, window, cx| {
-                                on_action(SettingsAction::ResetToDefaults, window, cx);
-                            },
-                        )),
-                ),
+                .child(grid_boxed_button(
+                    "settings-reset-defaults",
+                    px(32.0),
+                    Some(IconName::RotateCcw),
+                    Some("RESTORE DEFAULT SETTINGS"),
+                    None,
+                    GridTone::Danger,
+                    false,
+                    move |_, window, cx| {
+                        on_action(SettingsAction::ResetToDefaults, window, cx);
+                    },
+                )),
         )
         .into_any_element()
 }

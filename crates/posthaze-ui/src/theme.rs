@@ -487,6 +487,11 @@ pub fn errata_vermilion() -> Hsla {
     rgb(active_theme().failed_vermilion).into()
 }
 
+/// Translucent vermilion tint for errata & validation banners.
+pub fn errata_surface_bg() -> Hsla {
+    errata_vermilion().opacity(0.14)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -15,7 +15,7 @@ use posthaze_engine::{DownloadId, DownloadState};
 use crate::PosthazeApp;
 use crate::assets::BRAND_LOGO_SVG;
 use crate::context_menu::ContextMenuState;
-use crate::grid_cells::{CellBorder, GridTone, grid_cell_button};
+use crate::grid_cells::{CellBorder, GridTone, grid_boxed_button, grid_cell_button};
 use crate::motion::RowMotionSample;
 use crate::theme::*;
 use crate::view_model::{
@@ -579,48 +579,36 @@ impl PosthazeApp {
                         }),
                 )
                 .when(is_empty_queue, |el| {
-                    el.child(
-                        div()
-                            .h(px(34.0))
-                            .border_1()
-                            .border_color(paper_border())
-                            .child(grid_cell_button(
-                                "empty-paste",
-                                Some(IconName::ClipboardPaste),
-                                Some("PASTE URL FROM CLIPBOARD & PROBE"),
-                                None,
-                                GridTone::Primary,
-                                CellBorder::None,
-                                false,
-                                cx.listener(|app, _, window, cx| {
-                                    app.paste_and_probe_from_clipboard(window, cx);
-                                }),
-                            )),
-                    )
+                    el.child(grid_boxed_button(
+                        "empty-paste",
+                        px(34.0),
+                        Some(IconName::ClipboardPaste),
+                        Some("PASTE URL FROM CLIPBOARD & PROBE"),
+                        None,
+                        GridTone::Primary,
+                        false,
+                        cx.listener(|app, _, window, cx| {
+                            app.paste_and_probe_from_clipboard(window, cx);
+                        }),
+                    ))
                 })
                 .when(!is_empty_queue, |el| {
-                    el.child(
-                        div()
-                            .h(px(34.0))
-                            .border_1()
-                            .border_color(paper_border())
-                            .child(grid_cell_button(
-                                "empty-show-all",
-                                Some(IconName::Folder),
-                                Some("SHOW ALL DOWNLOADS"),
-                                None,
-                                GridTone::Paper,
-                                CellBorder::None,
-                                false,
-                                cx.listener(|app, _, window, cx| {
-                                    app.filter = FilterTab::All;
-                                    app.search_input.update(cx, |state, cx| {
-                                        state.set_value("", window, cx);
-                                    });
-                                    cx.notify();
-                                }),
-                            )),
-                    )
+                    el.child(grid_boxed_button(
+                        "empty-show-all",
+                        px(34.0),
+                        Some(IconName::Folder),
+                        Some("SHOW ALL DOWNLOADS"),
+                        None,
+                        GridTone::Paper,
+                        false,
+                        cx.listener(|app, _, window, cx| {
+                            app.filter = FilterTab::All;
+                            app.search_input.update(cx, |state, cx| {
+                                state.set_value("", window, cx);
+                            });
+                            cx.notify();
+                        }),
+                    ))
                 })
                 .into_any_element();
         }

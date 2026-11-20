@@ -275,7 +275,7 @@ where
                 div()
                     .h(px(32.0))
                     .pl_3()
-                    .bg(rgba(0xEF444424))
+                    .bg(errata_surface_bg())
                     .border_1()
                     .border_color(errata_vermilion())
                     .flex()

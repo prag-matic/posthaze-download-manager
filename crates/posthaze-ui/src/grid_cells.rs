@@ -124,6 +124,46 @@ pub(crate) fn grid_cell_button(
         .into_any_element()
 }
 
+/// Standalone `1px`-bordered cell button with explicit `height` (for inline/empty-state CTAs).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn grid_boxed_button(
+    id: impl Into<ElementId>,
+    height: Pixels,
+    icon: Option<IconName>,
+    label: Option<&'static str>,
+    tooltip_text: Option<&'static str>,
+    tone: GridTone,
+    compact: bool,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    div()
+        .h(height)
+        .border_1()
+        .border_color(tone.border_color())
+        .child(grid_cell_button(
+            id,
+            icon,
+            label,
+            tooltip_text,
+            tone,
+            CellBorder::None,
+            compact,
+            on_click,
+        ))
+        .into_any_element()
+}
+
+/// Flush `34px` modal footer bar with `1px` top border and right-aligned action cells.
+pub(crate) fn grid_modal_footer(tone: GridTone) -> Div {
+    div()
+        .h(px(34.0))
+        .w_full()
+        .border_t_1()
+        .border_color(tone.border_color())
+        .flex()
+        .justify_end()
+}
+
 /// `28px` modular grid section header bar with `1px` bottom rule.
 pub(crate) fn grid_section_header(title: impl Into<SharedString>, tone: GridTone) -> Div {
     let (bg, border_col, fg) = match tone {

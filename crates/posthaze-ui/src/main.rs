@@ -1649,7 +1649,7 @@ impl Render for PosthazeApp {
                                     div()
                                         .px_4()
                                         .py_1p5()
-                                        .bg(rgba(0xEF444424))
+                                        .bg(errata_surface_bg())
                                         .border_b_1()
                                         .border_color(errata_vermilion())
                                         .flex()

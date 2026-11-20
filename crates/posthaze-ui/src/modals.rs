@@ -10,7 +10,9 @@ use gpui_kit::*;
 use posthaze_engine::{DownloadId, DownloadRequest, PreflightInfo};
 
 use crate::curl_parser::mask_header_summary;
-use crate::grid_cells::{CellBorder, GridTone, grid_cell_button, grid_kv_row};
+use crate::grid_cells::{
+    CellBorder, GridTone, grid_boxed_button, grid_cell_button, grid_kv_row, grid_modal_footer,
+};
 use crate::theme::*;
 use crate::view_model::format_bytes;
 
@@ -165,22 +167,16 @@ where
                 )
             })
             .child(
-                div()
-                    .h(px(34.0))
-                    .border_t_1()
-                    .border_color(graphite_border())
-                    .flex()
-                    .justify_end()
-                    .child(grid_cell_button(
-                        "probe-cancel",
-                        Some(IconName::X),
-                        Some("CANCEL"),
-                        None,
-                        GridTone::Graphite,
-                        CellBorder::Left,
-                        false,
-                        move |_, window, cx| on_close(window, cx),
-                    )),
+                grid_modal_footer(GridTone::Graphite).child(grid_cell_button(
+                    "probe-cancel",
+                    Some(IconName::X),
+                    Some("CANCEL"),
+                    None,
+                    GridTone::Graphite,
+                    CellBorder::Left,
+                    false,
+                    move |_, window, cx| on_close(window, cx),
+                )),
             ),
         PreflightModalState::Error {
             url,
@@ -252,12 +248,7 @@ where
                     )
                 })
                 .child(
-                    div()
-                        .h(px(34.0))
-                        .border_t_1()
-                        .border_color(graphite_border())
-                        .flex()
-                        .justify_end()
+                    grid_modal_footer(GridTone::Graphite)
                         .child(grid_cell_button(
                             "probe-edit",
                             Some(IconName::Clipboard),
@@ -377,26 +368,20 @@ where
                         .flex()
                         .items_center()
                         .justify_between()
-                        .child(
-                            div()
-                                .h(px(28.0))
-                                .border_1()
-                                .border_color(graphite_border())
-                                .child(grid_cell_button(
-                                    "preflight-toggle-headers",
-                                    Some(IconName::Settings),
-                                    Some(if header_count > 0 {
-                                        "REQUEST HEADERS (SET)"
-                                    } else {
-                                        "REQUEST HEADERS"
-                                    }),
-                                    None,
-                                    GridTone::Graphite,
-                                    CellBorder::None,
-                                    true,
-                                    move |_, window, cx| on_toggle_headers(window, cx),
-                                )),
-                        )
+                        .child(grid_boxed_button(
+                            "preflight-toggle-headers",
+                            px(28.0),
+                            Some(IconName::Settings),
+                            Some(if header_count > 0 {
+                                "REQUEST HEADERS (SET)"
+                            } else {
+                                "REQUEST HEADERS"
+                            }),
+                            None,
+                            GridTone::Graphite,
+                            true,
+                            move |_, window, cx| on_toggle_headers(window, cx),
+                        ))
                         .when_some(header_summary, |el, summary| {
                             el.child(
                                 div()
@@ -493,12 +478,7 @@ where
                         ),
                 )
                 .child(
-                    div()
-                        .h(px(34.0))
-                        .border_t_1()
-                        .border_color(graphite_border())
-                        .flex()
-                        .justify_end()
+                    grid_modal_footer(GridTone::Graphite)
                         .child(grid_cell_button(
                             "pf-cancel",
                             Some(IconName::X),
@@ -632,12 +612,7 @@ where
                     ),
             )
             .child(
-                div()
-                    .h(px(34.0))
-                    .border_t_1()
-                    .border_color(graphite_border())
-                    .flex()
-                    .justify_end()
+                grid_modal_footer(GridTone::Graphite)
                     .when_some(digest.clone(), |el, hash| {
                         el.child(grid_cell_button(
                             "hash-copy",
@@ -776,12 +751,7 @@ where
                 .child(detail),
         )
         .child(
-            div()
-                .h(px(34.0))
-                .border_t_1()
-                .border_color(graphite_border())
-                .flex()
-                .justify_end()
+            grid_modal_footer(GridTone::Graphite)
                 .child(grid_cell_button(
                     "confirm-cancel",
                     Some(IconName::X),
@@ -851,12 +821,7 @@ where
         })
         .child(labeled_input(input_label, input))
         .child(
-            div()
-                .h(px(34.0))
-                .border_t_1()
-                .border_color(graphite_border())
-                .flex()
-                .justify_end()
+            grid_modal_footer(GridTone::Graphite)
                 .child(grid_cell_button(
                     "fileop-cancel",
                     Some(IconName::X),
