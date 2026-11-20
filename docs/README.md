@@ -25,6 +25,7 @@ Documentation is a first-class part of Posthaze Download Manager.
 ## Implemented Milestones & Tickets
 
 - [Comprehensive Settings, Custom Headers & Context Menu](settings-and-context-menu.md)
+- [Table-Grid Cell UI System & Interface Customization](table-grid-ui-and-customization.md)
 - [Creating Themes for Posthaze](creating-themes.md)
 
 - [Ticket 01 — Single-Stream HTTP Download Engine & CLI](ticket-01-single-stream-engine.md)
