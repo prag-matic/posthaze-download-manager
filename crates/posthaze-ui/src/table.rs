@@ -454,9 +454,6 @@ impl PosthazeApp {
             .id(id)
             .h_full()
             .px_2p5()
-            .border_l_1()
-            .border_color(paper_border())
-            .bg(table_header_bg().opacity(0.45))
             .hover(|s| {
                 s.bg(selenium_amber())
                     .text_color(rgb(active_theme().accent_foreground))
@@ -469,7 +466,7 @@ impl PosthazeApp {
             .font_family(MONO_FONT)
             .text_size(TYPE_MICRO)
             .font_weight(FontWeight::SEMIBOLD)
-            .text_color(carbon_text())
+            .text_color(carbon_muted())
             .tooltip(move |window, cx| Tooltip::new(tooltip_text).build(window, cx))
             .on_click(on_click)
             .child(Icon::new(icon).size(px(12.0)))
