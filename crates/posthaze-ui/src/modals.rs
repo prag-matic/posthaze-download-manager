@@ -419,10 +419,10 @@ where
                         .w_full()
                         .flex_1()
                         .min_h_0()
-                        .p_3()
+                        .p_2p5()
                         .flex()
                         .flex_col()
-                        .gap_1p5()
+                        .gap_1()
                         .child(
                     div()
                         .flex()
@@ -713,8 +713,13 @@ where
                     )
                 }),
                 )
+                .child(div().w_full().h(px(1.0)).bg(graphite_border()))
                 .child(
-                    grid_modal_footer(GridTone::Graphite)
+                    div()
+                        .h(px(34.0))
+                        .w_full()
+                        .flex()
+                        .justify_end()
                         .child(grid_cell_button(
                             "pf-cancel",
                             Some(IconName::X),

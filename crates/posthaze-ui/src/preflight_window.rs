@@ -45,7 +45,7 @@ impl PreflightWindow {
         cascade_idx: usize,
         cx: &mut App,
     ) {
-        let mut bounds = Bounds::centered(None, size(px(460.0), px(226.0)), cx);
+        let mut bounds = Bounds::centered(None, size(px(460.0), px(198.0)), cx);
         let cascade = ((cascade_idx % 6) as f32) * 28.0;
         bounds.origin.x += px(cascade);
         bounds.origin.y += px(cascade);
@@ -55,7 +55,7 @@ impl PreflightWindow {
             focus: true,
             show: true,
             kind: WindowKind::Normal,
-            window_min_size: Some(size(px(420.0), px(210.0))),
+            window_min_size: Some(size(px(420.0), px(190.0))),
             ..TitleBar::window_options()
         };
 
@@ -438,8 +438,8 @@ impl PreflightWindow {
         {
             *active_tab = tab;
             let target_h = match tab {
-                PreflightTab::General => 226.0,
-                PreflightTab::Options => 372.0,
+                PreflightTab::General => 198.0,
+                PreflightTab::Options => 348.0,
             };
             window.resize(size(px(460.0), px(target_h)));
             cx.notify();
