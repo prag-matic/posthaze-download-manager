@@ -46,7 +46,7 @@ impl PosthazeApp {
                     .bg(paper_bg())
                     .border_b_1()
                     .border_color(paper_border())
-                    // STATE-aligned ADD URL label cell (matches COL_STATE vertical grid line)
+                    // STATE-aligned ADD URL button cell (in front of the URL field)
                     .child(
                         div()
                             .w(px(COL_STATE))
@@ -57,17 +57,50 @@ impl PosthazeApp {
                             .border_color(paper_border())
                             .flex()
                             .items_center()
-                            .gap_1p5()
-                            .font_family(MONO_FONT)
-                            .text_size(TYPE_MICRO)
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(carbon_muted())
                             .child(
-                                Icon::new(IconName::Plus)
-                                    .size(px(13.0))
-                                    .text_color(carbon_muted()),
-                            )
-                            .child("ADD URL"),
+                                div()
+                                    .id("add-url-btn")
+                                    .w_full()
+                                    .h(px(26.0))
+                                    .px_2()
+                                    .rounded(px(2.0))
+                                    .bg(graphite_elevated())
+                                    .border_1()
+                                    .border_color(paper_border())
+                                    .hover(|s| s.bg(paper_hover()).border_color(selenium_amber()))
+                                    .cursor_pointer()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .gap_1p5()
+                                    .font_family(MONO_FONT)
+                                    .text_size(TYPE_MICRO)
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(carbon_text())
+                                    .tooltip(|window, cx| {
+                                        Tooltip::new("Probe entered URL, or Paste & Probe from clipboard")
+                                            .build(window, cx)
+                                    })
+                                    .on_click(cx.listener(|app, _, window, cx| {
+                                        let has_text = !app
+                                            .url_input
+                                            .read(cx)
+                                            .value()
+                                            .trim()
+                                            .is_empty();
+                                        if has_text {
+                                            app.submit_url_from_input(window, cx);
+                                        } else {
+                                            app.paste_and_probe_from_clipboard(window, cx);
+                                        }
+                                    }))
+                                    .child(
+                                        Icon::new(IconName::Plus)
+                                            .size(px(12.0))
+                                            .text_color(selenium_amber()),
+                                    )
+                                    .child("ADD URL"),
+                            ),
                     )
                     // FILENAME-aligned URL intake cell
                     .child(
@@ -81,7 +114,6 @@ impl PosthazeApp {
                             .bg(graphite_bg().opacity(0.45))
                             .flex()
                             .items_center()
-                            .gap_1p5()
                             .child(
                                 div()
                                     .flex_1()
@@ -89,16 +121,6 @@ impl PosthazeApp {
                                     .font_family(MONO_FONT)
                                     .text_size(TYPE_BODY)
                                     .child(Input::new(&self.url_input).appearance(false)),
-                            )
-                            .child(
-                                Button::new("paste-probe")
-                                    .xsmall()
-                                    .primary()
-                                    .icon(IconName::ClipboardPaste)
-                                    .tooltip("Paste & Probe")
-                                    .on_click(cx.listener(|app, _, window, cx| {
-                                        app.paste_and_probe_from_clipboard(window, cx);
-                                    })),
                             ),
                     )
                     // Extensible top-header tools slot
