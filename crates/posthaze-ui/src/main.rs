@@ -520,6 +520,37 @@ impl PosthazeApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if matches!(action, SettingsAction::BrowseSaveFolder) {
+            let rx = cx.prompt_for_paths(PathPromptOptions {
+                files: false,
+                directories: true,
+                multiple: false,
+                prompt: Some("Select Default Download Folder".into()),
+            });
+            let window_handle = window.window_handle();
+            cx.spawn(async move |this, cx| {
+                let res = rx.await;
+                let _ = cx.update_window(window_handle, |_, window, cx| {
+                    if let Ok(Ok(Some(paths))) = res
+                        && let Some(chosen) = paths.into_iter().next()
+                    {
+                        let chosen_str = chosen.to_string_lossy().to_string();
+                        let _ = this.update(cx, |app, cx| {
+                            if let Some(modal) = &mut app.settings_modal {
+                                modal.dir_input.update(cx, |st, cx| {
+                                    st.set_value(chosen_str.clone(), window, cx);
+                                });
+                                modal.draft.dir = chosen_str;
+                                cx.notify();
+                            }
+                        });
+                    }
+                    window.activate_window();
+                });
+            })
+            .detach();
+            return;
+        }
         if let Some(modal) = &mut self.settings_modal {
             modal.handle_action(action, window, cx);
             cx.notify();

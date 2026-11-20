@@ -79,7 +79,7 @@ pub(crate) enum FileOpModalState {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn render_preflight_card<F1, F2, F3, F4, F5, F6>(
+pub(crate) fn render_preflight_card<F1, F2, F3, F4, F5, F6, F7, F8>(
     state: &PreflightModalState,
     show_add_paused: bool,
     on_close: F1,
@@ -88,6 +88,8 @@ pub(crate) fn render_preflight_card<F1, F2, F3, F4, F5, F6>(
     on_confirm: F4,
     on_edit_url: F5,
     on_toggle_headers: F6,
+    on_browse_dir: F7,
+    on_save_as: F8,
 ) -> AnyElement
 where
     F1: Fn(&mut Window, &mut App) + Clone + 'static,
@@ -96,6 +98,8 @@ where
     F4: Fn(bool, &mut Window, &mut App) + Clone + 'static,
     F5: Fn(String, &mut Window, &mut App) + 'static,
     F6: Fn(&mut Window, &mut App) + 'static,
+    F7: Fn(&mut Window, &mut App) + 'static,
+    F8: Fn(&mut Window, &mut App) + 'static,
 {
     match state {
         PreflightModalState::Probing { url, headers } => div()
@@ -488,8 +492,40 @@ where
                                 ),
                         ),
                 )
-                .child(compact_input_row("FILE", filename_input))
-                .child(compact_input_row("SAVE TO", dir_input))
+                .child(compact_input_row_with_action(
+                    "FILE",
+                    filename_input,
+                    Some(
+                        grid_cell_button(
+                            "pf-save-as",
+                            None,
+                            Some("SAVE AS"),
+                            Some("Choose file name and destination folder"),
+                            GridTone::Graphite,
+                            CellBorder::Left,
+                            false,
+                            move |_, window, cx| on_save_as(window, cx),
+                        )
+                        .into_any_element(),
+                    ),
+                ))
+                .child(compact_input_row_with_action(
+                    "SAVE TO",
+                    dir_input,
+                    Some(
+                        grid_cell_button(
+                            "pf-browse-dir",
+                            Some(IconName::FolderOpen),
+                            None,
+                            Some("Choose destination folder"),
+                            GridTone::Graphite,
+                            CellBorder::Left,
+                            true,
+                            move |_, window, cx| on_browse_dir(window, cx),
+                        )
+                        .into_any_element(),
+                    ),
+                ))
                 .child(
                     div()
                         .pt_0p5()
@@ -988,6 +1024,14 @@ where
 }
 
 fn compact_input_row(label: &'static str, state: &Entity<InputState>) -> impl IntoElement {
+    compact_input_row_with_action(label, state, None)
+}
+
+fn compact_input_row_with_action(
+    label: &'static str,
+    state: &Entity<InputState>,
+    trailing_action: Option<AnyElement>,
+) -> impl IntoElement {
     div()
         .w_full()
         .h(px(30.0))
@@ -1020,6 +1064,7 @@ fn compact_input_row(label: &'static str, state: &Entity<InputState>) -> impl In
                 .text_size(TYPE_BODY)
                 .child(Input::new(state).appearance(false)),
         )
+        .when_some(trailing_action, |el, action| el.child(action))
 }
 
 pub(crate) fn labeled_input(label: &'static str, state: &Entity<InputState>) -> impl IntoElement {

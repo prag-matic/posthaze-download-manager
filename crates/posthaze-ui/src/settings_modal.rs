@@ -380,6 +380,7 @@ impl SettingsModalState {
             SettingsAction::ToggleStartSidebarCollapsed => {
                 self.draft.ui_start_sidebar_collapsed = !self.draft.ui_start_sidebar_collapsed;
             }
+            SettingsAction::BrowseSaveFolder => {}
             SettingsAction::SetAccentOverride(accent) => {
                 self.draft.ui_accent_override = accent;
                 crate::theme::apply_theme_with_accent(
@@ -487,6 +488,7 @@ pub(crate) enum SettingsAction {
     ToggleScrollbarMinimap,
     ToggleTitlebarTelemetry,
     ToggleStartSidebarCollapsed,
+    BrowseSaveFolder,
     SetAccentOverride(Option<String>),
     CopyConfigJson,
     ResetToDefaults,
@@ -903,11 +905,37 @@ fn render_general_tab<F>(state: &SettingsModalState, on_action: F) -> AnyElement
 where
     F: Fn(SettingsAction, &mut Window, &mut App) + Clone + 'static,
 {
+    let browse_action = on_action.clone();
     div()
         .flex()
         .flex_col()
         .gap_3()
-        .child(labeled_input("Save Folder", &state.dir_input))
+        .child(
+            div()
+                .w_full()
+                .flex()
+                .items_stretch()
+                .child(div().flex_1().min_w_0().child(labeled_input("Save Folder", &state.dir_input)))
+                .child(
+                    div()
+                        .border_t_1()
+                        .border_b_1()
+                        .border_r_1()
+                        .border_color(graphite_border())
+                        .flex()
+                        .items_stretch()
+                        .child(grid_cell_button(
+                            "settings-browse-dir",
+                            Some(IconName::FolderOpen),
+                            Some("BROWSE"),
+                            Some("Choose default download folder"),
+                            GridTone::Graphite,
+                            CellBorder::Left,
+                            false,
+                            move |_, window, cx| browse_action(SettingsAction::BrowseSaveFolder, window, cx),
+                        )),
+                ),
+        )
         .child(toggle_row(
             "settings-auto-categorize",
             "Sort by File Type",

@@ -343,6 +343,90 @@ impl PreflightWindow {
         window.remove_window();
     }
 
+    fn browse_destination_dir(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Select Download Folder".into()),
+        });
+        let window_handle = window.window_handle();
+        cx.spawn(async move |this, cx| {
+            let res = rx.await;
+            let _ = cx.update_window(window_handle, |_, window, cx| {
+                if let Ok(Ok(Some(paths))) = res
+                    && let Some(chosen) = paths.into_iter().next()
+                {
+                    let chosen_str = chosen.to_string_lossy().to_string();
+                    let _ = this.update(cx, |win, cx| {
+                        if let PreflightModalState::Resolved { dir_input, .. } = &win.state {
+                            dir_input.update(cx, |st, cx| {
+                                st.set_value(chosen_str, window, cx);
+                            });
+                            cx.notify();
+                        }
+                    });
+                }
+                window.activate_window();
+            });
+        })
+        .detach();
+    }
+
+    fn browse_save_as(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (current_dir, current_name) = match &self.state {
+            PreflightModalState::Resolved {
+                filename_input,
+                dir_input,
+                ..
+            } => {
+                let d = dir_input.read(cx).value().trim().to_string();
+                let dir = if d.is_empty() {
+                    self.settings.default_output_dir.clone()
+                } else {
+                    PathBuf::from(d)
+                };
+                let n = filename_input.read(cx).value().trim().to_string();
+                let name = if n.is_empty() { None } else { Some(n) };
+                (dir, name)
+            }
+            _ => return,
+        };
+        let rx = cx.prompt_for_new_path(&current_dir, current_name.as_deref());
+        let window_handle = window.window_handle();
+        cx.spawn(async move |this, cx| {
+            let res = rx.await;
+            let _ = cx.update_window(window_handle, |_, window, cx| {
+                if let Ok(Ok(Some(chosen))) = res {
+                    let _ = this.update(cx, |win, cx| {
+                        if let PreflightModalState::Resolved {
+                            filename_input,
+                            dir_input,
+                            ..
+                        } = &win.state
+                        {
+                            if let Some(parent) = chosen.parent() {
+                                let parent_str = parent.to_string_lossy().to_string();
+                                dir_input.update(cx, |st, cx| {
+                                    st.set_value(parent_str, window, cx);
+                                });
+                            }
+                            if let Some(file_name) = chosen.file_name().and_then(|n| n.to_str()) {
+                                let name_str = file_name.to_string();
+                                filename_input.update(cx, |st, cx| {
+                                    st.set_value(name_str, window, cx);
+                                });
+                            }
+                            cx.notify();
+                        }
+                    });
+                }
+                window.activate_window();
+            });
+        })
+        .detach();
+    }
+
     fn render_titlebar(&self) -> impl IntoElement {
         TitleBar::new()
             .bg(graphite_bg())
@@ -402,6 +486,8 @@ impl Render for PreflightWindow {
         let entity_confirm = cx.entity().clone();
         let entity_edit = cx.entity().clone();
         let entity_headers = cx.entity().clone();
+        let entity_browse_dir = cx.entity().clone();
+        let entity_save_as = cx.entity().clone();
 
         let card = render_preflight_card(
             &self.state,
@@ -455,6 +541,16 @@ impl Render for PreflightWindow {
                         window.resize(size(px(460.0), px(target_h)));
                         cx.notify();
                     }
+                });
+            },
+            move |window, cx| {
+                entity_browse_dir.update(cx, |win, cx| {
+                    win.browse_destination_dir(window, cx);
+                });
+            },
+            move |window, cx| {
+                entity_save_as.update(cx, |win, cx| {
+                    win.browse_save_as(window, cx);
                 });
             },
         );
