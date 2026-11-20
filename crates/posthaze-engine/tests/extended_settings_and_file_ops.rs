@@ -54,6 +54,8 @@ async fn extended_settings_round_trip_and_categorize_helpers() {
         ui_start_sidebar_collapsed: true,
         ui_accent_override: Some("emerald".to_string()),
         ui_lock_file_extension: false,
+        ui_close_to_tray: false,
+        launch_on_startup: true,
     };
 
     {

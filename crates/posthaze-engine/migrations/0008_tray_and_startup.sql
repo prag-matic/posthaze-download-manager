@@ -1,0 +1,2 @@
+ALTER TABLE settings ADD COLUMN ui_close_to_tray INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE settings ADD COLUMN launch_on_startup INTEGER NOT NULL DEFAULT 0;

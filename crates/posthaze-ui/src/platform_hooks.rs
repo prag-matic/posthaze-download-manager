@@ -18,6 +18,44 @@ fn spawn_explorer(arg: impl AsRef<std::ffi::OsStr>, action_label: &str) -> Resul
         .map_err(|err| format!("Could not {action_label}: {err}"))
 }
 
+/// Formats the Windows `HKCU\...\Run` command line for launching Posthaze minimized on login.
+pub(crate) fn format_startup_command(exe_path: &Path) -> String {
+    format!("\"{}\" --minimized", exe_path.display())
+}
+
+/// Synchronizes `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Posthaze` with `enabled`.
+pub(crate) fn sync_windows_startup_registry(enabled: bool) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt as _;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+
+        let mut cmd = std::process::Command::new("reg.exe");
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        if enabled {
+            let exe = std::env::current_exe()
+                .map_err(|err| format!("Could not resolve executable path: {err}"))?;
+            let value = format_startup_command(&exe);
+            cmd.args(["add", RUN_KEY, "/v", "Posthaze", "/t", "REG_SZ", "/d", &value, "/f"]);
+        } else {
+            cmd.args(["delete", RUN_KEY, "/v", "Posthaze", "/f"]);
+        }
+        let status = cmd
+            .status()
+            .map_err(|err| format!("Could not update Windows startup registry: {err}"))?;
+        if !status.success() && enabled {
+            return Err(format!("reg.exe exited with status {status}"));
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = enabled;
+        Ok(())
+    }
+}
+
 /// Opens a downloaded file using the OS shell (`explorer.exe` on Windows).
 pub(crate) fn open_file_in_shell(path: &Path) -> Result<(), String> {
     if !path.exists() {
@@ -90,4 +128,17 @@ pub(crate) fn spawn_completion_hook(exe_path: &str, args_template: &str, file_pa
         #[cfg(not(target_os = "windows"))]
         let _ = (exe, args_line);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::format_startup_command;
+
+    #[test]
+    fn formats_startup_registry_command_with_minimized_flag() {
+        let cmd = format_startup_command(Path::new(r"C:\Users\Test\Posthaze\posthaze-ui.exe"));
+        assert_eq!(cmd, "\"C:\\Users\\Test\\Posthaze\\posthaze-ui.exe\" --minimized");
+    }
 }

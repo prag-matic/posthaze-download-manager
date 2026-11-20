@@ -18,6 +18,7 @@ mod settings_modal;
 mod sidebar;
 mod table;
 mod theme;
+mod tray;
 mod view_model;
 
 use std::path::PathBuf;
@@ -45,7 +46,7 @@ use crate::modals::{
 use crate::motion::MotionState;
 use crate::platform_hooks::{
     open_directory_in_shell, open_file_in_shell, open_folder_in_shell, spawn_completion_hook,
-    spawn_windows_toast,
+    spawn_windows_toast, sync_windows_startup_registry,
 };
 use crate::preflight_window::PreflightWindow;
 use crate::settings_modal::{SettingsAction, SettingsModalState, render_settings_modal};
@@ -130,6 +131,8 @@ pub(crate) struct PosthazeApp {
     refresh_in_flight: bool,
     refresh_pending: bool,
     last_progress_notify: Instant,
+    quitting: bool,
+    _tray_handle: Option<tray::TrayHandle>,
 }
 
 impl PosthazeApp {
@@ -186,7 +189,26 @@ impl PosthazeApp {
             refresh_in_flight: false,
             refresh_pending: false,
             last_progress_notify: Instant::now(),
+            quitting: false,
+            _tray_handle: None,
         };
+        if let Some((tray_handle, tray_rx)) = tray::init_tray() {
+            app._tray_handle = Some(tray_handle);
+            app.start_tray_listener(tray_rx, cx);
+        }
+        let close_entity = cx.entity().downgrade();
+        window.on_window_should_close(cx, move |window, cx| {
+            let hide_to_tray = close_entity
+                .update(cx, |app, _| {
+                    !app.quitting && app.queue.settings.ui_close_to_tray
+                })
+                .unwrap_or(false);
+            if hide_to_tray {
+                window.minimize_window();
+                return false;
+            }
+            true
+        });
 
         app.refresh_from_engine(cx);
         app.start_event_listener(cx);
@@ -261,6 +283,41 @@ impl PosthazeApp {
                     app.queue.persisted_segments.insert(id, segs);
                     cx.notify();
                 });
+            }
+        })
+        .detach();
+    }
+
+    fn start_tray_listener(
+        &self,
+        mut rx: tokio::sync::mpsc::UnboundedReceiver<tray::TrayAction>,
+        cx: &mut Context<Self>,
+    ) {
+        let window_handle = self.window_handle;
+        cx.spawn(async move |this, cx| {
+            while let Some(action) = rx.recv().await {
+                match action {
+                    tray::TrayAction::ToggleShowHide => {
+                        let _ = cx.update_window(window_handle, |_, window, _| {
+                            if window.is_window_active() {
+                                window.minimize_window();
+                            } else {
+                                window.activate_window();
+                            }
+                        });
+                    }
+                    tray::TrayAction::PauseAll => {
+                        let _ = this.update(cx, |app, cx| {
+                            app.pause_all(cx);
+                        });
+                    }
+                    tray::TrayAction::Quit => {
+                        let _ = this.update(cx, |app, cx| {
+                            app.quitting = true;
+                            cx.quit();
+                        });
+                    }
+                }
             }
         })
         .detach();
@@ -527,7 +584,11 @@ impl PosthazeApp {
         };
         match modal.apply_to_settings(cx) {
             Ok(new_settings) => {
+                let startup_enabled = new_settings.launch_on_startup;
                 self.settings_modal = None;
+                if let Err(err) = sync_windows_startup_registry(startup_enabled) {
+                    self.status_banner = Some(err);
+                }
                 self.run_command(EngineCommand::UpdateSettings(new_settings), cx);
             }
             Err(err) => {
@@ -1200,6 +1261,11 @@ impl Render for PosthazeApp {
                 let ctrl_or_cmd =
                     event.keystroke.modifiers.control || event.keystroke.modifiers.platform;
                 let shift = event.keystroke.modifiers.shift;
+                if ctrl_or_cmd && key == "q" {
+                    app.quitting = true;
+                    cx.quit();
+                    return;
+                }
                 if ctrl_or_cmd
                     && key == "a"
                     && !kb_ctx.has_confirm_modal

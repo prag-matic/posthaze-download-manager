@@ -446,6 +446,10 @@ pub struct Settings {
     pub ui_accent_override: Option<String>,
     /// Whether the Add Download dialog locks the probed file extension from accidental edits.
     pub ui_lock_file_extension: bool,
+    /// Whether closing the main window minimizes to the Windows System Tray instead of exiting.
+    pub ui_close_to_tray: bool,
+    /// Whether Posthaze launches minimized to the System Tray on Windows user login.
+    pub launch_on_startup: bool,
 }
 
 impl Default for Settings {
@@ -483,6 +487,8 @@ impl Default for Settings {
             ui_start_sidebar_collapsed: false,
             ui_accent_override: None,
             ui_lock_file_extension: true,
+            ui_close_to_tray: true,
+            launch_on_startup: false,
         }
     }
 }

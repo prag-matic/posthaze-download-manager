@@ -111,6 +111,8 @@ pub(crate) struct SettingsDraft {
     pub ui_start_sidebar_collapsed: bool,
     pub ui_accent_override: Option<String>,
     pub ui_lock_file_extension: bool,
+    pub ui_close_to_tray: bool,
+    pub launch_on_startup: bool,
 }
 
 impl SettingsDraft {
@@ -148,6 +150,8 @@ impl SettingsDraft {
             ui_start_sidebar_collapsed: settings.ui_start_sidebar_collapsed,
             ui_accent_override: settings.ui_accent_override.clone(),
             ui_lock_file_extension: settings.ui_lock_file_extension,
+            ui_close_to_tray: settings.ui_close_to_tray,
+            launch_on_startup: settings.launch_on_startup,
         }
     }
 
@@ -226,6 +230,8 @@ impl SettingsDraft {
             ui_start_sidebar_collapsed: self.ui_start_sidebar_collapsed,
             ui_accent_override: self.ui_accent_override,
             ui_lock_file_extension: self.ui_lock_file_extension,
+            ui_close_to_tray: self.ui_close_to_tray,
+            launch_on_startup: self.launch_on_startup,
         };
         settings.validate().map_err(|e| e.to_string())?;
         Ok(settings)
@@ -362,6 +368,12 @@ impl SettingsModalState {
             SettingsAction::ToggleLockFileExtension => {
                 self.draft.ui_lock_file_extension = !self.draft.ui_lock_file_extension;
             }
+            SettingsAction::ToggleCloseToTray => {
+                self.draft.ui_close_to_tray = !self.draft.ui_close_to_tray;
+            }
+            SettingsAction::ToggleLaunchOnStartup => {
+                self.draft.launch_on_startup = !self.draft.launch_on_startup;
+            }
             SettingsAction::SetTableDensity(density) => {
                 self.draft.ui_table_density = density;
             }
@@ -434,6 +446,8 @@ impl SettingsModalState {
                         "ui_show_titlebar_telemetry": settings.ui_show_titlebar_telemetry,
                         "ui_start_sidebar_collapsed": settings.ui_start_sidebar_collapsed,
                         "ui_lock_file_extension": settings.ui_lock_file_extension,
+                        "ui_close_to_tray": settings.ui_close_to_tray,
+                        "launch_on_startup": settings.launch_on_startup,
                     });
                     if let Ok(pretty) = serde_json::to_string_pretty(&payload) {
                         cx.write_to_clipboard(ClipboardItem::new_string(pretty));
@@ -489,6 +503,8 @@ pub(crate) enum SettingsAction {
     ToggleClickOpensInspector,
     ToggleShowAddPaused,
     ToggleLockFileExtension,
+    ToggleCloseToTray,
+    ToggleLaunchOnStartup,
     SetTableDensity(TableDensity),
     ToggleSpeedCol,
     ToggleEtaCol,
@@ -952,6 +968,22 @@ where
             "Route files into Archives, Video, Audio, Documents, and Programs subfolders.",
             state.draft.auto_categorize_folders,
             SettingsAction::ToggleAutoCategorize,
+            on_action.clone(),
+        ))
+        .child(toggle_row(
+            "settings-close-to-tray",
+            "Close to System Tray",
+            "Keep active Downloads and Browser Capture running in the tray when closing the main window (Ctrl+Q or Tray -> Quit to exit).",
+            state.draft.ui_close_to_tray,
+            SettingsAction::ToggleCloseToTray,
+            on_action.clone(),
+        ))
+        .child(toggle_row(
+            "settings-launch-startup",
+            "Launch on Windows Startup",
+            "Start Posthaze minimized to the System Tray automatically when you sign in to Windows.",
+            state.draft.launch_on_startup,
+            SettingsAction::ToggleLaunchOnStartup,
             on_action,
         ))
         .into_any_element()
@@ -1645,10 +1677,14 @@ mod tests {
         draft.workers = "16".to_string();
         draft.concurrent = "4".to_string();
         draft.cmd_args = "   ".to_string();
+        draft.ui_close_to_tray = false;
+        draft.launch_on_startup = true;
         let parsed = draft.into_settings().expect("valid draft");
         assert_eq!(parsed.max_workers, 16);
         assert_eq!(parsed.max_concurrent_downloads, 4);
         assert_eq!(parsed.completion_cmd_args, "%path%");
+        assert!(!parsed.ui_close_to_tray);
+        assert!(parsed.launch_on_startup);
 
         let mut bad_workers = SettingsDraft::from_settings(&defaults);
         bad_workers.workers = "33".to_string();

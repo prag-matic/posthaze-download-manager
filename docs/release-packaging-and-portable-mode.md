@@ -21,3 +21,9 @@ The workspace `Cargo.toml` defines `[profile.release]` with `lto = true`, `codeg
 
 - **Single-Instance Wake:** Launching `posthaze-ui` without `--minimized` checks if the named-pipe IPC server is already listening. If so, it sends `{"type":"show"}` (`PipeCommand::ShowMainWindow`) over the pipe to restore and focus the running main window and exits immediately.
 - **`--minimized` Flag:** Launching `posthaze-ui --minimized` creates the main window minimized and unfocused so background **Browser Capture** stays active without interrupting the desktop.
+
+## System Tray, Close-to-Tray & Launch on Startup (`0008_tray_and_startup.sql`)
+
+- **Windows System Tray (`tray.rs`):** `posthaze-ui` creates a persistent System Tray icon with **Show / Hide Posthaze**, **Pause All Downloads**, and **Quit Posthaze** menu actions (plus left-click toggle).
+- **Close to System Tray (`ui_close_to_tray`, default `true`):** Closing the main window minimizes to the tray so `Active` `Download`s and **Browser Capture** stay alive; **Tray → Quit** or `Ctrl+Q` exits the process cleanly.
+- **Launch on Windows Startup (`launch_on_startup`, default `false`):** Saving **Settings → General → Launch on Windows Startup** writes or removes `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Posthaze` with `"<exe>" --minimized`.
