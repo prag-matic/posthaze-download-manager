@@ -5583,7 +5583,7 @@ dependencies = [
 
 [[package]]
 name = "posthaze-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "posthaze-engine",
@@ -5595,7 +5595,7 @@ dependencies = [
 
 [[package]]
 name = "posthaze-engine"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "blake3",
  "bytes",
@@ -5613,7 +5613,7 @@ dependencies = [
 
 [[package]]
 name = "posthaze-ui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "gpui-kit",
  "image",

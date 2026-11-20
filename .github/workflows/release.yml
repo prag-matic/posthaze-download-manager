@@ -39,7 +39,7 @@ jobs:
       - name: Package portable ZIP
         shell: pwsh
         run: |
-          $tag = if ($env:GITHUB_REF_TYPE -eq "tag") { $env:GITHUB_REF_NAME } else { "v0.1.0" }
+          $tag = if ($env:GITHUB_REF_TYPE -eq "tag") { $env:GITHUB_REF_NAME } else { "v0.1.1" }
           $ver = $tag.TrimStart("v")
           "RELEASE_VERSION=$ver" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
@@ -92,7 +92,7 @@ jobs:
             - **Portable (`*-portable.zip`)**: Self-contained archive with `posthaze.portable` (stores `state.db` and `logs/` in `./data/`).
 
             ### Windows SmartScreen Note
-            `v0.1.0` binaries are currently **unsigned**. Windows Defender SmartScreen may show *"Windows protected your PC"* on first launch; click **More info** → **Run anyway** after verifying the SHA-256 checksum against `SHA256SUMS.txt`:
+            `v${{ env.RELEASE_VERSION }}` binaries are currently **unsigned**. Windows Defender SmartScreen may show *"Windows protected your PC"* on first launch; click **More info** → **Run anyway** after verifying the SHA-256 checksum against `SHA256SUMS.txt`:
 
             ```powershell
             Get-FileHash .\posthaze-${{ env.RELEASE_VERSION }}-windows-x64-setup.exe -Algorithm SHA256
