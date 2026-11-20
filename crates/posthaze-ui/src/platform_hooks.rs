@@ -1,6 +1,47 @@
-//! Platform-specific OS helpers for Windows notifications and post-completion hooks.
+//! Platform-specific OS helpers for file/folder shell launches, Windows notifications, and post-completion hooks.
 
 use std::path::Path;
+
+/// Opens a downloaded file using the OS shell (`explorer.exe` on Windows).
+pub(crate) fn open_file_in_shell(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Err(format!("File not found on disk: {}", path.display()));
+    }
+    #[cfg(target_os = "windows")]
+    let spawn_res = std::process::Command::new("explorer.exe").arg(path).spawn();
+    #[cfg(not(target_os = "windows"))]
+    let spawn_res: std::io::Result<std::process::Child> = Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "Open File is only supported on Windows",
+    ));
+
+    spawn_res
+        .map(|_| ())
+        .map_err(|err| format!("Could not open file: {err}"))
+}
+
+/// Reveals a downloaded file or its parent directory in the OS file manager.
+pub(crate) fn open_folder_in_shell(path: &Path) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    let spawn_res = if path.exists() {
+        std::process::Command::new("explorer.exe")
+            .arg(format!("/select,{}", path.display()))
+            .spawn()
+    } else if let Some(parent) = path.parent().filter(|p| p.exists()) {
+        std::process::Command::new("explorer.exe").arg(parent).spawn()
+    } else {
+        return Err(format!("Folder not found: {}", path.display()));
+    };
+    #[cfg(not(target_os = "windows"))]
+    let spawn_res: std::io::Result<std::process::Child> = Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "Open Folder is only supported on Windows",
+    ));
+
+    spawn_res
+        .map(|_| ())
+        .map_err(|err| format!("Could not open folder: {err}"))
+}
 
 /// Dispatches a non-blocking Windows Toast notification via PowerShell WinRT.
 pub(crate) fn spawn_windows_toast(title: &str, body: &str) {

@@ -13,7 +13,6 @@ mod settings_modal;
 mod theme;
 mod view_model;
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -27,9 +26,8 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use posthaze_engine::{
-    CollisionPolicy, DeleteDefaultAction, DownloadId, DownloadRecord, DownloadRequest,
-    DownloadState, EngineEvent, FailureKind, ProgressSnapshot, SegmentProgress, Settings,
-    categorize_subfolder, default_db_path, resolve_target_path,
+    CollisionPolicy, DeleteDefaultAction, DownloadId, DownloadRequest, DownloadState, EngineEvent,
+    SegmentProgress, categorize_subfolder, default_db_path, resolve_target_path,
 };
 
 use crate::assets::{BRAND_LOGO_SVG, PosthazeAssets};
@@ -42,16 +40,19 @@ use crate::modals::{
     render_file_op_modal, render_preflight_modal,
 };
 use crate::motion::{MotionState, RowMotionSample};
-use crate::platform_hooks::{spawn_completion_hook, spawn_windows_toast};
+use crate::platform_hooks::{
+    open_file_in_shell, open_folder_in_shell, spawn_completion_hook, spawn_windows_toast,
+};
 use crate::settings_modal::{SettingsAction, SettingsModalState, render_settings_modal};
 use crate::theme::*;
 use crate::view_model::{
     COLLAPSED_INSPECTOR_HEIGHT, DEFAULT_INSPECTOR_HEIGHT, DEFAULT_SIDEBAR_WIDTH, DownloadRowView,
-    FilterTab, INSPECTOR_MAGNETIC_SNAP_RADIUS, LayoutProfile, RAIL_SIDEBAR_WIDTH,
-    SIDEBAR_MAGNETIC_SNAP_RADIUS, SortColumn, SortDirection, apply_magnetic_detent,
-    compute_fifo_ranks, compute_layout_profile, derive_display_filename, filter_and_sort_rows,
-    format_bytes, format_eta, format_speed, resolve_inspector_drag, resolve_sidebar_drag,
-    state_icon,
+    FilterTab, INSPECTOR_MAGNETIC_SNAP_RADIUS, KeyboardAction, KeyboardContext, LayoutProfile,
+    PrimaryDownloadAction, QueueController, RAIL_SIDEBAR_WIDTH, SIDEBAR_MAGNETIC_SNAP_RADIUS,
+    SortColumn, SortDirection, UiEffect, apply_magnetic_detent, compute_fifo_ranks,
+    compute_layout_profile, derive_display_filename, filter_and_sort_rows, format_bytes,
+    format_eta, format_speed, resolve_inspector_drag, resolve_keyboard_action,
+    resolve_sidebar_drag, state_icon,
 };
 
 const COL_STATE: f32 = 104.0;
@@ -97,21 +98,16 @@ struct PosthazeApp {
     bridge: EngineBridge,
     window_handle: AnyWindowHandle,
     url_input: Entity<InputState>,
-    records: Vec<DownloadRecord>,
-    live_map: HashMap<DownloadId, ProgressSnapshot>,
-    persisted_segments: HashMap<DownloadId, Vec<SegmentProgress>>,
-    settings: Settings,
+    queue: QueueController,
     filter: FilterTab,
     sort_col: SortColumn,
     sort_dir: SortDirection,
-    selected_id: Option<DownloadId>,
     status_banner: Option<String>,
     preflight_modal: Option<PreflightModalState>,
     settings_modal: Option<SettingsModalState>,
     confirm_modal: Option<ConfirmAction>,
     file_op_modal: Option<FileOpModalState>,
     context_menu: Option<ContextMenuState>,
-    auto_retries_used: HashMap<DownloadId, u32>,
     sidebar_width: f32,
     sidebar_collapsed: bool,
     inspector_height: f32,
@@ -141,21 +137,16 @@ impl PosthazeApp {
             bridge,
             window_handle: window.window_handle(),
             url_input,
-            records: Vec::new(),
-            live_map: HashMap::new(),
-            persisted_segments: HashMap::new(),
-            settings: Settings::default(),
+            queue: QueueController::default(),
             filter: FilterTab::All,
             sort_col: SortColumn::CreatedAt,
             sort_dir: SortDirection::Descending,
-            selected_id: None,
             status_banner: None,
             preflight_modal: None,
             settings_modal: None,
             confirm_modal: None,
             file_op_modal: None,
             context_menu: None,
-            auto_retries_used: HashMap::new(),
             sidebar_width: DEFAULT_SIDEBAR_WIDTH,
             sidebar_collapsed: true,
             inspector_height: DEFAULT_INSPECTOR_HEIGHT,
@@ -172,17 +163,28 @@ impl PosthazeApp {
     }
 
     fn apply_snapshot(&mut self, snapshot: EngineSnapshot, cx: &mut Context<Self>) {
-        self.records = snapshot.records;
-        self.settings = snapshot.settings;
-        theme::apply_theme(&self.settings.ui_theme, None, cx);
-        self.persisted_segments = snapshot.segments;
-        if self.selected_id.is_none() {
-            self.selected_id = self.records.first().map(|r| r.id.clone());
-            if let Some(id) = self.selected_id.clone() {
-                self.load_segments_for(id, cx);
-            }
+        let effect = self.queue.apply_snapshot(snapshot);
+        theme::apply_theme(&self.queue.settings.ui_theme, None, cx);
+        if let Some(effect) = effect {
+            self.execute_ui_effects(vec![effect], cx);
         }
         cx.notify();
+    }
+
+    fn execute_ui_effects(&mut self, effects: Vec<UiEffect>, cx: &mut Context<Self>) {
+        for effect in effects {
+            match effect {
+                UiEffect::RefreshFromEngine => self.refresh_from_engine(cx),
+                UiEffect::ResumeDownload(id) => self.resume_download(id, cx),
+                UiEffect::ShowToast { title, body } => spawn_windows_toast(&title, &body),
+                UiEffect::RunCompletionHook { path } => spawn_completion_hook(
+                    &self.queue.settings.completion_cmd_path,
+                    &self.queue.settings.completion_cmd_args,
+                    &path,
+                ),
+                UiEffect::LoadSegments(id) => self.load_segments_for(id, cx),
+            }
+        }
     }
 
     fn refresh_from_engine(&self, cx: &mut Context<Self>) {
@@ -202,7 +204,7 @@ impl PosthazeApp {
         cx.spawn(async move |this, cx| {
             if let Ok(Ok((id, segs))) = rx.await {
                 let _ = this.update(cx, |app, cx| {
-                    app.persisted_segments.insert(id, segs);
+                    app.queue.persisted_segments.insert(id, segs);
                     cx.notify();
                 });
             }
@@ -238,92 +240,48 @@ impl PosthazeApp {
                             if app.motion.on_progress(&id, &snapshot, Instant::now()) {
                                 app.ensure_motion_loop(cx);
                             }
-                            app.live_map.insert(id, snapshot);
+                            app.queue.live_map.insert(id, snapshot);
                             cx.notify();
                         });
                     }
                     Ok(EngineEvent::StateChanged {
                         id,
                         state,
-                        error: _,
+                        error,
                         failure_kind,
                     }) => {
                         let _ = this.update(cx, |app, cx| {
-                            let rec = app.records.iter().find(|r| r.id == id).cloned();
-                            let total_bytes = rec.as_ref().and_then(|r| r.content_length);
+                            let total_bytes = app
+                                .queue
+                                .records
+                                .iter()
+                                .find(|r| r.id == id)
+                                .and_then(|r| r.content_length);
                             if app
                                 .motion
                                 .on_state_changed(&id, state, total_bytes, Instant::now())
                             {
                                 app.ensure_motion_loop(cx);
                             }
-                            if state != DownloadState::Active {
-                                app.live_map.remove(&id);
-                            }
-
-                            if state == DownloadState::Completed {
-                                app.auto_retries_used.remove(&id);
-                                if let Some(ref r) = rec {
-                                    let name = derive_display_filename(r);
-                                    let win_active = cx
-                                        .update_window(app.window_handle, |_, w, _| {
-                                            w.is_window_active()
-                                        })
-                                        .unwrap_or(false);
-                                    if app.settings.notify_on_completed
-                                        && (!app.settings.notify_only_inactive || !win_active)
-                                    {
-                                        spawn_windows_toast(
-                                            "Posthaze — Download Completed",
-                                            &name,
-                                        );
-                                    }
-                                    if app.settings.completion_cmd_enabled
-                                        && let Some(ref out_path) = r.output_path
-                                    {
-                                        spawn_completion_hook(
-                                            &app.settings.completion_cmd_path,
-                                            &app.settings.completion_cmd_args,
-                                            out_path,
-                                        );
-                                    }
-                                }
-                            } else if state == DownloadState::Failed {
-                                let is_resource_changed =
-                                    failure_kind == Some(FailureKind::ResourceChanged);
-                                let used = app.auto_retries_used.get(&id).copied().unwrap_or(0);
-                                if !is_resource_changed && used < app.settings.auto_retry_count {
-                                    app.auto_retries_used.insert(id.clone(), used + 1);
-                                    app.resume_download(id.clone(), cx);
-                                } else {
-                                    let win_active = cx
-                                        .update_window(app.window_handle, |_, w, _| {
-                                            w.is_window_active()
-                                        })
-                                        .unwrap_or(false);
-                                    if app.settings.notify_on_failed
-                                        && (!app.settings.notify_only_inactive || !win_active)
-                                    {
-                                        let name = rec
-                                            .as_ref()
-                                            .map(derive_display_filename)
-                                            .unwrap_or_else(|| "Download".to_string());
-                                        spawn_windows_toast("Posthaze — Download Failed", &name);
-                                    }
-                                }
-                            }
-
-                            app.refresh_from_engine(cx);
+                            let win_active = cx
+                                .update_window(app.window_handle, |_, w, _| w.is_window_active())
+                                .unwrap_or(false);
+                            let effects = app.queue.on_engine_event(
+                                EngineEvent::StateChanged {
+                                    id,
+                                    state,
+                                    error,
+                                    failure_kind,
+                                },
+                                win_active,
+                            );
+                            app.execute_ui_effects(effects, cx);
                         });
                     }
-                    Ok(EngineEvent::QueueUpdated) => {
+                    Ok(event @ (EngineEvent::QueueUpdated | EngineEvent::SettingsUpdated(_))) => {
                         let _ = this.update(cx, |app, cx| {
-                            app.refresh_from_engine(cx);
-                        });
-                    }
-                    Ok(EngineEvent::SettingsUpdated(settings)) => {
-                        let _ = this.update(cx, |app, cx| {
-                            app.settings = settings;
+                            let effects = app.queue.on_engine_event(event, false);
+                            app.execute_ui_effects(effects, cx);
                             cx.notify();
                         });
                     }
@@ -417,8 +375,8 @@ impl PosthazeApp {
         });
         cx.notify();
 
-        let out_dir = self.settings.default_output_dir.clone();
-        let default_workers = self.settings.max_workers.clamp(1, 32);
+        let out_dir = self.queue.settings.default_output_dir.clone();
+        let default_workers = self.queue.settings.max_workers.clamp(1, 32);
         let window_handle = window.window_handle();
         let probe_headers = headers.clone();
         let rx = self.bridge.probe(url.clone(), out_dir, probe_headers);
@@ -434,7 +392,7 @@ impl PosthazeApp {
                     match res {
                         Ok(Ok(info)) => {
                             let initial_name =
-                                if app.settings.collision_policy == CollisionPolicy::Rename {
+                                if app.queue.settings.collision_policy == CollisionPolicy::Rename {
                                     info.disambiguated_output_path
                                         .file_name()
                                         .and_then(|n| n.to_str())
@@ -447,8 +405,8 @@ impl PosthazeApp {
                                 .disambiguated_output_path
                                 .parent()
                                 .map(PathBuf::from)
-                                .unwrap_or_else(|| app.settings.default_output_dir.clone());
-                            let categorized_dir = if app.settings.auto_categorize_folders {
+                                .unwrap_or_else(|| app.queue.settings.default_output_dir.clone());
+                            let categorized_dir = if app.queue.settings.auto_categorize_folders {
                                 if let Some(sub) = categorize_subfolder(&initial_name) {
                                     base_dir.join(sub)
                                 } else {
@@ -559,7 +517,7 @@ impl PosthazeApp {
         set_or_remove_header(&mut headers, "User-Agent", &ua_val);
 
         let out_dir = if dir_str.is_empty() {
-            self.settings.default_output_dir.clone()
+            self.queue.settings.default_output_dir.clone()
         } else {
             PathBuf::from(dir_str)
         };
@@ -568,14 +526,14 @@ impl PosthazeApp {
         let mut ask_overwrite_name: Option<String> = None;
         if !filename.is_empty() {
             let resolution =
-                resolve_target_path(&out_dir, &filename, self.settings.collision_policy);
+                resolve_target_path(&out_dir, &filename, self.queue.settings.collision_policy);
             if resolution.needs_overwrite_prompt {
                 ask_overwrite_name = Some(filename.clone());
             }
             req.output_path = Some(resolution.path);
         }
         req.max_workers = if info.supports_ranges { workers } else { 1 };
-        req.sync_on_complete = self.settings.sync_on_complete;
+        req.sync_on_complete = self.queue.settings.sync_on_complete;
         req.headers = headers;
 
         self.url_input.update(cx, |state, cx| {
@@ -592,8 +550,8 @@ impl PosthazeApp {
             return;
         }
 
-        if self.settings.notify_on_added {
-            let allow_notify = !self.settings.notify_only_inactive || !window.is_window_active();
+        if self.queue.settings.notify_on_added {
+            let allow_notify = !self.queue.settings.notify_only_inactive || !window.is_window_active();
             if allow_notify {
                 spawn_windows_toast(
                     "Posthaze — Download Added",
@@ -618,9 +576,9 @@ impl PosthazeApp {
         };
         self.run_command_with(cmd, cx, move |app, created_id| {
             if let Some(id) = created_id
-                && (start_immediately || app.selected_id.is_none())
+                && (start_immediately || app.queue.selected_id.is_none())
             {
-                app.selected_id = Some(id);
+                app.queue.selected_id = Some(id);
             }
             app.status_banner = None;
         });
@@ -631,7 +589,7 @@ impl PosthazeApp {
     }
 
     fn open_settings_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.settings_modal = Some(SettingsModalState::from_settings(&self.settings, window, cx));
+        self.settings_modal = Some(SettingsModalState::from_settings(&self.queue.settings, window, cx));
         cx.notify();
     }
 
@@ -676,7 +634,7 @@ impl PosthazeApp {
     }
 
     fn request_delete_download(&mut self, id: DownloadId, filename: String, cx: &mut Context<Self>) {
-        match self.settings.delete_action_default {
+        match self.queue.settings.delete_action_default {
             DeleteDefaultAction::Ask => {
                 self.request_delete_download_with_file(id, filename, false, cx);
             }
@@ -705,11 +663,7 @@ impl PosthazeApp {
     }
 
     fn request_clear_completed(&mut self, cx: &mut Context<Self>) {
-        let count = self
-            .records
-            .iter()
-            .filter(|r| matches!(r.state, DownloadState::Completed | DownloadState::Cancelled))
-            .count();
+        let count = self.queue.clear_completed_ids().len();
         if count == 0 {
             return;
         }
@@ -740,21 +694,8 @@ impl PosthazeApp {
             cx.notify();
             return;
         };
-        if !path.exists() {
-            self.status_banner = Some(format!("File not found on disk: {}", path.display()));
-            cx.notify();
-            return;
-        }
-        #[cfg(target_os = "windows")]
-        let spawn_res = std::process::Command::new("explorer.exe").arg(&path).spawn();
-        #[cfg(not(target_os = "windows"))]
-        let spawn_res: std::io::Result<std::process::Child> = Err(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "Open File is only supported on Windows",
-        ));
-
-        if let Err(err) = spawn_res {
-            self.status_banner = Some(format!("Could not open file: {err}"));
+        if let Err(err) = open_file_in_shell(&path) {
+            self.status_banner = Some(err);
             cx.notify();
         }
     }
@@ -767,7 +708,7 @@ impl PosthazeApp {
         cx: &mut Context<Self>,
     ) {
         self.context_menu = None;
-        let record = self.records.iter().find(|r| r.id == id).cloned();
+        let record = self.queue.records.iter().find(|r| r.id == id).cloned();
 
         match action {
             ContextMenuAction::Pause => self.pause_download(id, cx),
@@ -788,7 +729,7 @@ impl PosthazeApp {
                 cx.notify();
             }
             ContextMenuAction::InspectByteMap => {
-                self.selected_id = Some(id.clone());
+                self.queue.selected_id = Some(id.clone());
                 self.load_segments_for(id, cx);
                 if self.inspector_collapsed {
                     self.inspector_collapsed = false;
@@ -851,7 +792,7 @@ impl PosthazeApp {
                     .and_then(|p| p.parent())
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_else(|| {
-                        self.settings.default_output_dir.to_string_lossy().to_string()
+                        self.queue.settings.default_output_dir.to_string_lossy().to_string()
                     });
                 let input = cx.new(|cx| {
                     let mut st = InputState::new(window, cx).placeholder("Target directory");
@@ -923,62 +864,24 @@ impl PosthazeApp {
             cx.notify();
             return;
         };
-        #[cfg(target_os = "windows")]
-        let spawn_res = if path.exists() {
-            std::process::Command::new("explorer.exe")
-                .arg(format!("/select,{}", path.display()))
-                .spawn()
-        } else if let Some(parent) = path.parent().filter(|p| p.exists()) {
-            std::process::Command::new("explorer.exe").arg(parent).spawn()
-        } else {
-            self.status_banner = Some(format!("Folder not found: {}", path.display()));
-            cx.notify();
-            return;
-        };
-        #[cfg(not(target_os = "windows"))]
-        let spawn_res: std::io::Result<std::process::Child> = Err(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "Open Folder is only supported on Windows",
-        ));
-
-        if let Err(err) = spawn_res {
-            self.status_banner = Some(format!("Could not open folder: {err}"));
+        if let Err(err) = open_folder_in_shell(&path) {
+            self.status_banner = Some(err);
             cx.notify();
         }
     }
 
     fn resume_all(&mut self, cx: &mut Context<Self>) {
-        let ids: Vec<DownloadId> = self
-            .records
-            .iter()
-            .filter(|r| matches!(r.state, DownloadState::Paused | DownloadState::Failed))
-            .map(|r| r.id.clone())
-            .collect();
+        let ids = self.queue.resume_all_ids();
         self.run_command(EngineCommand::ResumeMany(ids), cx);
     }
 
     fn pause_all(&mut self, cx: &mut Context<Self>) {
-        let ids: Vec<DownloadId> = self
-            .records
-            .iter()
-            .filter(|r| {
-                matches!(
-                    self.live_map.get(&r.id).map_or(r.state, |s| s.state),
-                    DownloadState::Active | DownloadState::Queued | DownloadState::Probing
-                )
-            })
-            .map(|r| r.id.clone())
-            .collect();
+        let ids = self.queue.pause_all_ids();
         self.run_command(EngineCommand::PauseMany(ids), cx);
     }
 
     fn clear_completed(&mut self, cx: &mut Context<Self>) {
-        let ids: Vec<DownloadId> = self
-            .records
-            .iter()
-            .filter(|r| matches!(r.state, DownloadState::Completed | DownloadState::Cancelled))
-            .map(|r| r.id.clone())
-            .collect();
+        let ids = self.queue.clear_completed_ids();
         self.run_command(
             EngineCommand::DeleteMany {
                 ids,
@@ -1034,7 +937,7 @@ impl PosthazeApp {
 
 impl Render for PosthazeApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let zoom_rem = 16.0 * (self.settings.ui_zoom_percent.clamp(80, 150) as f32) / 100.0;
+        let zoom_rem = 16.0 * (self.queue.settings.ui_zoom_percent.clamp(80, 150) as f32) / 100.0;
         window.set_rem_size(px(zoom_rem));
         let viewport = window.viewport_size();
         let target_left_width = if self.sidebar_collapsed {
@@ -1059,15 +962,16 @@ impl Render for PosthazeApp {
             .current_inspector_height(target_inspector_height);
         let render_inspector_collapsed = self.inspector_collapsed
             && (animated_inspector_height - COLLAPSED_INSPECTOR_HEIGHT).abs() <= 1.0;
-        let ranks = compute_fifo_ranks(&self.records, &self.live_map);
+        let ranks = compute_fifo_ranks(&self.queue.records, &self.queue.live_map);
         let all_rows: Vec<DownloadRowView> = self
+            .queue
             .records
             .iter()
             .map(|rec| {
                 DownloadRowView::from_record(
                     rec,
-                    self.live_map.get(&rec.id),
-                    self.persisted_segments.get(&rec.id).map(Vec::as_slice),
+                    self.queue.live_map.get(&rec.id),
+                    self.queue.persisted_segments.get(&rec.id).map(Vec::as_slice),
                     ranks.get(&rec.id).copied(),
                 )
             })
@@ -1092,18 +996,20 @@ impl Render for PosthazeApp {
         let is_empty_queue = all_rows.is_empty();
 
         let selected_row = self
+            .queue
             .selected_id
             .as_ref()
             .and_then(|id| all_rows.iter().find(|r| &r.id == id));
         let selected_segments: Vec<SegmentProgress> = self
+            .queue
             .selected_id
             .as_ref()
             .and_then(|id| {
-                self.live_map
+                self.queue.live_map
                     .get(id)
                     .filter(|s| !s.segments.is_empty())
                     .map(|s| s.segments.clone())
-                    .or_else(|| self.persisted_segments.get(id).cloned())
+                    .or_else(|| self.queue.persisted_segments.get(id).cloned())
             })
             .unwrap_or_default();
 
@@ -1126,6 +1032,7 @@ impl Render for PosthazeApp {
                 on_delete: move |id: DownloadId, _: &mut Window, cx: &mut App| {
                     entity_delete.update(cx, |app, cx| {
                         let filename = app
+                            .queue
                             .records
                             .iter()
                             .find(|r| r.id == id)
@@ -1164,7 +1071,7 @@ impl Render for PosthazeApp {
             let e_toggle_headers = cx.entity().clone();
             render_preflight_modal(
                 modal,
-                self.settings.ui_show_add_paused,
+                self.queue.settings.ui_show_add_paused,
                 move |_, cx| {
                     e_close.update(cx, |app, cx| {
                         app.preflight_modal = None;
@@ -1223,7 +1130,7 @@ impl Render for PosthazeApp {
                 move |window, cx| {
                     e_cancel.update(cx, |app, cx| {
                         app.settings_modal = None;
-                        theme::apply_theme(&app.settings.ui_theme, Some(window), cx);
+                        theme::apply_theme(&app.queue.settings.ui_theme, Some(window), cx);
                         cx.notify();
                     });
                 },
@@ -1312,108 +1219,83 @@ impl Render for PosthazeApp {
             .text_color(carbon_text())
             .on_key_down(cx.listener(move |app, event: &KeyDownEvent, window, cx| {
                 let key = event.keystroke.key.as_str();
-                if key == "escape" {
-                    let mut changed = false;
-                    if app.confirm_modal.take().is_some() {
-                        changed = true;
-                    }
-                    if app.preflight_modal.take().is_some() {
-                        changed = true;
-                    }
-                    if app.settings_modal.take().is_some() {
-                        theme::apply_theme(&app.settings.ui_theme, Some(window), cx);
-                        changed = true;
-                    }
-                    if app.file_op_modal.take().is_some() {
-                        changed = true;
-                    }
-                    if app.context_menu.take().is_some() {
-                        changed = true;
-                    }
-                    if changed {
-                        cx.notify();
-                    }
-                    return;
-                }
+                let kb_ctx = KeyboardContext {
+                    has_confirm_modal: app.confirm_modal.is_some(),
+                    has_preflight_resolved: matches!(
+                        app.preflight_modal,
+                        Some(PreflightModalState::Resolved { .. })
+                    ),
+                    has_any_preflight: app.preflight_modal.is_some(),
+                    has_settings_modal: app.settings_modal.is_some(),
+                    has_file_op_modal: app.file_op_modal.is_some(),
+                    url_input_focused: app.url_input.read(cx).focus_handle(cx).is_focused(window),
+                };
 
-                if key == "enter" {
-                    if app.confirm_modal.is_some() {
-                        app.execute_confirmed_action(cx);
-                        return;
+                match resolve_keyboard_action(key, kb_ctx) {
+                    KeyboardAction::DismissOverlays => {
+                        let mut changed = false;
+                        if app.confirm_modal.take().is_some() {
+                            changed = true;
+                        }
+                        if app.preflight_modal.take().is_some() {
+                            changed = true;
+                        }
+                        if app.settings_modal.take().is_some() {
+                            theme::apply_theme(&app.queue.settings.ui_theme, Some(window), cx);
+                            changed = true;
+                        }
+                        if app.file_op_modal.take().is_some() {
+                            changed = true;
+                        }
+                        if app.context_menu.take().is_some() {
+                            changed = true;
+                        }
+                        if changed {
+                            cx.notify();
+                        }
                     }
-                    if matches!(app.preflight_modal, Some(PreflightModalState::Resolved { .. })) {
-                        app.confirm_preflight(true, window, cx);
-                        return;
+                    KeyboardAction::ConfirmActiveModal => {
+                        if app.confirm_modal.is_some() {
+                            app.execute_confirmed_action(cx);
+                        } else if matches!(
+                            app.preflight_modal,
+                            Some(PreflightModalState::Resolved { .. })
+                        ) {
+                            app.confirm_preflight(true, window, cx);
+                        } else if app.settings_modal.is_some() {
+                            app.save_settings_modal(cx);
+                        } else if app.file_op_modal.is_some() {
+                            app.execute_file_op_confirm(cx);
+                        }
                     }
-                    if app.settings_modal.is_some() {
-                        app.save_settings_modal(cx);
-                        return;
+                    KeyboardAction::StepSelection(delta) => {
+                        if let Some(next_id) = app.queue.step_selection(&visible_ids, delta) {
+                            app.load_segments_for(next_id, cx);
+                            cx.notify();
+                        }
                     }
-                    if app.file_op_modal.is_some() {
-                        app.execute_file_op_confirm(cx);
-                        return;
-                    }
-                }
-
-                if app.confirm_modal.is_some()
-                    || app.preflight_modal.is_some()
-                    || app.settings_modal.is_some()
-                    || app.file_op_modal.is_some()
-                    || app.url_input.read(cx).focus_handle(cx).is_focused(window)
-                {
-                    return;
-                }
-
-                match key {
-                    "up" | "down" if !visible_ids.is_empty() => {
-                        let current_idx = app
-                            .selected_id
-                            .as_ref()
-                            .and_then(|id| visible_ids.iter().position(|v| v == id));
-                        let next_idx = match (key, current_idx) {
-                            ("up", Some(0)) | ("up", None) => 0,
-                            ("up", Some(i)) => i - 1,
-                            ("down", None) => 0,
-                            ("down", Some(i)) => (i + 1).min(visible_ids.len() - 1),
-                            _ => 0,
-                        };
-                        let next_id = visible_ids[next_idx].clone();
-                        app.selected_id = Some(next_id.clone());
-                        app.load_segments_for(next_id, cx);
-                        cx.notify();
-                    }
-                    "space" => {
-                        if let Some(id) = app.selected_id.clone()
-                            && let Some(rec) = app.records.iter().find(|r| r.id == id)
+                    KeyboardAction::TriggerPrimaryAction => {
+                        if let Some(id) = app.queue.selected_id.clone()
+                            && let Some(action) = app.queue.primary_action_for(&id)
                         {
-                            let state = app.live_map.get(&id).map_or(rec.state, |s| s.state);
-                            match state {
-                                DownloadState::Active
-                                | DownloadState::Queued
-                                | DownloadState::Probing => app.pause_download(id, cx),
-                                DownloadState::Paused => app.resume_download(id, cx),
-                                DownloadState::Failed => {
-                                    let is_rc =
-                                        rec.failure_kind() == Some(FailureKind::ResourceChanged);
-                                    if is_rc {
-                                        app.restart_fresh_download(id, cx);
-                                    } else {
-                                        app.resume_download(id, cx);
-                                    }
+                            match action {
+                                PrimaryDownloadAction::Pause(id) => app.pause_download(id, cx),
+                                PrimaryDownloadAction::Resume(id) => app.resume_download(id, cx),
+                                PrimaryDownloadAction::RestartFresh(id) => {
+                                    app.restart_fresh_download(id, cx)
                                 }
-                                _ => {}
                             }
                         }
                     }
-                    "delete" => {
-                        if let Some(id) = app.selected_id.clone()
-                            && let Some(rec) = app.records.iter().find(|r| r.id == id)
+                    KeyboardAction::RequestDeleteSelected => {
+                        if let Some(id) = app.queue.selected_id.clone()
+                            && let Some(rec) = app.queue.records.iter().find(|r| r.id == id)
                         {
                             let filename = derive_display_filename(rec);
                             app.request_delete_download(id, filename, cx);
                         }
                     }
-                    _ => {}
+                    KeyboardAction::None => {}
                 }
             }))
             .when(resizing_sidebar, |el| el.cursor_col_resize())
@@ -2082,13 +1964,13 @@ impl PosthazeApp {
                                                     .text_color(silver_text())
                                                     .child(format!(
                                                         "{active_slots} / {}",
-                                                        self.settings.max_concurrent_downloads
+                                                        self.queue.settings.max_concurrent_downloads
                                                     )),
                                             ),
                                     )
                                     .child(
                                         div().flex().gap_1().children(
-                                            (0..self.settings.max_concurrent_downloads).map(|i| {
+                                            (0..self.queue.settings.max_concurrent_downloads).map(|i| {
                                                 div().h(px(5.0)).flex_1().bg(if i < active_slots {
                                                     selenium_amber()
                                                 } else {
@@ -2434,7 +2316,7 @@ impl PosthazeApp {
         profile: LayoutProfile,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        let is_selected = self.selected_id.as_ref() == Some(&row.id);
+        let is_selected = self.queue.selected_id.as_ref() == Some(&row.id);
         let (icon_name, label) = state_icon(row.state);
         let state_color = match row.state {
             DownloadState::Active => selenium_amber(),
@@ -2488,9 +2370,9 @@ impl PosthazeApp {
             .hover(|s| s.bg(paper_hover()))
             .cursor_pointer()
             .on_click(cx.listener(move |app, _, _, cx| {
-                app.selected_id = Some(id_select.clone());
+                app.queue.selected_id = Some(id_select.clone());
                 app.load_segments_for(id_select.clone(), cx);
-                if app.settings.ui_click_row_opens_inspector && app.inspector_collapsed {
+                if app.queue.settings.ui_click_row_opens_inspector && app.inspector_collapsed {
                     app.inspector_collapsed = false;
                     app.motion
                         .animate_inspector(COLLAPSED_INSPECTOR_HEIGHT, app.inspector_height);
@@ -2509,7 +2391,7 @@ impl PosthazeApp {
                     let id_ctx = row.id.clone();
                     move |app, ev: &MouseDownEvent, _, cx| {
                         cx.stop_propagation();
-                        app.selected_id = Some(id_ctx.clone());
+                        app.queue.selected_id = Some(id_ctx.clone());
                         app.load_segments_for(id_ctx.clone(), cx);
                         app.context_menu = Some(ContextMenuState {
                             download_id: id_ctx.clone(),

@@ -5,10 +5,11 @@ use std::path::PathBuf;
 
 use gpui_kit::assets::IconName;
 use posthaze_engine::{
-    DownloadId, DownloadRecord, DownloadState, FailureKind, ProgressSnapshot, SegmentProgress,
+    DownloadId, DownloadRecord, DownloadState, EngineEvent, FailureKind, ProgressSnapshot,
+    SegmentProgress, Settings,
 };
-#[cfg(test)]
-use posthaze_engine::Settings;
+
+use crate::bridge::EngineSnapshot;
 
 /// Default width (in logical pixels) of the left filter & telemetry rail.
 pub const DEFAULT_SIDEBAR_WIDTH: f32 = 220.0;
@@ -546,6 +547,249 @@ pub fn parse_settings_inputs(
     })
 }
 
+/// Modal/focus context used to resolve global keyboard shortcut precedence.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct KeyboardContext {
+    pub has_confirm_modal: bool,
+    pub has_preflight_resolved: bool,
+    pub has_any_preflight: bool,
+    pub has_settings_modal: bool,
+    pub has_file_op_modal: bool,
+    pub url_input_focused: bool,
+}
+
+/// High-level action resolved from a key press and UI overlay/focus state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyboardAction {
+    DismissOverlays,
+    ConfirmActiveModal,
+    StepSelection(isize),
+    TriggerPrimaryAction,
+    RequestDeleteSelected,
+    None,
+}
+
+/// Resolves global keyboard shortcut precedence (`Escape` > `Enter` > focus guard > list navigation).
+pub fn resolve_keyboard_action(key: &str, ctx: KeyboardContext) -> KeyboardAction {
+    if key == "escape" {
+        return KeyboardAction::DismissOverlays;
+    }
+    if key == "enter"
+        && (ctx.has_confirm_modal
+            || ctx.has_preflight_resolved
+            || ctx.has_settings_modal
+            || ctx.has_file_op_modal)
+    {
+        return KeyboardAction::ConfirmActiveModal;
+    }
+    if ctx.has_confirm_modal
+        || ctx.has_any_preflight
+        || ctx.has_settings_modal
+        || ctx.has_file_op_modal
+        || ctx.url_input_focused
+    {
+        return KeyboardAction::None;
+    }
+    match key {
+        "up" => KeyboardAction::StepSelection(-1),
+        "down" => KeyboardAction::StepSelection(1),
+        "space" => KeyboardAction::TriggerPrimaryAction,
+        "delete" => KeyboardAction::RequestDeleteSelected,
+        _ => KeyboardAction::None,
+    }
+}
+
+/// Primary action triggered by Space or a row's primary button.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrimaryDownloadAction {
+    Pause(DownloadId),
+    Resume(DownloadId),
+    RestartFresh(DownloadId),
+}
+
+/// Side effects emitted by [`QueueController`] for the GPUI shell to execute.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UiEffect {
+    RefreshFromEngine,
+    ResumeDownload(DownloadId),
+    ShowToast { title: String, body: String },
+    RunCompletionHook { path: PathBuf },
+    LoadSegments(DownloadId),
+}
+
+/// Headless state and decision controller for the `Download` `Queue` UI.
+#[derive(Debug, Default)]
+pub struct QueueController {
+    pub records: Vec<DownloadRecord>,
+    pub live_map: HashMap<DownloadId, ProgressSnapshot>,
+    pub persisted_segments: HashMap<DownloadId, Vec<SegmentProgress>>,
+    pub settings: Settings,
+    pub selected_id: Option<DownloadId>,
+    pub auto_retries_used: HashMap<DownloadId, u32>,
+}
+
+impl QueueController {
+    /// Applies a fresh [`EngineSnapshot`] and returns an optional segment-load effect.
+    pub fn apply_snapshot(&mut self, snapshot: EngineSnapshot) -> Option<UiEffect> {
+        self.records = snapshot.records;
+        self.settings = snapshot.settings;
+        self.persisted_segments = snapshot.segments;
+        if self.selected_id.is_none() {
+            self.selected_id = self.records.first().map(|r| r.id.clone());
+            return self.selected_id.clone().map(UiEffect::LoadSegments);
+        }
+        None
+    }
+
+    /// Processes an [`EngineEvent`] and returns any side effects for the UI shell.
+    pub fn on_engine_event(&mut self, event: EngineEvent, window_active: bool) -> Vec<UiEffect> {
+        let mut effects = Vec::new();
+        match event {
+            EngineEvent::ProgressUpdated { id, snapshot } => {
+                self.live_map.insert(id, snapshot);
+            }
+            EngineEvent::StateChanged {
+                id,
+                state,
+                error: _,
+                failure_kind,
+            } => {
+                if state != DownloadState::Active {
+                    self.live_map.remove(&id);
+                }
+                let rec = self.records.iter().find(|r| r.id == id).cloned();
+                if state == DownloadState::Completed {
+                    self.auto_retries_used.remove(&id);
+                    if let Some(ref r) = rec {
+                        let name = derive_display_filename(r);
+                        if self.settings.notify_on_completed
+                            && (!self.settings.notify_only_inactive || !window_active)
+                        {
+                            effects.push(UiEffect::ShowToast {
+                                title: "Posthaze — Download Completed".to_string(),
+                                body: name,
+                            });
+                        }
+                        if self.settings.completion_cmd_enabled
+                            && let Some(ref out_path) = r.output_path
+                        {
+                            effects.push(UiEffect::RunCompletionHook {
+                                path: out_path.clone(),
+                            });
+                        }
+                    }
+                } else if state == DownloadState::Failed {
+                    let is_resource_changed =
+                        failure_kind == Some(FailureKind::ResourceChanged);
+                    let used = self.auto_retries_used.get(&id).copied().unwrap_or(0);
+                    if !is_resource_changed
+                        && failure_kind != Some(FailureKind::NonResumable)
+                        && used < self.settings.auto_retry_count
+                    {
+                        self.auto_retries_used.insert(id.clone(), used + 1);
+                        effects.push(UiEffect::ResumeDownload(id));
+                    } else if self.settings.notify_on_failed
+                        && (!self.settings.notify_only_inactive || !window_active)
+                    {
+                        let name = rec
+                            .as_ref()
+                            .map(derive_display_filename)
+                            .unwrap_or_else(|| "Download".to_string());
+                        effects.push(UiEffect::ShowToast {
+                            title: "Posthaze — Download Failed".to_string(),
+                            body: name,
+                        });
+                    }
+                }
+                effects.push(UiEffect::RefreshFromEngine);
+            }
+            EngineEvent::QueueUpdated => {
+                effects.push(UiEffect::RefreshFromEngine);
+            }
+            EngineEvent::SettingsUpdated(settings) => {
+                self.settings = settings;
+            }
+        }
+        effects
+    }
+
+    /// Returns the primary action (`Pause`, `Resume`, or `RestartFresh`) for `id`.
+    pub fn primary_action_for(&self, id: &DownloadId) -> Option<PrimaryDownloadAction> {
+        let rec = self.records.iter().find(|r| &r.id == id)?;
+        let state = self.live_map.get(id).map_or(rec.state, |s| s.state);
+        match state {
+            DownloadState::Active | DownloadState::Queued | DownloadState::Probing => {
+                Some(PrimaryDownloadAction::Pause(id.clone()))
+            }
+            DownloadState::Paused => Some(PrimaryDownloadAction::Resume(id.clone())),
+            DownloadState::Failed => {
+                if rec.failure_kind() == Some(FailureKind::ResourceChanged) {
+                    Some(PrimaryDownloadAction::RestartFresh(id.clone()))
+                } else {
+                    Some(PrimaryDownloadAction::Resume(id.clone()))
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Moves selection up (`delta < 0`) or down (`delta > 0`) within `visible_ids`.
+    pub fn step_selection(
+        &mut self,
+        visible_ids: &[DownloadId],
+        delta: isize,
+    ) -> Option<DownloadId> {
+        if visible_ids.is_empty() {
+            return None;
+        }
+        let current_idx = self
+            .selected_id
+            .as_ref()
+            .and_then(|id| visible_ids.iter().position(|v| v == id));
+        let next_idx = match (delta < 0, current_idx) {
+            (true, Some(0)) | (true, None) => 0,
+            (true, Some(i)) => i - 1,
+            (false, None) => 0,
+            (false, Some(i)) => (i + 1).min(visible_ids.len() - 1),
+        };
+        let next_id = visible_ids[next_idx].clone();
+        self.selected_id = Some(next_id.clone());
+        Some(next_id)
+    }
+
+    /// Returns IDs of all `Paused` or `Failed` `Download`s for `Resume All`.
+    pub fn resume_all_ids(&self) -> Vec<DownloadId> {
+        self.records
+            .iter()
+            .filter(|r| matches!(r.state, DownloadState::Paused | DownloadState::Failed))
+            .map(|r| r.id.clone())
+            .collect()
+    }
+
+    /// Returns IDs of all `Active`, `Queued`, or `Probing` `Download`s for `Pause All`.
+    pub fn pause_all_ids(&self) -> Vec<DownloadId> {
+        self.records
+            .iter()
+            .filter(|r| {
+                matches!(
+                    self.live_map.get(&r.id).map_or(r.state, |s| s.state),
+                    DownloadState::Active | DownloadState::Queued | DownloadState::Probing
+                )
+            })
+            .map(|r| r.id.clone())
+            .collect()
+    }
+
+    /// Returns IDs of all `Completed` or `Cancelled` `Download`s for `Clear Completed`.
+    pub fn clear_completed_ids(&self) -> Vec<DownloadId> {
+        self.records
+            .iter()
+            .filter(|r| matches!(r.state, DownloadState::Completed | DownloadState::Cancelled))
+            .map(|r| r.id.clone())
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -825,5 +1069,147 @@ mod tests {
         assert!(!narrow.show_segs);
         assert!(narrow.compact_toolbar);
         assert_eq!(narrow.progress_col_width, 192.0);
+    }
+
+    #[test]
+    fn queue_controller_auto_retries_resumable_failures_and_skips_resource_changed() {
+        let mut ctrl = QueueController::default();
+        ctrl.settings.auto_retry_count = 1;
+        ctrl.settings.notify_on_failed = true;
+        ctrl.settings.notify_only_inactive = false;
+        let id = DownloadId::from("dl-1".to_string());
+        ctrl.records
+            .push(make_record("dl-1", "https://example.com/a.bin", DownloadState::Active, 1));
+
+        let effects = ctrl.on_engine_event(
+            EngineEvent::StateChanged {
+                id: id.clone(),
+                state: DownloadState::Failed,
+                error: Some("network drop".to_string()),
+                failure_kind: Some(FailureKind::Resumable),
+            },
+            true,
+        );
+        assert_eq!(
+            effects,
+            vec![UiEffect::ResumeDownload(id.clone()), UiEffect::RefreshFromEngine]
+        );
+        assert_eq!(ctrl.auto_retries_used.get(&id), Some(&1));
+
+        // Second failure exhausts retry budget and emits toast instead of resume.
+        let effects_exhausted = ctrl.on_engine_event(
+            EngineEvent::StateChanged {
+                id: id.clone(),
+                state: DownloadState::Failed,
+                error: Some("network drop".to_string()),
+                failure_kind: Some(FailureKind::Resumable),
+            },
+            true,
+        );
+        assert!(effects_exhausted.iter().any(|e| matches!(e, UiEffect::ShowToast { .. })));
+        assert!(!effects_exhausted.iter().any(|e| matches!(e, UiEffect::ResumeDownload(_))));
+
+        // ResourceChanged never auto-retries even with budget available.
+        let id2 = DownloadId::from("dl-2".to_string());
+        let effects_rc = ctrl.on_engine_event(
+            EngineEvent::StateChanged {
+                id: id2.clone(),
+                state: DownloadState::Failed,
+                error: Some("remote resource changed".to_string()),
+                failure_kind: Some(FailureKind::ResourceChanged),
+            },
+            false,
+        );
+        assert!(!effects_rc.iter().any(|e| matches!(e, UiEffect::ResumeDownload(_))));
+        assert!(effects_rc.iter().any(|e| matches!(e, UiEffect::ShowToast { .. })));
+
+        // NonResumable never auto-retries either.
+        let id3 = DownloadId::from("dl-3".to_string());
+        let effects_nr = ctrl.on_engine_event(
+            EngineEvent::StateChanged {
+                id: id3,
+                state: DownloadState::Failed,
+                error: Some("404 Not Found".to_string()),
+                failure_kind: Some(FailureKind::NonResumable),
+            },
+            false,
+        );
+        assert!(!effects_nr.iter().any(|e| matches!(e, UiEffect::ResumeDownload(_))));
+    }
+
+    #[test]
+    fn queue_controller_primary_action_and_keyboard_precedence() {
+        let mut ctrl = QueueController::default();
+        let id_active = DownloadId::from("a".to_string());
+        let id_paused = DownloadId::from("b".to_string());
+        let mut rec_rc = make_record("c", "https://example.com/c.bin", DownloadState::Failed, 3);
+        rec_rc.error_message = Some("remote resource changed: ETag".to_string());
+        let mut rec_resumable_fail =
+            make_record("d", "https://example.com/d.bin", DownloadState::Failed, 4);
+        rec_resumable_fail.error_message = Some("HTTP error: timeout".to_string());
+
+        ctrl.records = vec![
+            make_record("a", "https://example.com/a.bin", DownloadState::Active, 1),
+            make_record("b", "https://example.com/b.bin", DownloadState::Paused, 2),
+            rec_rc,
+            rec_resumable_fail,
+        ];
+        let id_rc = DownloadId::from("c".to_string());
+        let id_resumable_fail = DownloadId::from("d".to_string());
+
+        assert_eq!(
+            ctrl.primary_action_for(&id_active),
+            Some(PrimaryDownloadAction::Pause(id_active.clone()))
+        );
+        assert_eq!(
+            ctrl.primary_action_for(&id_paused),
+            Some(PrimaryDownloadAction::Resume(id_paused.clone()))
+        );
+        assert_eq!(
+            ctrl.primary_action_for(&id_rc),
+            Some(PrimaryDownloadAction::RestartFresh(id_rc.clone()))
+        );
+        assert_eq!(
+            ctrl.primary_action_for(&id_resumable_fail),
+            Some(PrimaryDownloadAction::Resume(id_resumable_fail))
+        );
+
+        let visible = vec![id_active.clone(), id_paused.clone(), id_rc.clone()];
+        assert_eq!(ctrl.step_selection(&visible, 1), Some(id_active.clone()));
+        assert_eq!(ctrl.step_selection(&visible, 1), Some(id_paused.clone()));
+        assert_eq!(ctrl.step_selection(&visible, -1), Some(id_active));
+
+        // Keyboard precedence: Escape > Enter on modal > URL/modal block > list shortcuts.
+        let modal_ctx = KeyboardContext {
+            has_confirm_modal: true,
+            url_input_focused: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_keyboard_action("escape", modal_ctx),
+            KeyboardAction::DismissOverlays
+        );
+        assert_eq!(
+            resolve_keyboard_action("enter", modal_ctx),
+            KeyboardAction::ConfirmActiveModal
+        );
+        assert_eq!(
+            resolve_keyboard_action("space", modal_ctx),
+            KeyboardAction::None
+        );
+
+        let list_ctx = KeyboardContext::default();
+        assert_eq!(
+            resolve_keyboard_action("up", list_ctx),
+            KeyboardAction::StepSelection(-1)
+        );
+        assert_eq!(
+            resolve_keyboard_action("space", list_ctx),
+            KeyboardAction::TriggerPrimaryAction
+        );
+        assert_eq!(
+            resolve_keyboard_action("delete", list_ctx),
+            KeyboardAction::RequestDeleteSelected
+        );
     }
 }
