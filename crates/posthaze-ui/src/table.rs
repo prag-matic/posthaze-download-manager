@@ -113,10 +113,8 @@ impl PosthazeApp {
                     // Extensible top-header tools slot
                     .child(self.render_toolbar_tools(profile, cx)),
             )
-            // Contextual second row for selected download(s)
-            .when_some(self.render_selection_toolbar_row(cx), |el, row| {
-                el.child(row)
-            })
+            // Contextual second row for selected download(s) (fixed 34px height prevents table shift)
+            .child(self.render_selection_toolbar_row(cx))
             // Merged full-width separator row between toolbar and download list
             .child(
                 div()
@@ -128,7 +126,7 @@ impl PosthazeApp {
             )
     }
 
-    fn render_selection_toolbar_row(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn render_selection_toolbar_row(&self, cx: &mut Context<Self>) -> AnyElement {
         let selected: Vec<_> = self
             .queue
             .records
@@ -136,7 +134,45 @@ impl PosthazeApp {
             .filter(|r| self.queue.is_selected(&r.id))
             .collect();
         if selected.is_empty() {
-            return None;
+            return div()
+                .h(px(34.0))
+                .w_full()
+                .flex()
+                .items_center()
+                .bg(paper_bg())
+                .border_b_1()
+                .border_color(paper_border())
+                .child(
+                    div()
+                        .w(px(16.0 + COL_STATE))
+                        .flex_shrink_0()
+                        .h_full()
+                        .px_3()
+                        .border_r_1()
+                        .border_color(paper_border())
+                        .bg(table_header_bg().opacity(0.6))
+                        .flex()
+                        .items_center()
+                        .font_family(MONO_FONT)
+                        .text_size(TYPE_MICRO)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(carbon_muted())
+                        .child("0 SELECTED"),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(120.0))
+                        .h_full()
+                        .px_3()
+                        .flex()
+                        .items_center()
+                        .font_family(MONO_FONT)
+                        .text_size(TYPE_MICRO)
+                        .text_color(carbon_muted())
+                        .child("Select a download for row actions & byte-map inspection"),
+                )
+                .into_any_element();
         }
 
         let count = selected.len();
@@ -185,9 +221,8 @@ impl PosthazeApp {
             format!("{count} downloads selected")
         };
 
-        Some(
-            div()
-                .h(px(34.0))
+        div()
+            .h(px(34.0))
                 .w_full()
                 .flex()
                 .items_center()
@@ -360,8 +395,7 @@ impl PosthazeApp {
                             }),
                         )),
                 )
-                .into_any_element(),
-        )
+                .into_any_element()
     }
 
     /// Modular tool strip on the right of the top intake row; add future header tools here.
