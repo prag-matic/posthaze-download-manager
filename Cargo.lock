@@ -5617,12 +5617,14 @@ version = "0.1.0"
 dependencies = [
  "gpui-kit",
  "posthaze-engine",
+ "raw-window-handle",
  "serde",
  "serde_json",
  "tauri-winres",
  "tokio",
  "tracing",
  "tray-icon",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]

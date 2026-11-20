@@ -46,8 +46,9 @@ use crate::modals::{
 };
 use crate::motion::MotionState;
 use crate::platform_hooks::{
-    open_directory_in_shell, open_file_in_shell, open_folder_in_shell, spawn_completion_hook,
-    spawn_windows_toast, sync_windows_startup_registry,
+    hide_window_to_tray, is_window_visible, open_directory_in_shell, open_file_in_shell,
+    open_folder_in_shell, show_window_from_tray, spawn_completion_hook, spawn_windows_toast,
+    sync_windows_startup_registry,
 };
 use crate::preflight_window::PreflightWindow;
 use crate::settings_modal::{SettingsAction, SettingsModalState, render_settings_modal};
@@ -81,6 +82,7 @@ fn main() {
                     size(px(1020.0), px(640.0)),
                     cx,
                 ))),
+                show: !start_minimized,
                 focus: !start_minimized,
                 window_min_size: Some(size(px(1020.0), px(640.0))),
                 ..TitleBar::window_options()
@@ -88,11 +90,7 @@ fn main() {
 
             let bridge = bridge.clone();
             gpui_kit::open_window(window_options, cx, move |window, cx| {
-                let entity = cx.new(|cx| PosthazeApp::new(bridge, window, cx));
-                if start_minimized {
-                    window.minimize_window();
-                }
-                entity
+                cx.new(|cx| PosthazeApp::new(bridge, window, cx))
             })
             .expect("failed to open Posthaze window");
         });
@@ -205,7 +203,7 @@ impl PosthazeApp {
                 })
                 .unwrap_or(false);
             if hide_to_tray {
-                window.minimize_window();
+                hide_window_to_tray(window);
                 return false;
             }
             true
@@ -300,10 +298,10 @@ impl PosthazeApp {
                 match action {
                     tray::TrayAction::ToggleShowHide => {
                         let _ = cx.update_window(window_handle, |_, window, _| {
-                            if window.is_window_active() {
-                                window.minimize_window();
+                            if is_window_visible(window) && window.is_window_active() {
+                                hide_window_to_tray(window);
                             } else {
-                                window.activate_window();
+                                show_window_from_tray(window);
                             }
                         });
                     }
@@ -333,7 +331,7 @@ impl PosthazeApp {
                 match cmd {
                     ipc::PipeCommand::ShowMainWindow => {
                         let _ = cx.update_window(window_handle, |_, window, _| {
-                            window.activate_window();
+                            show_window_from_tray(window);
                         });
                     }
                     ipc::PipeCommand::Enqueue(req) => {

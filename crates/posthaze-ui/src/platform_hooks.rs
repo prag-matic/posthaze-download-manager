@@ -23,6 +23,54 @@ pub(crate) fn format_startup_command(exe_path: &Path) -> String {
     format!("\"{}\" --minimized", exe_path.display())
 }
 
+#[cfg(target_os = "windows")]
+fn win32_hwnd(window: &gpui_kit::Window) -> Option<windows_sys::Win32::Foundation::HWND> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let handle = HasWindowHandle::window_handle(window).ok()?;
+    match handle.as_raw() {
+        RawWindowHandle::Win32(h) => Some(h.hwnd.get() as windows_sys::Win32::Foundation::HWND),
+        _ => None,
+    }
+}
+
+/// Hides a GPUI window from both the desktop and the Windows taskbar.
+pub(crate) fn hide_window_to_tray(window: &gpui_kit::Window) {
+    #[cfg(target_os = "windows")]
+    if let Some(hwnd) = win32_hwnd(window) {
+        unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::ShowWindowAsync(
+                hwnd,
+                windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE,
+            );
+        }
+        return;
+    }
+    window.minimize_window();
+}
+
+/// Restores a hidden/minimized GPUI window to the taskbar and activates it.
+pub(crate) fn show_window_from_tray(window: &gpui_kit::Window) {
+    #[cfg(target_os = "windows")]
+    if let Some(hwnd) = win32_hwnd(window) {
+        unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::ShowWindowAsync(
+                hwnd,
+                windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOW,
+            );
+        }
+    }
+    window.activate_window();
+}
+
+/// Returns whether the GPUI window is currently visible (not hidden to tray).
+pub(crate) fn is_window_visible(window: &gpui_kit::Window) -> bool {
+    #[cfg(target_os = "windows")]
+    if let Some(hwnd) = win32_hwnd(window) {
+        return unsafe { windows_sys::Win32::UI::WindowsAndMessaging::IsWindowVisible(hwnd) != 0 };
+    }
+    true
+}
+
 /// Synchronizes `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Posthaze` with `enabled`.
 pub(crate) fn sync_windows_startup_registry(enabled: bool) -> Result<(), String> {
     #[cfg(target_os = "windows")]
