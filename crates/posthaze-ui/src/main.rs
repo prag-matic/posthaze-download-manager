@@ -6,6 +6,7 @@ mod assets;
 mod bridge;
 mod context_menu;
 mod curl_parser;
+mod diagnostics;
 mod grid_cells;
 mod inspector;
 mod ipc;
@@ -29,7 +30,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use posthaze_engine::{
     DeleteDefaultAction, DownloadId, DownloadRequest, DownloadState, EngineEvent, SegmentProgress,
-    default_db_path,
+    default_db_path, default_logs_dir,
 };
 
 use crate::assets::{BRAND_LOGO_SVG, PosthazeAssets};
@@ -43,7 +44,8 @@ use crate::modals::{
 };
 use crate::motion::MotionState;
 use crate::platform_hooks::{
-    open_file_in_shell, open_folder_in_shell, spawn_completion_hook, spawn_windows_toast,
+    open_directory_in_shell, open_file_in_shell, open_folder_in_shell, spawn_completion_hook,
+    spawn_windows_toast,
 };
 use crate::preflight_window::PreflightWindow;
 use crate::settings_modal::{SettingsAction, SettingsModalState, render_settings_modal};
@@ -58,6 +60,7 @@ use crate::view_model::{
 };
 
 fn main() {
+    diagnostics::init_diagnostics(default_logs_dir());
     let bridge = EngineBridge::open(default_db_path()).expect("failed to initialize engine");
 
     gpui_kit::application()
@@ -522,6 +525,13 @@ impl PosthazeApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if matches!(action, SettingsAction::OpenLogsFolder) {
+            if let Err(err) = open_directory_in_shell(&default_logs_dir()) {
+                self.status_banner = Some(err);
+                cx.notify();
+            }
+            return;
+        }
         if matches!(action, SettingsAction::BrowseSaveFolder) {
             let rx = cx.prompt_for_paths(PathPromptOptions {
                 files: false,

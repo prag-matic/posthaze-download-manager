@@ -10,3 +10,9 @@ The workspace `Cargo.toml` defines `[profile.release]` with `lto = true`, `codeg
 
 - **Standard mode (default):** Stores `state.db` and `logs/` under `%LOCALAPPDATA%\posthaze\` (or `$HOME/.local/share/posthaze/`).
 - **Portable mode:** When a `posthaze.portable` marker file exists in the same directory as the executable, both `posthaze-ui` and `posthaze-cli` automatically store `state.db` and `logs/` under `<exe_dir>\data\`.
+
+## Diagnostic Logs & Panic Hook
+
+- **Rolling File Logs:** `posthaze-ui` initializes a `tracing` file subscriber at startup writing `posthaze.log` into `default_logs_dir()` (`<data_dir>\logs\`), rotating at `2 MiB` and retaining up to `5` historical log files (`posthaze.1.log` .. `posthaze.5.log`).
+- **Panic Hook:** Unexpected panics record their payload and source location into `posthaze.log` before terminating.
+- **Open Logs Folder:** **Settings → Reset → OPEN LOGS FOLDER** ensures the logs directory exists and opens it directly in Windows Explorer.

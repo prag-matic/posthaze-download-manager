@@ -450,6 +450,7 @@ impl SettingsModalState {
                     cx,
                 );
             }
+            SettingsAction::OpenLogsFolder => {}
         }
     }
 
@@ -499,6 +500,7 @@ pub(crate) enum SettingsAction {
     BrowseSaveFolder,
     SetAccentOverride(Option<String>),
     CopyConfigJson,
+    OpenLogsFolder,
     ResetToDefaults,
 }
 
@@ -1597,6 +1599,21 @@ where
                         false,
                         move |_, window, cx| {
                             act(SettingsAction::CopyConfigJson, window, cx);
+                        },
+                    )
+                })
+                .child({
+                    let act = on_action.clone();
+                    grid_boxed_button(
+                        "settings-open-logs",
+                        px(32.0),
+                        Some(IconName::FolderOpen),
+                        Some("OPEN LOGS FOLDER"),
+                        Some("Open the diagnostic logs directory in Windows Explorer"),
+                        GridTone::Graphite,
+                        false,
+                        move |_, window, cx| {
+                            act(SettingsAction::OpenLogsFolder, window, cx);
                         },
                     )
                 })

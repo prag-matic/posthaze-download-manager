@@ -2,45 +2,46 @@
 
 use std::path::Path;
 
+fn spawn_explorer(arg: impl AsRef<std::ffi::OsStr>, action_label: &str) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    let spawn_res = std::process::Command::new("explorer.exe")
+        .arg(arg.as_ref())
+        .spawn();
+    #[cfg(not(target_os = "windows"))]
+    let spawn_res: std::io::Result<std::process::Child> = Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        format!("{action_label} is only supported on Windows"),
+    ));
+
+    spawn_res
+        .map(|_| ())
+        .map_err(|err| format!("Could not {action_label}: {err}"))
+}
+
 /// Opens a downloaded file using the OS shell (`explorer.exe` on Windows).
 pub(crate) fn open_file_in_shell(path: &Path) -> Result<(), String> {
     if !path.exists() {
         return Err(format!("File not found on disk: {}", path.display()));
     }
-    #[cfg(target_os = "windows")]
-    let spawn_res = std::process::Command::new("explorer.exe").arg(path).spawn();
-    #[cfg(not(target_os = "windows"))]
-    let spawn_res: std::io::Result<std::process::Child> = Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "Open File is only supported on Windows",
-    ));
-
-    spawn_res
-        .map(|_| ())
-        .map_err(|err| format!("Could not open file: {err}"))
+    spawn_explorer(path, "open file")
 }
 
 /// Reveals a downloaded file or its parent directory in the OS file manager.
 pub(crate) fn open_folder_in_shell(path: &Path) -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    let spawn_res = if path.exists() {
-        std::process::Command::new("explorer.exe")
-            .arg(format!("/select,{}", path.display()))
-            .spawn()
+    if path.exists() {
+        spawn_explorer(format!("/select,{}", path.display()), "open folder")
     } else if let Some(parent) = path.parent().filter(|p| p.exists()) {
-        std::process::Command::new("explorer.exe").arg(parent).spawn()
+        spawn_explorer(parent, "open folder")
     } else {
-        return Err(format!("Folder not found: {}", path.display()));
-    };
-    #[cfg(not(target_os = "windows"))]
-    let spawn_res: std::io::Result<std::process::Child> = Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "Open Folder is only supported on Windows",
-    ));
+        Err(format!("Folder not found: {}", path.display()))
+    }
+}
 
-    spawn_res
-        .map(|_| ())
-        .map_err(|err| format!("Could not open folder: {err}"))
+/// Ensures `dir` exists and opens it directly in Windows Explorer.
+pub(crate) fn open_directory_in_shell(dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(dir)
+        .map_err(|err| format!("Could not prepare folder {}: {err}", dir.display()))?;
+    spawn_explorer(dir, "open folder")
 }
 
 /// Dispatches a non-blocking Windows Toast notification via PowerShell WinRT.
