@@ -24,18 +24,20 @@ pub(crate) enum SettingsTab {
     Network,
     Notifications,
     Automation,
+    Integration,
     Interface,
     Reset,
 }
 
 impl SettingsTab {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::General,
         Self::Interface,
         Self::Downloads,
         Self::Network,
         Self::Notifications,
         Self::Automation,
+        Self::Integration,
         Self::Reset,
     ];
 
@@ -46,6 +48,7 @@ impl SettingsTab {
             Self::Network => "Network",
             Self::Notifications => "Notifications",
             Self::Automation => "Automation",
+            Self::Integration => "Integration",
             Self::Interface => "Interface",
             Self::Reset => "Reset",
         }
@@ -58,6 +61,7 @@ impl SettingsTab {
             Self::Network => "Proxy routing, bandwidth cap, and connection limits.",
             Self::Notifications => "Windows desktop alerts for queue and transfer events.",
             Self::Automation => "External commands and antivirus scans run after completion.",
+            Self::Integration => "Browser Capture Native Messaging Host setup for Chrome, Edge, and Brave.",
             Self::Interface => "Row interactions, Pre-Flight actions, and display scale.",
             Self::Reset => "Restore all preferences to factory defaults.",
         }
@@ -70,6 +74,7 @@ impl SettingsTab {
             Self::Network => IconName::Globe,
             Self::Notifications => IconName::Bell,
             Self::Automation => IconName::ShieldCheck,
+            Self::Integration => IconName::Globe,
             Self::Interface => IconName::LayoutDashboard,
             Self::Reset => IconName::RotateCcw,
         }
@@ -249,6 +254,9 @@ pub(crate) struct SettingsModalState {
     pub auto_retry_input: Entity<InputState>,
     pub cmd_path_input: Entity<InputState>,
     pub cmd_args_input: Entity<InputState>,
+    pub extension_id_input: Entity<InputState>,
+    pub browser_statuses: Vec<(&'static str, bool)>,
+    pub integration_feedback: Option<Result<String, String>>,
     pub draft: SettingsDraft,
     pub error: Option<String>,
 }
@@ -297,6 +305,10 @@ impl SettingsModalState {
             st.set_value(draft.cmd_args.clone(), window, cx);
             st
         });
+        let extension_id_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("Paste 32-character Extension ID from chrome://extensions")
+        });
+        let browser_statuses = crate::browser_integration::query_browser_statuses();
 
         Self {
             active_tab: SettingsTab::General,
@@ -308,6 +320,9 @@ impl SettingsModalState {
             auto_retry_input,
             cmd_path_input,
             cmd_args_input,
+            extension_id_input,
+            browser_statuses,
+            integration_feedback: None,
             draft,
             error: None,
         }
@@ -465,6 +480,8 @@ impl SettingsModalState {
                 );
             }
             SettingsAction::OpenLogsFolder => {}
+            SettingsAction::RegisterNativeHost => {}
+            SettingsAction::RefreshBrowserStatus => {}
         }
     }
 
@@ -517,6 +534,8 @@ pub(crate) enum SettingsAction {
     SetAccentOverride(Option<String>),
     CopyConfigJson,
     OpenLogsFolder,
+    RegisterNativeHost,
+    RefreshBrowserStatus,
     ResetToDefaults,
 }
 
@@ -539,6 +558,7 @@ where
         SettingsTab::Network => render_network_tab(state, on_action.clone()),
         SettingsTab::Notifications => render_notifications_tab(state, on_action.clone()),
         SettingsTab::Automation => render_automation_tab(state, on_action.clone()),
+        SettingsTab::Integration => render_integration_tab(state, on_action.clone()),
         SettingsTab::Interface => render_interface_tab(state, on_action.clone()),
         SettingsTab::Reset => render_reset_tab(on_action.clone()),
     };
@@ -1592,6 +1612,118 @@ where
                     SettingsAction::ToggleScrollbarMinimap,
                     on_action,
                 )),
+        )
+        .into_any_element()
+}
+
+fn render_integration_tab<F>(state: &SettingsModalState, on_action: F) -> AnyElement
+where
+    F: Fn(SettingsAction, &mut Window, &mut App) + Clone + 'static,
+{
+    let reg_act = on_action.clone();
+    let refresh_act = on_action;
+    div()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .child(
+            div()
+                .p_3()
+                .bg(graphite_elevated())
+                .border_1()
+                .border_color(graphite_border())
+                .text_xs()
+                .line_height(px(18.0))
+                .text_color(silver_muted())
+                .child("Load the bundled extension in chrome://extensions (or edge://extensions), copy its 32-character Extension ID, and register the Native Messaging Host for Browser Capture."),
+        )
+        .child(labeled_input("Extension ID", &state.extension_id_input))
+        .child(
+            div()
+                .flex()
+                .gap_2()
+                .child(grid_boxed_button(
+                    "settings-register-host",
+                    px(30.0),
+                    Some(IconName::Check),
+                    Some("REGISTER NATIVE HOST"),
+                    Some("Write host manifest and register HKCU keys for Chrome, Edge, and Brave"),
+                    GridTone::Primary,
+                    false,
+                    move |_, window, cx| reg_act(SettingsAction::RegisterNativeHost, window, cx),
+                ))
+                .child(grid_boxed_button(
+                    "settings-refresh-host",
+                    px(30.0),
+                    Some(IconName::RefreshCw),
+                    Some("REFRESH STATUS"),
+                    Some("Re-check HKCU Native Messaging registration"),
+                    GridTone::Graphite,
+                    false,
+                    move |_, window, cx| {
+                        refresh_act(SettingsAction::RefreshBrowserStatus, window, cx)
+                    },
+                )),
+        )
+        .when_some(state.integration_feedback.as_ref(), |el, feedback| {
+            let (bg, border, text_col, msg) = match feedback {
+                Ok(msg) => (
+                    graphite_elevated(),
+                    halide_emerald(),
+                    halide_emerald(),
+                    msg.clone(),
+                ),
+                Err(err) => (
+                    errata_surface_bg(),
+                    errata_vermilion(),
+                    errata_vermilion(),
+                    err.clone(),
+                ),
+            };
+            el.child(
+                div()
+                    .p_2p5()
+                    .bg(bg)
+                    .border_1()
+                    .border_color(border)
+                    .font_family(MONO_FONT)
+                    .text_size(TYPE_MICRO)
+                    .text_color(text_col)
+                    .child(msg),
+            )
+        })
+        .child(
+            div()
+                .border_1()
+                .border_color(graphite_border())
+                .flex()
+                .flex_col()
+                .children(state.browser_statuses.iter().enumerate().map(|(idx, (name, ok))| {
+                    div()
+                        .h(px(32.0))
+                        .px_3()
+                        .bg(graphite_bg())
+                        .when(idx > 0, |el| el.border_t_1().border_color(graphite_border()))
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(div().text_xs().text_color(silver_text()).child(*name))
+                        .child(
+                            div()
+                                .font_family(MONO_FONT)
+                                .text_size(TYPE_MICRO)
+                                .text_color(if *ok {
+                                    halide_emerald()
+                                } else {
+                                    silver_muted()
+                                })
+                                .child(if *ok {
+                                    "REGISTERED"
+                                } else {
+                                    "NOT REGISTERED"
+                                }),
+                        )
+                })),
         )
         .into_any_element()
 }

@@ -4,6 +4,7 @@
 
 mod assets;
 mod bridge;
+mod browser_integration;
 mod context_menu;
 mod curl_parser;
 mod diagnostics;
@@ -31,7 +32,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use posthaze_engine::{
     DeleteDefaultAction, DownloadId, DownloadRequest, DownloadState, EngineEvent, SegmentProgress,
-    default_db_path, default_logs_dir,
+    default_data_dir, default_db_path, default_logs_dir,
 };
 
 use crate::assets::{BRAND_LOGO_SVG, PosthazeAssets};
@@ -604,6 +605,26 @@ impl PosthazeApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if matches!(action, SettingsAction::RefreshBrowserStatus) {
+            if let Some(modal) = &mut self.settings_modal {
+                modal.browser_statuses = browser_integration::query_browser_statuses();
+                cx.notify();
+            }
+            return;
+        }
+        if matches!(action, SettingsAction::RegisterNativeHost) {
+            if let Some(modal) = &mut self.settings_modal {
+                let ext_id = modal.extension_id_input.read(cx).value().to_string();
+                let res = browser_integration::resolve_cli_executable().and_then(|cli_exe| {
+                    browser_integration::register_native_host(&default_data_dir(), &cli_exe, &ext_id)
+                        .map(|manifest| format!("Registered com.posthaze.host -> {}", manifest.display()))
+                });
+                modal.integration_feedback = Some(res);
+                modal.browser_statuses = browser_integration::query_browser_statuses();
+                cx.notify();
+            }
+            return;
+        }
         if matches!(action, SettingsAction::OpenLogsFolder) {
             if let Err(err) = open_directory_in_shell(&default_logs_dir()) {
                 self.status_banner = Some(err);

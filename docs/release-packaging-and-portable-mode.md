@@ -27,3 +27,7 @@ The workspace `Cargo.toml` defines `[profile.release]` with `lto = true`, `codeg
 - **Windows System Tray (`tray.rs`):** `posthaze-ui` creates a persistent System Tray icon with **Show / Hide Posthaze**, **Pause All Downloads**, and **Quit Posthaze** menu actions (plus left-click toggle).
 - **Close to System Tray (`ui_close_to_tray`, default `true`):** Closing the main window minimizes to the tray so `Active` `Download`s and **Browser Capture** stay alive; **Tray → Quit** or `Ctrl+Q` exits the process cleanly.
 - **Launch on Windows Startup (`launch_on_startup`, default `false`):** Saving **Settings → General → Launch on Windows Startup** writes or removes `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Posthaze` with `"<exe>" --minimized`.
+
+## Built-In Browser Native Messaging Registration (`Settings → Integration`)
+
+- **One-Click Registration (`browser_integration.rs`):** **Settings → Integration** displays live HKCU registration status for **Google Chrome**, **Microsoft Edge**, and **Brave Browser**, accepts the 32-character Extension ID, writes `posthaze-native-host.cmd` + `com.posthaze.host.json` into `default_data_dir()`, and updates the `HKCU\Software\...\NativeMessagingHosts\com.posthaze.host` registry keys.
