@@ -1,17 +1,55 @@
 const HOST_NAME = "com.posthaze.host";
 const CONTEXT_MENU_ID = "posthaze-download-link";
 
-chrome.runtime.onInstalled.addListener(async () => {
-  const { interceptEnabled } = await chrome.storage.local.get({ interceptEnabled: true });
-  await chrome.storage.local.set({ interceptEnabled });
+const DEFAULT_SETTINGS = {
+  interceptEnabled: true,
+  minSizeMb: 0,
+  excludedExtensions: "svg",
+  excludedDomains: "localhost, 127.0.0.1",
+  lastStatus: null
+};
 
+function ensureContextMenus() {
   chrome.contextMenus.removeAll(() => {
     chrome.contextMenus.create({
       id: CONTEXT_MENU_ID,
       title: "Download with Posthaze",
-      contexts: ["link"]
+      contexts: ["link", "video", "audio", "image"]
     });
   });
+}
+
+async function refreshActionBadge(overrideFailed = null) {
+  const { interceptEnabled, lastStatus } = await chrome.storage.local.get({
+    interceptEnabled: true,
+    lastStatus: null
+  });
+
+  if (!interceptEnabled) {
+    await chrome.action.setBadgeText({ text: "OFF" });
+    await chrome.action.setBadgeBackgroundColor({ color: "#6b675f" });
+    return;
+  }
+
+  const failed = overrideFailed !== null ? overrideFailed : Boolean(lastStatus && !lastStatus.ok);
+  if (failed) {
+    await chrome.action.setBadgeText({ text: "!" });
+    await chrome.action.setBadgeBackgroundColor({ color: "#ef4444" });
+  } else {
+    await chrome.action.setBadgeText({ text: "" });
+  }
+}
+
+chrome.runtime.onInstalled.addListener(async () => {
+  const existing = await chrome.storage.local.get(DEFAULT_SETTINGS);
+  await chrome.storage.local.set(existing);
+  ensureContextMenus();
+  await refreshActionBadge();
+});
+
+chrome.runtime.onStartup.addListener(async () => {
+  ensureContextMenus();
+  await refreshActionBadge();
 });
 
 async function buildHeaders(url, referrer) {
@@ -34,37 +72,85 @@ async function buildHeaders(url, referrer) {
   return headers;
 }
 
-async function sendToPosthaze(payload) {
+function parseCsvList(raw) {
+  return String(raw || "")
+    .split(",")
+    .map((s) => s.trim().toLowerCase().replace(/^\./, ""))
+    .filter(Boolean);
+}
+
+function shouldSkipDownload(item, url, settings) {
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(url);
+  } catch {
+    return true;
+  }
+
+  const host = parsedUrl.hostname.toLowerCase();
+  const excludedDomains = parseCsvList(settings.excludedDomains);
+  if (excludedDomains.some((d) => host === d || host.endsWith(`.${d}`))) {
+    return true;
+  }
+
+  const candidateName = (item.filename || parsedUrl.pathname || "").toLowerCase();
+  const dotIdx = candidateName.lastIndexOf(".");
+  if (dotIdx !== -1) {
+    const ext = candidateName.slice(dotIdx + 1).replace(/[^a-z0-9]/g, "");
+    const excludedExts = parseCsvList(settings.excludedExtensions);
+    if (ext && excludedExts.includes(ext)) {
+      return true;
+    }
+  }
+
+  const minBytes = Math.max(0, Number(settings.minSizeMb) || 0) * 1024 * 1024;
+  if (minBytes > 0 && item.totalBytes > 0 && item.totalBytes < minBytes) {
+    return true;
+  }
+
+  return false;
+}
+
+async function sendToPosthaze(payload, recordStatus = true) {
   try {
     const response = await chrome.runtime.sendNativeMessage(HOST_NAME, payload);
-    await chrome.storage.local.set({
-      lastStatus: {
-        ok: Boolean(response && response.ok),
-        url: payload.url || "",
-        message: (response && (response.message || response.error)) || "Sent to Posthaze",
-        at: new Date().toISOString()
-      }
-    });
+    const ok = Boolean(response && response.ok);
+    if (recordStatus) {
+      await chrome.storage.local.set({
+        lastStatus: {
+          ok,
+          mode: (response && response.mode) || "",
+          url: payload.url || "",
+          message: (response && (response.message || response.error)) || "Sent to Posthaze",
+          at: new Date().toISOString()
+        }
+      });
+      await refreshActionBadge(!ok);
+    }
     return response;
   } catch (err) {
     const message = err && err.message ? err.message : String(err);
-    await chrome.storage.local.set({
-      lastStatus: {
-        ok: false,
-        url: payload.url || "",
-        message,
-        at: new Date().toISOString()
-      }
-    });
+    if (recordStatus) {
+      await chrome.storage.local.set({
+        lastStatus: {
+          ok: false,
+          mode: "",
+          url: payload.url || "",
+          message,
+          at: new Date().toISOString()
+        }
+      });
+      await refreshActionBadge(true);
+    }
     return { ok: false, error: message };
   }
 }
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
-  if (info.menuItemId !== CONTEXT_MENU_ID || !info.linkUrl) {
+  if (info.menuItemId !== CONTEXT_MENU_ID) {
     return;
   }
-  const url = info.linkUrl;
+  const url = info.linkUrl || info.srcUrl || "";
   if (!url.startsWith("http://") && !url.startsWith("https://")) {
     return;
   }
@@ -79,36 +165,71 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 });
 
 chrome.downloads.onCreated.addListener(async (item) => {
-  const { interceptEnabled } = await chrome.storage.local.get({ interceptEnabled: true });
-  if (!interceptEnabled) {
+  const settings = await chrome.storage.local.get(DEFAULT_SETTINGS);
+  if (!settings.interceptEnabled) {
     return;
   }
   const url = item.finalUrl || item.url || "";
   if (!url.startsWith("http://") && !url.startsWith("https://")) {
     return;
   }
+  if (shouldSkipDownload(item, url, settings)) {
+    return;
+  }
 
+  // Pause first so we can resume safely if the native host is unreachable.
   try {
-    await chrome.downloads.cancel(item.id);
-    await chrome.downloads.erase({ id: item.id });
+    await chrome.downloads.pause(item.id);
   } catch {
-    // Ignore if already completed/canceled.
+    // Download may not be pausable yet; continue handoff attempt.
   }
 
   const headers = await buildHeaders(url, item.referrer || "");
-  await sendToPosthaze({
+  const resp = await sendToPosthaze({
     type: "enqueue",
     url,
     filename: item.filename || null,
     headers
   });
+
+  if (resp && resp.ok) {
+    try {
+      await chrome.downloads.cancel(item.id);
+      await chrome.downloads.erase({ id: item.id });
+    } catch {
+      // Ignore if already completed/canceled.
+    }
+  } else {
+    try {
+      await chrome.downloads.resume(item.id);
+    } catch {
+      // Ignore if download already finished or canceled.
+    }
+  }
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message && message.action === "ping") {
+  if (!message) {
+    return false;
+  }
+  if (message.action === "ping") {
     (async () => {
-      const resp = await sendToPosthaze({ type: "ping" });
+      const resp = await sendToPosthaze({ type: "ping" }, false);
       sendResponse(resp);
+    })();
+    return true;
+  }
+  if (message.action === "show_ui") {
+    (async () => {
+      const resp = await sendToPosthaze({ type: "show" }, false);
+      sendResponse(resp);
+    })();
+    return true;
+  }
+  if (message.action === "refresh_badge") {
+    (async () => {
+      await refreshActionBadge();
+      sendResponse({ ok: true });
     })();
     return true;
   }

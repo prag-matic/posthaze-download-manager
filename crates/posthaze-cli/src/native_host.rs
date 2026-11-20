@@ -148,6 +148,13 @@ async fn handle_request(req: NativeRequest, db_path: &PathBuf) -> NativeResponse
         };
     }
 
+    if req.kind == "show" {
+        if let Ok(resp) = try_forward_to_ui(&req).await {
+            return resp;
+        }
+        return launch_ui_process();
+    }
+
     if !req.url.starts_with("http://") && !req.url.starts_with("https://") {
         return NativeResponse::failure("Only http:// and https:// URLs are supported.");
     }
@@ -218,6 +225,28 @@ async fn try_forward_to_ui(_req: &NativeRequest) -> Result<NativeResponse, Strin
     Err("named pipe bridge is Windows-only".to_string())
 }
 
+fn launch_ui_process() -> NativeResponse {
+    let ui_name = if cfg!(windows) {
+        "posthaze-ui.exe"
+    } else {
+        "posthaze-ui"
+    };
+    let Ok(current) = std::env::current_exe() else {
+        return NativeResponse::failure("Could not resolve posthaze-cli path");
+    };
+    let Some(dir) = current.parent() else {
+        return NativeResponse::failure("Executable has no parent directory");
+    };
+    let ui_exe = dir.join(ui_name);
+    if !ui_exe.is_file() {
+        return NativeResponse::failure(format!("{} not found", ui_exe.display()));
+    }
+    match std::process::Command::new(&ui_exe).spawn() {
+        Ok(_) => NativeResponse::success("launched", "Launched Posthaze UI"),
+        Err(err) => NativeResponse::failure(format!("Failed to launch Posthaze UI: {err}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -251,5 +280,11 @@ mod tests {
 
         let mut huge_cursor = Cursor::new(((MAX_FRAME_BYTES as u32) + 1).to_le_bytes().to_vec());
         assert!(read_frame(&mut huge_cursor).is_err());
+    }
+
+    #[test]
+    fn parses_show_native_request() {
+        let decoded: NativeRequest = serde_json::from_str(r#"{"type":"show"}"#).unwrap();
+        assert_eq!(decoded.kind, "show");
     }
 }
