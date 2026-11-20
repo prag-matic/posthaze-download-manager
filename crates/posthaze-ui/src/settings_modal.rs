@@ -9,7 +9,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use posthaze_engine::{CollisionPolicy, DeleteDefaultAction, ProxyMode, Settings};
 
-use crate::grid_cells::{CellBorder, GridTone, grid_cell_button};
+use crate::grid_cells::{CellBorder, GridTone, grid_cell_button, grid_section_header};
 use crate::modals::{labeled_input, modal_backdrop};
 use crate::theme::*;
 
@@ -406,7 +406,6 @@ where
         .bg(graphite_bg())
         .border_1()
         .border_color(graphite_border())
-        .rounded(px(6.0))
         .flex()
         .flex_col()
         .overflow_hidden()
@@ -451,49 +450,54 @@ where
                     div()
                         .w(px(176.0))
                         .h_full()
-                        .bg(graphite_elevated())
+                        .bg(graphite_bg())
                         .border_r_1()
                         .border_color(graphite_border())
-                        .p_2p5()
                         .flex()
                         .flex_col()
-                        .gap_1()
+                        .child(grid_section_header("SECTIONS", GridTone::Graphite))
                         .children(SettingsTab::ALL.into_iter().map(|tab| {
                             let active = state.active_tab == tab;
                             let act = on_action.clone();
                             div()
                                 .id(SharedString::from(format!("settings-tab-{}", tab.label())))
-                                .px_3()
-                                .py_2()
-                                .rounded(px(4.0))
+                                .h(px(34.0))
+                                .w_full()
+                                .border_b_1()
+                                .border_color(graphite_border())
                                 .flex()
                                 .items_center()
-                                .gap_2p5()
                                 .cursor_pointer()
                                 .bg(if active {
-                                    paper_hover()
-                                } else {
                                     graphite_elevated()
-                                })
-                                .text_size(TYPE_BODY)
-                                .font_weight(if active {
-                                    FontWeight::SEMIBOLD
                                 } else {
-                                    FontWeight::NORMAL
+                                    graphite_bg()
                                 })
-                                .text_color(if active { silver_text() } else { silver_muted() })
-                                .hover(|s| s.bg(graphite_border()))
+                                .hover(|s| s.bg(graphite_elevated()))
                                 .on_click(move |_, window, cx| {
                                     act(SettingsAction::SelectTab(tab), window, cx);
                                 })
-                                .child(Icon::new(tab.icon()).size(px(14.0)).text_color(
+                                .child(div().w(px(3.0)).h_full().mr_3().bg(if active {
+                                    selenium_amber()
+                                } else {
+                                    Hsla::transparent_black()
+                                }))
+                                .child(Icon::new(tab.icon()).size(px(13.0)).text_color(
                                     if active {
                                         selenium_amber()
                                     } else {
                                         silver_muted()
                                     },
                                 ))
-                                .child(tab.label())
+                                .child(
+                                    div()
+                                        .ml_2()
+                                        .font_family(MONO_FONT)
+                                        .text_size(TYPE_MICRO)
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(if active { silver_text() } else { silver_muted() })
+                                        .child(tab.label().to_uppercase()),
+                                )
                         })),
                 )
                 .child(
@@ -502,15 +506,15 @@ where
                         .flex_1()
                         .min_w_0()
                         .h_full()
-                        .px_6()
-                        .py_5()
+                        .px_5()
+                        .py_4()
                         .overflow_y_scroll()
                         .flex()
                         .flex_col()
-                        .gap_4()
+                        .gap_3()
                         .child(
                             div()
-                                .pb_3()
+                                .pb_2p5()
                                 .border_b_1()
                                 .border_color(graphite_border())
                                 .flex()
@@ -518,10 +522,11 @@ where
                                 .gap_0p5()
                                 .child(
                                     div()
+                                        .font_family(MONO_FONT)
                                         .text_size(TYPE_HEADING)
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(silver_text())
-                                        .child(state.active_tab.label()),
+                                        .child(state.active_tab.label().to_uppercase()),
                                 )
                                 .child(
                                     div()
@@ -536,13 +541,11 @@ where
         .when_some(state.error.clone(), |el, err| {
             el.child(
                 div()
-                    .mx_5()
-                    .mb_2()
-                    .px_3()
+                    .w_full()
+                    .px_4()
                     .py_2()
-                    .rounded(px(4.0))
                     .bg(rgba(0xEF444420))
-                    .border_1()
+                    .border_t_1()
                     .border_color(errata_vermilion())
                     .font_family(MONO_FONT)
                     .text_size(TYPE_MICRO)
@@ -584,10 +587,9 @@ where
 
 fn section_heading(text: &'static str) -> impl IntoElement {
     div()
-        .text_size(TYPE_BODY)
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(silver_text())
-        .child(text)
+        .border_1()
+        .border_color(graphite_border())
+        .child(grid_section_header(text.to_uppercase(), GridTone::Graphite))
 }
 
 fn setting_text(title: &'static str, description: &'static str) -> impl IntoElement {
@@ -632,14 +634,14 @@ fn setting_row(
 
 fn segmented_track() -> Div {
     div()
-        .p_0p5()
-        .bg(table_header_bg())
-        .border_1()
+        .h(px(28.0))
+        .bg(graphite_elevated())
+        .border_t_1()
+        .border_b_1()
+        .border_l_1()
         .border_color(graphite_border())
-        .rounded(px(4.0))
         .flex()
         .items_center()
-        .gap_1()
 }
 
 fn compact_input(
@@ -656,10 +658,9 @@ fn compact_input(
                 .w(width)
                 .h(px(30.0))
                 .px_2p5()
-                .bg(table_header_bg())
+                .bg(graphite_elevated())
                 .border_1()
-                .border_color(paper_border())
-                .rounded(px(4.0))
+                .border_color(graphite_border())
                 .flex()
                 .items_center()
                 .font_family(MONO_FONT)
@@ -701,7 +702,6 @@ where
                 .mt(px(2.0))
                 .w(px(16.0))
                 .h(px(16.0))
-                .rounded(px(3.0))
                 .flex_shrink_0()
                 .border_1()
                 .border_color(if checked {
@@ -712,7 +712,7 @@ where
                 .bg(if checked {
                     selenium_amber()
                 } else {
-                    table_header_bg()
+                    graphite_elevated()
                 })
                 .flex()
                 .items_center()
@@ -743,20 +743,16 @@ where
     } else {
         GridTone::Graphite
     };
-    div()
-        .h(px(28.0))
-        .border_1()
-        .border_color(graphite_border())
-        .child(grid_cell_button(
-            id,
-            None,
-            Some(label),
-            None,
-            tone,
-            CellBorder::None,
-            true,
-            move |_, window, cx| on_action(action.clone(), window, cx),
-        ))
+    grid_cell_button(
+        id,
+        None,
+        Some(label),
+        None,
+        tone,
+        CellBorder::Right,
+        true,
+        move |_, window, cx| on_action(action.clone(), window, cx),
+    )
 }
 
 fn preset_btn<F>(
@@ -1197,12 +1193,11 @@ where
                                 .w(px(236.0))
                                 .px_3()
                                 .py_2()
-                                .rounded(px(4.0))
                                 .cursor_pointer()
                                 .bg(if is_selected {
-                                    paper_selected()
-                                } else {
                                     graphite_elevated()
+                                } else {
+                                    graphite_bg()
                                 })
                                 .border_1()
                                 .border_color(if is_selected {
@@ -1210,7 +1205,7 @@ where
                                 } else {
                                     graphite_border()
                                 })
-                                .hover(|s| s.bg(paper_hover()))
+                                .hover(|s| s.bg(graphite_elevated()))
                                 .on_click(move |_, window, cx| {
                                     act(SettingsAction::SetTheme(theme_id.clone()), window, cx);
                                 })
@@ -1275,7 +1270,6 @@ where
                 .bg(graphite_elevated())
                 .border_1()
                 .border_color(graphite_border())
-                .rounded(px(4.0))
                 .text_xs()
                 .line_height(px(18.0))
                 .text_color(silver_muted())
