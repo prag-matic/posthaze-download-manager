@@ -745,6 +745,17 @@ impl PosthazeApp {
         }
     }
 
+    pub(crate) fn select_and_reveal_download(&mut self, id: DownloadId, cx: &mut Context<Self>) {
+        self.queue.select_single(id.clone());
+        self.load_segments_for(id, cx);
+        if self.queue.settings.ui_click_row_opens_inspector && self.inspector_collapsed {
+            self.inspector_collapsed = false;
+            self.motion
+                .animate_inspector(COLLAPSED_INSPECTOR_HEIGHT, self.inspector_height);
+            self.ensure_motion_loop(cx);
+        }
+    }
+
     fn delete_download(&mut self, id: DownloadId, delete_file: bool, cx: &mut Context<Self>) {
         self.run_command(EngineCommand::Delete { id, delete_file }, cx);
     }

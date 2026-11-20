@@ -352,7 +352,7 @@ impl PreflightWindow {
                     if let Some(id) = created_id
                         && (start_immediately || app.queue.selected_id.is_none())
                     {
-                        app.queue.select_single(id);
+                        app.select_and_reveal_download(id, cx);
                     }
                     app.status_banner = None;
                     app.refresh_from_engine(cx);
