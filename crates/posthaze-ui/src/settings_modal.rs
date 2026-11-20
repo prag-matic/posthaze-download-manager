@@ -3,13 +3,13 @@
 use std::path::PathBuf;
 
 use gpui_kit::assets::IconName;
-use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputState};
-use gpui_kit::component::{Icon, Sizable};
+use gpui_kit::component::Icon;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use posthaze_engine::{CollisionPolicy, DeleteDefaultAction, ProxyMode, Settings};
 
+use crate::grid_cells::{CellBorder, GridTone, grid_cell_button};
 use crate::modals::{labeled_input, modal_backdrop};
 use crate::theme::*;
 
@@ -412,8 +412,8 @@ where
         .overflow_hidden()
         .child(
             div()
-                .px_5()
-                .py_3()
+                .h(px(36.0))
+                .pl_5()
                 .border_b_1()
                 .border_color(graphite_border())
                 .flex()
@@ -421,22 +421,26 @@ where
                 .justify_between()
                 .child(
                     div()
+                        .font_family(MONO_FONT)
                         .text_size(TYPE_HEADING)
                         .line_height(px(22.0))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(silver_text())
-                        .child("Settings"),
+                        .child("SETTINGS"),
                 )
-                .child(
-                    Button::new("settings-x-close")
-                        .small()
-                        .ghost()
-                        .icon(IconName::X)
-                        .on_click({
-                            let cancel = on_cancel.clone();
-                            move |_, window, cx| cancel(window, cx)
-                        }),
-                ),
+                .child(grid_cell_button(
+                    "settings-x-close",
+                    Some(IconName::X),
+                    None,
+                    Some("Close"),
+                    GridTone::Graphite,
+                    CellBorder::Left,
+                    true,
+                    {
+                        let cancel = on_cancel.clone();
+                        move |_, window, cx| cancel(window, cx)
+                    },
+                )),
         )
         .child(
             div()
@@ -548,29 +552,31 @@ where
         })
         .child(
             div()
-                .px_5()
-                .py_3()
+                .h(px(36.0))
                 .border_t_1()
                 .border_color(graphite_border())
                 .flex()
                 .justify_end()
-                .gap_2()
-                .child(
-                    Button::new("settings-cancel")
-                        .small()
-                        .secondary()
-                        .icon(IconName::X)
-                        .label("Cancel")
-                        .on_click(move |_, window, cx| on_cancel(window, cx)),
-                )
-                .child(
-                    Button::new("settings-save")
-                        .small()
-                        .primary()
-                        .icon(IconName::Check)
-                        .label("Save Settings")
-                        .on_click(move |_, window, cx| on_save(window, cx)),
-                ),
+                .child(grid_cell_button(
+                    "settings-cancel",
+                    Some(IconName::X),
+                    Some("CANCEL"),
+                    None,
+                    GridTone::Graphite,
+                    CellBorder::Left,
+                    false,
+                    move |_, window, cx| on_cancel(window, cx),
+                ))
+                .child(grid_cell_button(
+                    "settings-save",
+                    Some(IconName::Check),
+                    Some("SAVE SETTINGS"),
+                    None,
+                    GridTone::Primary,
+                    CellBorder::Left,
+                    false,
+                    move |_, window, cx| on_save(window, cx),
+                )),
         );
 
     modal_backdrop(card, on_backdrop_close)
@@ -732,13 +738,25 @@ fn choice_btn<F>(
 where
     F: Fn(SettingsAction, &mut Window, &mut App) + 'static,
 {
-    let mut btn = Button::new(id).small().label(label);
-    if selected {
-        btn = btn.primary();
+    let tone = if selected {
+        GridTone::Primary
     } else {
-        btn = btn.ghost();
-    }
-    btn.on_click(move |_, window, cx| on_action(action.clone(), window, cx))
+        GridTone::Graphite
+    };
+    div()
+        .h(px(28.0))
+        .border_1()
+        .border_color(graphite_border())
+        .child(grid_cell_button(
+            id,
+            None,
+            Some(label),
+            None,
+            tone,
+            CellBorder::None,
+            true,
+            move |_, window, cx| on_action(action.clone(), window, cx),
+        ))
 }
 
 fn preset_btn<F>(
@@ -750,11 +768,20 @@ fn preset_btn<F>(
 where
     F: Fn(SettingsAction, &mut Window, &mut App) + 'static,
 {
-    Button::new(id)
-        .small()
-        .ghost()
-        .label(label)
-        .on_click(move |_, window, cx| on_action(action.clone(), window, cx))
+    div()
+        .h(px(28.0))
+        .border_1()
+        .border_color(graphite_border())
+        .child(grid_cell_button(
+            id,
+            None,
+            Some(label),
+            None,
+            GridTone::Graphite,
+            CellBorder::None,
+            true,
+            move |_, window, cx| on_action(action.clone(), window, cx),
+        ))
 }
 
 fn swatch_dot(hex: u32) -> impl IntoElement {
@@ -1027,14 +1054,22 @@ where
                 .child(section_heading("Run After Completion"))
                 .child({
                     let act = on_action.clone();
-                    Button::new("settings-defender-preset")
-                        .small()
-                        .secondary()
-                        .icon(IconName::ShieldCheck)
-                        .label("Use Windows Defender")
-                        .on_click(move |_, window, cx| {
-                            act(SettingsAction::ApplyDefenderPreset, window, cx);
-                        })
+                    div()
+                        .h(px(28.0))
+                        .border_1()
+                        .border_color(graphite_border())
+                        .child(grid_cell_button(
+                            "settings-defender-preset",
+                            Some(IconName::ShieldCheck),
+                            Some("USE WINDOWS DEFENDER"),
+                            None,
+                            GridTone::Graphite,
+                            CellBorder::None,
+                            true,
+                            move |_, window, cx| {
+                                act(SettingsAction::ApplyDefenderPreset, window, cx);
+                            },
+                        ))
                 }),
         )
         .child(toggle_row(
@@ -1247,16 +1282,26 @@ where
                 .child("Restores save folder, collision and removal rules, proxy, speed limit, notifications, post-download command, and interface scale to factory defaults. Downloads in your Queue are kept untouched."),
         )
         .child(
-            div().flex().child(
-                Button::new("settings-reset-defaults")
-                    .small()
-                    .danger()
-                    .icon(IconName::RotateCcw)
-                    .label("Restore Default Settings")
-                    .on_click(move |_, window, cx| {
-                        on_action(SettingsAction::ResetToDefaults, window, cx);
-                    }),
-            ),
+            div()
+                .flex()
+                .child(
+                    div()
+                        .h(px(32.0))
+                        .border_1()
+                        .border_color(graphite_border())
+                        .child(grid_cell_button(
+                            "settings-reset-defaults",
+                            Some(IconName::RotateCcw),
+                            Some("RESTORE DEFAULT SETTINGS"),
+                            None,
+                            GridTone::Danger,
+                            CellBorder::None,
+                            false,
+                            move |_, window, cx| {
+                                on_action(SettingsAction::ResetToDefaults, window, cx);
+                            },
+                        )),
+                ),
         )
         .into_any_element()
 }

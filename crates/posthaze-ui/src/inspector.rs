@@ -3,12 +3,12 @@
 use std::time::Duration;
 
 use gpui_kit::assets::IconName;
-use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::{Icon, Sizable};
+use gpui_kit::component::Icon;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use posthaze_engine::{DownloadId, DownloadState, SegmentProgress};
 
+use crate::grid_cells::{CellBorder, GridTone, grid_cell_button, grid_section_header};
 use crate::motion::RowMotionSample;
 use crate::theme::*;
 use crate::view_model::{DownloadRowView, format_bytes, normalize_byte_map_segments};
@@ -53,32 +53,35 @@ where
             .bg(graphite_bg())
             .border_t_1()
             .border_color(graphite_border())
-            .px_4()
             .flex()
             .items_center()
             .justify_between()
-            .gap_3()
             .child(
                 div()
                     .flex_1()
+                    .h_full()
                     .flex()
                     .items_center()
-                    .gap_2()
                     .overflow_hidden()
                     .child(
                         div()
-                            .px_1p5()
-                            .py_0p5()
+                            .h_full()
+                            .px_3()
                             .bg(graphite_elevated())
-                            .border_1()
+                            .border_r_1()
                             .border_color(graphite_border())
+                            .flex()
+                            .items_center()
                             .font_family(MONO_FONT)
                             .text_size(TYPE_HEADER)
+                            .font_weight(FontWeight::SEMIBOLD)
                             .text_color(silver_muted())
                             .child("INSPECTOR"),
                     )
                     .child(
                         div()
+                            .flex_1()
+                            .px_3()
                             .font_family(MONO_FONT)
                             .text_size(TYPE_MICRO)
                             .text_color(silver_muted())
@@ -86,15 +89,16 @@ where
                             .child(summary),
                     ),
             )
-            .child(
-                Button::new("inspector-expand")
-                    .xsmall()
-                    .ghost()
-                    .icon(IconName::PanelBottomOpen)
-                    .label("Expand")
-                    .tooltip("Expand Inspector")
-                    .on_click(move |_, window, cx| on_toggle_collapse(window, cx)),
-            )
+            .child(grid_cell_button(
+                "inspector-expand",
+                Some(IconName::PanelBottomOpen),
+                Some("EXPAND"),
+                Some("Expand Inspector"),
+                GridTone::Graphite,
+                CellBorder::Left,
+                true,
+                move |_, window, cx| on_toggle_collapse(window, cx),
+            ))
             .into_any_element();
     }
 
@@ -105,33 +109,21 @@ where
             .bg(graphite_bg())
             .border_t_1()
             .border_color(graphite_border())
-            .px_4()
-            .py_2p5()
             .flex()
             .flex_col()
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .pb_2()
-                    .border_b_1()
-                    .border_color(graphite_border())
-                    .child(
-                        div()
-                            .font_family(MONO_FONT)
-                            .text_size(TYPE_HEADER)
-                            .text_color(silver_muted())
-                            .child("BYTE-MAP INSPECTOR"),
-                    )
-                    .child(
-                        Button::new("inspector-collapse-empty")
-                            .xsmall()
-                            .ghost()
-                            .icon(IconName::PanelBottomClose)
-                            .tooltip("Collapse Inspector")
-                            .on_click(move |_, window, cx| on_toggle_collapse(window, cx)),
+                grid_section_header("BYTE-MAP INSPECTOR", GridTone::Graphite).child(
+                    grid_cell_button(
+                        "inspector-collapse-empty",
+                        Some(IconName::PanelBottomClose),
+                        None,
+                        Some("Collapse Inspector"),
+                        GridTone::Graphite,
+                        CellBorder::Left,
+                        true,
+                        move |_, window, cx| on_toggle_collapse(window, cx),
                     ),
+                ),
             )
             .child(
                 div()
@@ -254,12 +246,16 @@ where
                             ))
                         })
                         .child(
-                            Button::new("inspector-collapse")
-                                .xsmall()
-                                .ghost()
-                                .icon(IconName::PanelBottomClose)
-                                .tooltip("Collapse Inspector")
-                                .on_click(move |_, window, cx| on_toggle_collapse(window, cx)),
+                            div().h(px(26.0)).child(grid_cell_button(
+                                "inspector-collapse",
+                                Some(IconName::PanelBottomClose),
+                                None,
+                                Some("Collapse Inspector"),
+                                GridTone::Graphite,
+                                CellBorder::Both,
+                                true,
+                                move |_, window, cx| on_toggle_collapse(window, cx),
+                            )),
                         ),
                 ),
         )
@@ -277,9 +273,8 @@ where
             };
             el.child(
                 div()
-                    .px_3()
-                    .py_1p5()
-                    .rounded(px(4.0))
+                    .h(px(32.0))
+                    .pl_3()
                     .bg(rgba(0xEF444424))
                     .border_1()
                     .border_color(errata_vermilion())
@@ -312,34 +307,39 @@ where
                     )
                     .child(
                         div()
+                            .h_full()
                             .flex()
                             .items_center()
-                            .gap_1p5()
                             .when(row.is_resource_changed, |actions| {
-                                actions.child(
-                                    Button::new("errata-restart-fresh")
-                                        .xsmall()
-                                        .primary()
-                                        .icon(IconName::RotateCcw)
-                                        .label("Restart Fresh")
-                                        .on_click(move |_, window, cx| {
-                                            (callbacks.on_restart_fresh)(
-                                                id_restart.clone(),
-                                                window,
-                                                cx,
-                                            );
-                                        }),
-                                )
+                                actions.child(grid_cell_button(
+                                    "errata-restart-fresh",
+                                    Some(IconName::RotateCcw),
+                                    Some("RESTART FRESH"),
+                                    Some("Restart Fresh"),
+                                    GridTone::Primary,
+                                    CellBorder::Left,
+                                    true,
+                                    move |_, window, cx| {
+                                        (callbacks.on_restart_fresh)(
+                                            id_restart.clone(),
+                                            window,
+                                            cx,
+                                        );
+                                    },
+                                ))
                             })
-                            .child(
-                                Button::new("errata-delete")
-                                    .xsmall()
-                                    .icon(IconName::Trash)
-                                    .label("Delete")
-                                    .on_click(move |_, window, cx| {
-                                        (callbacks.on_delete)(id_delete.clone(), window, cx);
-                                    }),
-                            ),
+                            .child(grid_cell_button(
+                                "errata-delete",
+                                Some(IconName::Trash),
+                                Some("DELETE"),
+                                Some("Delete"),
+                                GridTone::Danger,
+                                CellBorder::Left,
+                                true,
+                                move |_, window, cx| {
+                                    (callbacks.on_delete)(id_delete.clone(), window, cx);
+                                },
+                            )),
                     ),
             )
         })

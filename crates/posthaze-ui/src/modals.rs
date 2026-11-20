@@ -3,14 +3,14 @@
 use std::time::Duration;
 
 use gpui_kit::assets::IconName;
-use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputState};
-use gpui_kit::component::{Icon, Sizable};
+use gpui_kit::component::Icon;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use posthaze_engine::{DownloadId, DownloadRequest, PreflightInfo};
 
 use crate::curl_parser::mask_header_summary;
+use crate::grid_cells::{CellBorder, GridTone, grid_cell_button, grid_kv_row};
 use crate::theme::*;
 use crate::view_model::format_bytes;
 
@@ -166,15 +166,21 @@ where
             })
             .child(
                 div()
+                    .h(px(34.0))
+                    .border_t_1()
+                    .border_color(graphite_border())
                     .flex()
                     .justify_end()
-                    .child(
-                        Button::new("probe-cancel")
-                            .small()
-                            .icon(IconName::X)
-                            .label("Cancel")
-                            .on_click(move |_, window, cx| on_close(window, cx)),
-                    ),
+                    .child(grid_cell_button(
+                        "probe-cancel",
+                        Some(IconName::X),
+                        Some("CANCEL"),
+                        None,
+                        GridTone::Graphite,
+                        CellBorder::Left,
+                        false,
+                        move |_, window, cx| on_close(window, cx),
+                    )),
             ),
         PreflightModalState::Error {
             url,
@@ -247,35 +253,45 @@ where
                 })
                 .child(
                     div()
+                        .h(px(34.0))
+                        .border_t_1()
+                        .border_color(graphite_border())
                         .flex()
                         .justify_end()
-                        .gap_2()
-                        .child(
-                            Button::new("probe-edit")
-                                .small()
-                                .icon(IconName::Clipboard)
-                                .label("Edit URL")
-                                .on_click(move |_, window, cx| {
-                                    on_edit_url(url_edit.clone(), window, cx);
-                                }),
-                        )
-                        .child(
-                            Button::new("probe-close")
-                                .small()
-                                .icon(IconName::X)
-                                .label("Close")
-                                .on_click(move |_, window, cx| on_close(window, cx)),
-                        )
-                        .child(
-                            Button::new("probe-retry")
-                                .small()
-                                .primary()
-                                .icon(IconName::RefreshCw)
-                                .label("Retry Probe")
-                                .on_click(move |_, window, cx| {
-                                    on_retry(url_retry.clone(), headers_retry.clone(), window, cx);
-                                }),
-                        ),
+                        .child(grid_cell_button(
+                            "probe-edit",
+                            Some(IconName::Clipboard),
+                            Some("EDIT URL"),
+                            None,
+                            GridTone::Graphite,
+                            CellBorder::Left,
+                            false,
+                            move |_, window, cx| {
+                                on_edit_url(url_edit.clone(), window, cx);
+                            },
+                        ))
+                        .child(grid_cell_button(
+                            "probe-close",
+                            Some(IconName::X),
+                            Some("CLOSE"),
+                            None,
+                            GridTone::Graphite,
+                            CellBorder::Left,
+                            false,
+                            move |_, window, cx| on_close(window, cx),
+                        ))
+                        .child(grid_cell_button(
+                            "probe-retry",
+                            Some(IconName::RefreshCw),
+                            Some("RETRY PROBE"),
+                            None,
+                            GridTone::Primary,
+                            CellBorder::Left,
+                            false,
+                            move |_, window, cx| {
+                                on_retry(url_retry.clone(), headers_retry.clone(), window, cx);
+                            },
+                        )),
                 )
         }
         PreflightModalState::Resolved {
@@ -362,16 +378,24 @@ where
                         .items_center()
                         .justify_between()
                         .child(
-                            Button::new("preflight-toggle-headers")
-                                .xsmall()
-                                .ghost()
-                                .icon(IconName::Settings)
-                                .label(if header_count > 0 {
-                                    format!("Request Headers ({header_count})")
-                                } else {
-                                    "+ Request Headers".to_string()
-                                })
-                                .on_click(move |_, window, cx| on_toggle_headers(window, cx)),
+                            div()
+                                .h(px(28.0))
+                                .border_1()
+                                .border_color(graphite_border())
+                                .child(grid_cell_button(
+                                    "preflight-toggle-headers",
+                                    Some(IconName::Settings),
+                                    Some(if header_count > 0 {
+                                        "REQUEST HEADERS (SET)"
+                                    } else {
+                                        "REQUEST HEADERS"
+                                    }),
+                                    None,
+                                    GridTone::Graphite,
+                                    CellBorder::None,
+                                    true,
+                                    move |_, window, cx| on_toggle_headers(window, cx),
+                                )),
                         )
                         .when_some(header_summary, |el, summary| {
                             el.child(
@@ -427,22 +451,27 @@ where
                         )
                         .child(
                             div()
+                                .h(px(28.0))
+                                .border_1()
+                                .border_color(graphite_border())
                                 .flex()
                                 .items_center()
-                                .gap_2()
                                 .when(info.supports_ranges, |el| {
                                     let dec = on_worker_delta.clone();
-                                    el.child(
-                                        Button::new("w-dec")
-                                            .xsmall()
-                                            .icon(IconName::Minus)
-                                            .tooltip("Decrease workers")
-                                            .on_click(move |_, window, cx| dec(-1, window, cx)),
-                                    )
+                                    el.child(grid_cell_button(
+                                        "w-dec",
+                                        Some(IconName::Minus),
+                                        None,
+                                        Some("Decrease workers"),
+                                        GridTone::Graphite,
+                                        CellBorder::Right,
+                                        true,
+                                        move |_, window, cx| dec(-1, window, cx),
+                                    ))
                                 })
                                 .child(
                                     div()
-                                        .w(px(32.0))
+                                        .w(px(36.0))
                                         .text_center()
                                         .font_family(MONO_FONT)
                                         .text_size(TYPE_BODY)
@@ -450,51 +479,58 @@ where
                                         .child(workers.to_string()),
                                 )
                                 .when(info.supports_ranges, |el| {
-                                    el.child(
-                                        Button::new("w-inc")
-                                            .xsmall()
-                                            .icon(IconName::Plus)
-                                            .tooltip("Increase workers")
-                                            .on_click(move |_, window, cx| {
-                                                on_worker_delta(1, window, cx)
-                                            }),
-                                    )
+                                    el.child(grid_cell_button(
+                                        "w-inc",
+                                        Some(IconName::Plus),
+                                        None,
+                                        Some("Increase workers"),
+                                        GridTone::Graphite,
+                                        CellBorder::Left,
+                                        true,
+                                        move |_, window, cx| on_worker_delta(1, window, cx),
+                                    ))
                                 }),
                         ),
                 )
                 .child(
                     div()
+                        .h(px(34.0))
+                        .border_t_1()
+                        .border_color(graphite_border())
                         .flex()
                         .justify_end()
-                        .gap_2()
-                        .pt_2()
-                        .child(
-                            Button::new("pf-cancel")
-                                .small()
-                                .secondary()
-                                .icon(IconName::X)
-                                .label("Cancel")
-                                .on_click(move |_, window, cx| on_close(window, cx)),
-                        )
+                        .child(grid_cell_button(
+                            "pf-cancel",
+                            Some(IconName::X),
+                            Some("CANCEL"),
+                            None,
+                            GridTone::Graphite,
+                            CellBorder::Left,
+                            false,
+                            move |_, window, cx| on_close(window, cx),
+                        ))
                         .when(show_add_paused, |el| {
-                            el.child(
-                                Button::new("pf-queue")
-                                    .small()
-                                    .secondary()
-                                    .icon(IconName::Clock)
-                                    .label("Add Paused")
-                                    .tooltip("Save to list in Paused state without starting transfer")
-                                    .on_click(move |_, window, cx| confirm_queue(false, window, cx)),
-                            )
+                            el.child(grid_cell_button(
+                                "pf-queue",
+                                Some(IconName::Clock),
+                                Some("ADD PAUSED"),
+                                Some("Save to list in Paused state without starting transfer"),
+                                GridTone::Graphite,
+                                CellBorder::Left,
+                                false,
+                                move |_, window, cx| confirm_queue(false, window, cx),
+                            ))
                         })
-                        .child(
-                            Button::new("pf-now")
-                                .small()
-                                .primary()
-                                .icon(IconName::Download)
-                                .label("Download Now")
-                                .on_click(move |_, window, cx| confirm_now(true, window, cx)),
-                        ),
+                        .child(grid_cell_button(
+                            "pf-now",
+                            Some(IconName::Download),
+                            Some("DOWNLOAD NOW"),
+                            None,
+                            GridTone::Primary,
+                            CellBorder::Left,
+                            false,
+                            move |_, window, cx| confirm_now(true, window, cx),
+                        )),
                 )
         }
     };
@@ -597,30 +633,35 @@ where
             )
             .child(
                 div()
+                    .h(px(34.0))
+                    .border_t_1()
+                    .border_color(graphite_border())
                     .flex()
                     .justify_end()
-                    .gap_2()
-                    .pt_2()
                     .when_some(digest.clone(), |el, hash| {
-                        el.child(
-                            Button::new("hash-copy")
-                                .small()
-                                .secondary()
-                                .icon(IconName::Copy)
-                                .label("Copy BLAKE3")
-                                .on_click(move |_, window, cx| {
-                                    on_copy_hash(hash.clone(), window, cx);
-                                }),
-                        )
+                        el.child(grid_cell_button(
+                            "hash-copy",
+                            Some(IconName::Copy),
+                            Some("COPY BLAKE3"),
+                            None,
+                            GridTone::Graphite,
+                            CellBorder::Left,
+                            false,
+                            move |_, window, cx| {
+                                on_copy_hash(hash.clone(), window, cx);
+                            },
+                        ))
                     })
-                    .child(
-                        Button::new("hash-close")
-                            .small()
-                            .primary()
-                            .icon(IconName::Check)
-                            .label("Close")
-                            .on_click(move |_, window, cx| on_cancel(window, cx)),
-                    ),
+                    .child(grid_cell_button(
+                        "hash-close",
+                        Some(IconName::Check),
+                        Some("CLOSE"),
+                        None,
+                        GridTone::Primary,
+                        CellBorder::Left,
+                        false,
+                        move |_, window, cx| on_cancel(window, cx),
+                    )),
             ),
     };
 
@@ -736,26 +777,31 @@ where
         )
         .child(
             div()
+                .h(px(34.0))
+                .border_t_1()
+                .border_color(graphite_border())
                 .flex()
                 .justify_end()
-                .gap_2()
-                .pt_2()
-                .child(
-                    Button::new("confirm-cancel")
-                        .small()
-                        .secondary()
-                        .icon(IconName::X)
-                        .label("Cancel")
-                        .on_click(move |_, window, cx| on_cancel(window, cx)),
-                )
-                .child(
-                    Button::new("confirm-proceed")
-                        .small()
-                        .danger()
-                        .icon(IconName::Trash)
-                        .label(confirm_label)
-                        .on_click(move |_, window, cx| on_confirm(window, cx)),
-                ),
+                .child(grid_cell_button(
+                    "confirm-cancel",
+                    Some(IconName::X),
+                    Some("CANCEL"),
+                    None,
+                    GridTone::Graphite,
+                    CellBorder::Left,
+                    false,
+                    move |_, window, cx| on_cancel(window, cx),
+                ))
+                .child(grid_cell_button(
+                    "confirm-proceed",
+                    Some(IconName::Trash),
+                    Some(confirm_label),
+                    None,
+                    GridTone::Danger,
+                    CellBorder::Left,
+                    false,
+                    move |_, window, cx| on_confirm(window, cx),
+                )),
         );
 
     modal_backdrop(card, on_backdrop_close)
@@ -806,56 +852,47 @@ where
         .child(labeled_input(input_label, input))
         .child(
             div()
+                .h(px(34.0))
+                .border_t_1()
+                .border_color(graphite_border())
                 .flex()
                 .justify_end()
-                .gap_2()
-                .pt_2()
-                .child(
-                    Button::new("fileop-cancel")
-                        .small()
-                        .secondary()
-                        .icon(IconName::X)
-                        .label("Cancel")
-                        .on_click(move |_, window, cx| on_cancel(window, cx)),
-                )
-                .child(
-                    Button::new("fileop-save")
-                        .small()
-                        .primary()
-                        .icon(confirm_icon)
-                        .label(confirm_label)
-                        .on_click(move |_, window, cx| on_confirm(window, cx)),
-                ),
+                .child(grid_cell_button(
+                    "fileop-cancel",
+                    Some(IconName::X),
+                    Some("CANCEL"),
+                    None,
+                    GridTone::Graphite,
+                    CellBorder::Left,
+                    false,
+                    move |_, window, cx| on_cancel(window, cx),
+                ))
+                .child(grid_cell_button(
+                    "fileop-save",
+                    Some(confirm_icon),
+                    Some(confirm_label),
+                    None,
+                    GridTone::Primary,
+                    CellBorder::Left,
+                    false,
+                    move |_, window, cx| on_confirm(window, cx),
+                )),
         )
 }
 
 pub(crate) fn labeled_input(label: &'static str, state: &Entity<InputState>) -> impl IntoElement {
-    div()
-        .flex()
-        .flex_col()
-        .gap_1()
-        .child(
+    div().border_t_1().border_color(graphite_border()).child(
+        grid_kv_row(
+            label,
+            160.0,
             div()
-                .text_size(TYPE_BODY)
-                .line_height(px(18.0))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(silver_muted())
-                .child(label),
-        )
-        .child(
-            div()
-                .h(px(32.0))
-                .px_2p5()
-                .bg(table_header_bg())
-                .border_1()
-                .border_color(paper_border())
-                .rounded(px(4.0))
-                .flex()
-                .items_center()
+                .w_full()
                 .font_family(MONO_FONT)
                 .text_size(TYPE_BODY)
                 .child(Input::new(state).appearance(false)),
-        )
+            GridTone::Graphite,
+        ),
+    )
 }
 
 pub(crate) fn modal_backdrop<F>(card: impl IntoElement, on_close: F) -> AnyElement

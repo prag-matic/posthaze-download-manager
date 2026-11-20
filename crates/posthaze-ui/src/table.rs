@@ -5,10 +5,9 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{Scrollbar, ScrollbarMode};
-use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::Input;
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::{Icon, InteractiveElementExt as _, Sizable};
+use gpui_kit::component::{Icon, InteractiveElementExt as _};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use posthaze_engine::{DownloadId, DownloadState};
@@ -16,6 +15,7 @@ use posthaze_engine::{DownloadId, DownloadState};
 use crate::PosthazeApp;
 use crate::assets::BRAND_LOGO_SVG;
 use crate::context_menu::ContextMenuState;
+use crate::grid_cells::{CellBorder, GridTone, grid_cell_button};
 use crate::motion::RowMotionSample;
 use crate::theme::*;
 use crate::view_model::{
@@ -475,30 +475,20 @@ impl PosthazeApp {
         right_border: bool,
         on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     ) -> AnyElement {
-        div()
-            .id(id)
-            .h_full()
-            .px_3()
-            .when(right_border, |el| el.border_r_1().border_color(paper_border()))
-            .bg(table_header_bg())
-            .hover(|s| {
-                s.bg(selenium_amber())
-                    .text_color(rgb(active_theme().accent_foreground))
-            })
-            .cursor_pointer()
-            .flex()
-            .items_center()
-            .justify_center()
-            .gap_1p5()
-            .font_family(MONO_FONT)
-            .text_size(TYPE_MICRO)
-            .font_weight(FontWeight::SEMIBOLD)
-            .text_color(carbon_text())
-            .tooltip(move |window, cx| Tooltip::new(tooltip_text).build(window, cx))
-            .on_click(on_click)
-            .child(Icon::new(icon).size(px(12.0)))
-            .when_some(label, |el, text| el.child(text))
-            .into_any_element()
+        grid_cell_button(
+            id,
+            Some(icon),
+            label,
+            Some(tooltip_text),
+            GridTone::Paper,
+            if right_border {
+                CellBorder::Right
+            } else {
+                CellBorder::None
+            },
+            false,
+            on_click,
+        )
     }
 
     fn row_action_cell(
@@ -509,31 +499,16 @@ impl PosthazeApp {
         tooltip_text: &'static str,
         on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     ) -> AnyElement {
-        div()
-            .id(id)
-            .h_full()
-            .px_2p5()
-            .border_l_1()
-            .border_color(paper_border())
-            .bg(table_header_bg().opacity(0.45))
-            .hover(|s| {
-                s.bg(selenium_amber())
-                    .text_color(rgb(active_theme().accent_foreground))
-            })
-            .cursor_pointer()
-            .flex()
-            .items_center()
-            .justify_center()
-            .gap_1()
-            .font_family(MONO_FONT)
-            .text_size(TYPE_MICRO)
-            .font_weight(FontWeight::SEMIBOLD)
-            .text_color(carbon_text())
-            .tooltip(move |window, cx| Tooltip::new(tooltip_text).build(window, cx))
-            .on_click(on_click)
-            .child(Icon::new(icon).size(px(12.0)))
-            .when_some(label, |el, text| el.child(text))
-            .into_any_element()
+        grid_cell_button(
+            id,
+            Some(icon),
+            label,
+            Some(tooltip_text),
+            GridTone::PaperSubtle,
+            CellBorder::Left,
+            true,
+            on_click,
+        )
     }
 
     pub(crate) fn render_table(
@@ -604,25 +579,46 @@ impl PosthazeApp {
                 )
                 .when(is_empty_queue, |el| {
                     el.child(
-                        Button::new("empty-paste")
-                            .primary()
-                            .icon(IconName::ClipboardPaste)
-                            .label("Paste URL from Clipboard & Probe")
-                            .on_click(cx.listener(|app, _, window, cx| {
-                                app.paste_and_probe_from_clipboard(window, cx);
-                            })),
+                        div()
+                            .h(px(34.0))
+                            .border_1()
+                            .border_color(paper_border())
+                            .child(grid_cell_button(
+                                "empty-paste",
+                                Some(IconName::ClipboardPaste),
+                                Some("PASTE URL FROM CLIPBOARD & PROBE"),
+                                None,
+                                GridTone::Primary,
+                                CellBorder::None,
+                                false,
+                                cx.listener(|app, _, window, cx| {
+                                    app.paste_and_probe_from_clipboard(window, cx);
+                                }),
+                            )),
                     )
                 })
                 .when(!is_empty_queue, |el| {
                     el.child(
-                        Button::new("empty-show-all")
-                            .small()
-                            .icon(IconName::Folder)
-                            .label("Show All Downloads")
-                            .on_click(cx.listener(|app, _, _, cx| {
-                                app.filter = FilterTab::All;
-                                cx.notify();
-                            })),
+                        div()
+                            .h(px(34.0))
+                            .border_1()
+                            .border_color(paper_border())
+                            .child(grid_cell_button(
+                                "empty-show-all",
+                                Some(IconName::Folder),
+                                Some("SHOW ALL DOWNLOADS"),
+                                None,
+                                GridTone::Paper,
+                                CellBorder::None,
+                                false,
+                                cx.listener(|app, _, window, cx| {
+                                    app.filter = FilterTab::All;
+                                    app.search_input.update(cx, |state, cx| {
+                                        state.set_value("", window, cx);
+                                    });
+                                    cx.notify();
+                                }),
+                            )),
                     )
                 })
                 .into_any_element();

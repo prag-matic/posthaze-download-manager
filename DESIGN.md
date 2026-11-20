@@ -193,7 +193,13 @@ Sharp, instrument-calibrated corners across the entire shell: `3px` on `Validato
 ### Graduated Interval Byte-Map Ruler
 - Full-width `18px` horizontal bar framed by engraved `0 B (0%)`, `25%`, `50%`, `75%`, and `100%` quarter tick marks, rendering proportional `[start, end)` `Segment` cells with `1px` `#181715` work-steal split dividers, Cyanotype Blue (`#2563EB`) `Checkpoint` fill, and Selenium Amber (`#D97724`) in-flight fill.
 
-## Do's and Don'ts
+### Table-Grid Cell System (`crates/posthaze-ui/src/grid_cells.rs`)
+All interactive surfaces (`table.rs`, `sidebar.rs`, `inspector.rs`, `modals.rs`, `settings_modal.rs`, and future views) compose from `grid_cells.rs` rather than standalone rounded pill buttons:
+- **Cell Buttons (`grid_cell_button`):** Full-height (`h_full()`), `0px` corner radius, separated by `1px` vertical `paper_border()` / `graphite_border()` rules (`CellBorder::Left | Right | Both`). Uppercase `Consolas` `11px` (`TYPE_MICRO`) semibold labels; hover fills the entire cell with `selenium_amber()` and `accent_foreground` (or `errata_vermilion()` + `#FFFFFF` for `GridTone::Danger`).
+- **Section Headers (`grid_section_header`):** `28px` modular header bar (`table_header_bg()` on paper, `graphite_elevated()` on graphite) with a `1px` bottom rule and optional right-aligned cell controls.
+- **Key-Value Rows (`grid_kv_row`):** Fixed-width `LABEL` cell | `1px` vertical divider | `flex_1` value/input cell, bounded by a `1px` bottom rule (`labeled_input`, sidebar telemetry, inspector metadata).
+
+### Do's and Don'ts
 
 ### Do:
 - **Do** compute all `Segment` ratios and formatting in pure Rust (`crates/posthaze-ui/src/view_model.rs`) with unit tests.

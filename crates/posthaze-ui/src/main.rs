@@ -4,6 +4,7 @@ mod assets;
 mod bridge;
 mod context_menu;
 mod curl_parser;
+mod grid_cells;
 mod inspector;
 mod ipc;
 mod modals;
@@ -19,9 +20,8 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use gpui_kit::assets::IconName;
-use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{InputEvent, InputState};
-use gpui_kit::component::{Icon, InteractiveElementExt as _, Sizable, TitleBar};
+use gpui_kit::component::{Icon, InteractiveElementExt as _, TitleBar};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use posthaze_engine::{
@@ -33,6 +33,7 @@ use crate::assets::{BRAND_LOGO_SVG, PosthazeAssets};
 use crate::bridge::{EngineBridge, EngineCommand, EngineSnapshot};
 use crate::context_menu::{ContextMenuAction, ContextMenuState, render_context_menu};
 use crate::curl_parser::{find_header_value, parse_url_or_curl, set_or_remove_header};
+use crate::grid_cells::{CellBorder, GridTone, grid_cell_button};
 use crate::inspector::{InspectorCallbacks, render_inspector};
 use crate::modals::{
     ConfirmAction, FileOpModalState, PreflightModalState, render_confirm_modal,
@@ -1649,15 +1650,19 @@ impl Render for PosthazeApp {
                                                 ),
                                         )
                                         .child(
-                                            Button::new("dismiss-status-banner")
-                                                .xsmall()
-                                                .ghost()
-                                                .icon(IconName::X)
-                                                .tooltip("Dismiss")
-                                                .on_click(cx.listener(|app, _, _, cx| {
+                                            div().h(px(26.0)).child(grid_cell_button(
+                                                "dismiss-status-banner",
+                                                Some(IconName::X),
+                                                None,
+                                                Some("Dismiss"),
+                                                GridTone::Danger,
+                                                CellBorder::Left,
+                                                true,
+                                                cx.listener(|app, _, _, cx| {
                                                     app.status_banner = None;
                                                     cx.notify();
-                                                })),
+                                                }),
+                                            )),
                                         ),
                                 )
                             })
