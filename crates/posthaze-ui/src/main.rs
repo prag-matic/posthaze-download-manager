@@ -596,7 +596,7 @@ impl PosthazeApp {
             if let Some(id) = created_id
                 && (start_immediately || app.queue.selected_id.is_none())
             {
-                app.queue.selected_id = Some(id);
+                app.queue.select_single(id);
             }
             app.status_banner = None;
         });
@@ -676,6 +676,38 @@ impl PosthazeApp {
         cx.notify();
     }
 
+    fn request_delete_selected(&mut self, cx: &mut Context<Self>) {
+        let selected = self.queue.selected_list();
+        if selected.len() <= 1 {
+            if let Some(id) = selected.into_iter().next()
+                && let Some(rec) = self.queue.records.iter().find(|r| r.id == id)
+            {
+                let filename = derive_display_filename(rec);
+                self.request_delete_download(id, filename, cx);
+            }
+            return;
+        }
+        match self.queue.settings.delete_action_default {
+            DeleteDefaultAction::Ask => {
+                self.confirm_modal = Some(ConfirmAction::DeleteMultiple {
+                    ids: selected,
+                    delete_file: false,
+                });
+                cx.notify();
+            }
+            DeleteDefaultAction::Remove => {
+                for id in selected {
+                    self.delete_download(id, false, cx);
+                }
+            }
+            DeleteDefaultAction::DeleteFile => {
+                for id in selected {
+                    self.delete_download(id, true, cx);
+                }
+            }
+        }
+    }
+
     fn delete_download(&mut self, id: DownloadId, delete_file: bool, cx: &mut Context<Self>) {
         self.run_command(EngineCommand::Delete { id, delete_file }, cx);
     }
@@ -697,6 +729,11 @@ impl PosthazeApp {
             ConfirmAction::DeleteDownload {
                 id, delete_file, ..
             } => self.delete_download(id, delete_file, cx),
+            ConfirmAction::DeleteMultiple { ids, delete_file } => {
+                for id in ids {
+                    self.delete_download(id, delete_file, cx);
+                }
+            }
             ConfirmAction::ClearCompleted { .. } => self.clear_completed(cx),
             ConfirmAction::OverwriteCollision {
                 request,
@@ -1249,6 +1286,25 @@ impl Render for PosthazeApp {
                     url_input_focused: app.url_input.read(cx).focus_handle(cx).is_focused(window),
                 };
 
+                let ctrl_or_cmd =
+                    event.keystroke.modifiers.control || event.keystroke.modifiers.platform;
+                let shift = event.keystroke.modifiers.shift;
+                if ctrl_or_cmd
+                    && key == "a"
+                    && !kb_ctx.has_confirm_modal
+                    && !kb_ctx.has_any_preflight
+                    && !kb_ctx.has_settings_modal
+                    && !kb_ctx.has_file_op_modal
+                    && !kb_ctx.url_input_focused
+                {
+                    app.queue.select_all(&visible_ids);
+                    if let Some(lead) = app.queue.selected_id.clone() {
+                        app.load_segments_for(lead, cx);
+                    }
+                    cx.notify();
+                    return;
+                }
+
                 match resolve_keyboard_action(key, kb_ctx) {
                     KeyboardAction::DismissOverlays => {
                         let mut changed = false;
@@ -1287,7 +1343,10 @@ impl Render for PosthazeApp {
                         }
                     }
                     KeyboardAction::StepSelection(delta) => {
-                        if let Some(next_id) = app.queue.step_selection(&visible_ids, delta) {
+                        if let Some(next_id) =
+                            app.queue
+                                .step_selection_extending(&visible_ids, delta, shift)
+                        {
                             if let Some(idx) = visible_ids.iter().position(|id| id == &next_id) {
                                 app.table_scroll_handle
                                     .scroll_to_item(idx, ScrollStrategy::Nearest);
@@ -1297,25 +1356,20 @@ impl Render for PosthazeApp {
                         }
                     }
                     KeyboardAction::TriggerPrimaryAction => {
-                        if let Some(id) = app.queue.selected_id.clone()
-                            && let Some(action) = app.queue.primary_action_for(&id)
-                        {
-                            match action {
-                                PrimaryDownloadAction::Pause(id) => app.pause_download(id, cx),
-                                PrimaryDownloadAction::Resume(id) => app.resume_download(id, cx),
-                                PrimaryDownloadAction::RestartFresh(id) => {
-                                    app.restart_fresh_download(id, cx)
+                        for id in app.queue.selected_list() {
+                            if let Some(action) = app.queue.primary_action_for(&id) {
+                                match action {
+                                    PrimaryDownloadAction::Pause(id) => app.pause_download(id, cx),
+                                    PrimaryDownloadAction::Resume(id) => app.resume_download(id, cx),
+                                    PrimaryDownloadAction::RestartFresh(id) => {
+                                        app.restart_fresh_download(id, cx)
+                                    }
                                 }
                             }
                         }
                     }
                     KeyboardAction::RequestDeleteSelected => {
-                        if let Some(id) = app.queue.selected_id.clone()
-                            && let Some(rec) = app.queue.records.iter().find(|r| r.id == id)
-                        {
-                            let filename = derive_display_filename(rec);
-                            app.request_delete_download(id, filename, cx);
-                        }
+                        app.request_delete_selected(cx);
                     }
                     KeyboardAction::None => {}
                 }

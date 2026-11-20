@@ -1,6 +1,6 @@
 //! Pure view-model logic for filtering, sorting, FIFO rank calculation, and formatting.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use gpui_kit::assets::IconName;
@@ -635,6 +635,8 @@ pub struct QueueController {
     pub persisted_segments: HashMap<DownloadId, Vec<SegmentProgress>>,
     pub settings: Settings,
     pub selected_id: Option<DownloadId>,
+    pub selected_ids: HashSet<DownloadId>,
+    pub selection_anchor: Option<DownloadId>,
     pub auto_retries_used: HashMap<DownloadId, u32>,
 }
 
@@ -644,8 +646,24 @@ impl QueueController {
         self.records = snapshot.records;
         self.settings = snapshot.settings;
         self.segment_counts = snapshot.segment_counts;
+        let existing: HashSet<&DownloadId> = self.records.iter().map(|r| &r.id).collect();
+        self.selected_ids.retain(|id| existing.contains(id));
+        if let Some(ref anchor) = self.selection_anchor
+            && !existing.contains(anchor)
+        {
+            self.selection_anchor = None;
+        }
+        if let Some(ref sel) = self.selected_id
+            && !existing.contains(sel)
+        {
+            self.selected_id = self.selected_ids.iter().next().cloned();
+        }
         if self.selected_id.is_none() {
-            self.selected_id = self.records.first().map(|r| r.id.clone());
+            if let Some(first) = self.records.first().map(|r| r.id.clone()) {
+                self.select_single(first);
+            }
+        } else if let Some(ref sel) = self.selected_id {
+            self.selected_ids.insert(sel.clone());
         }
         self.selected_id.clone().map(UiEffect::LoadSegments)
     }
@@ -742,11 +760,126 @@ impl QueueController {
         }
     }
 
+    /// Returns whether `id` is currently selected (either as the lead item or in multi-select).
+    pub fn is_selected(&self, id: &DownloadId) -> bool {
+        self.selected_ids.contains(id) || self.selected_id.as_ref() == Some(id)
+    }
+
+    /// Returns all currently selected `DownloadId`s in record order.
+    pub fn selected_list(&self) -> Vec<DownloadId> {
+        let mut out: Vec<DownloadId> = self
+            .records
+            .iter()
+            .filter(|r| self.is_selected(&r.id))
+            .map(|r| r.id.clone())
+            .collect();
+        if out.is_empty()
+            && let Some(ref id) = self.selected_id
+        {
+            out.push(id.clone());
+        }
+        out
+    }
+
+    /// Replaces the current selection with a single `id` and resets the range anchor.
+    pub fn select_single(&mut self, id: DownloadId) {
+        self.selected_ids.clear();
+        self.selected_ids.insert(id.clone());
+        self.selected_id = Some(id.clone());
+        self.selection_anchor = Some(id);
+    }
+
+    /// Toggles `id` in the multi-selection (`Ctrl+Click`).
+    pub fn toggle_select(&mut self, id: DownloadId) {
+        if self.selected_ids.is_empty()
+            && let Some(existing) = self.selected_id.clone()
+        {
+            self.selected_ids.insert(existing);
+        }
+        if self.selected_ids.contains(&id) {
+            self.selected_ids.remove(&id);
+            if self.selected_id.as_ref() == Some(&id) {
+                self.selected_id = self.selected_ids.iter().next().cloned();
+            }
+            if self.selection_anchor.as_ref() == Some(&id) {
+                self.selection_anchor = self.selected_id.clone();
+            }
+        } else {
+            self.selected_ids.insert(id.clone());
+            self.selected_id = Some(id.clone());
+            self.selection_anchor = Some(id);
+        }
+    }
+
+    /// Selects a contiguous range from the current anchor to `target_id` within `visible_ids`.
+    pub fn select_range(
+        &mut self,
+        visible_ids: &[DownloadId],
+        target_id: DownloadId,
+        additive: bool,
+    ) {
+        let Some(target_idx) = visible_ids.iter().position(|v| v == &target_id) else {
+            self.select_single(target_id);
+            return;
+        };
+        let anchor_id = self
+            .selection_anchor
+            .as_ref()
+            .or(self.selected_id.as_ref());
+        let anchor_idx = anchor_id
+            .and_then(|aid| visible_ids.iter().position(|v| v == aid))
+            .unwrap_or(target_idx);
+        if self.selection_anchor.is_none() {
+            self.selection_anchor = Some(visible_ids[anchor_idx].clone());
+        }
+        let (lo, hi) = if anchor_idx <= target_idx {
+            (anchor_idx, target_idx)
+        } else {
+            (target_idx, anchor_idx)
+        };
+        if !additive {
+            self.selected_ids.clear();
+        }
+        for id in &visible_ids[lo..=hi] {
+            self.selected_ids.insert(id.clone());
+        }
+        self.selected_id = Some(target_id);
+    }
+
+    /// Selects every row in `visible_ids` (`Ctrl+A`).
+    pub fn select_all(&mut self, visible_ids: &[DownloadId]) {
+        self.selected_ids.clear();
+        for id in visible_ids {
+            self.selected_ids.insert(id.clone());
+        }
+        if self
+            .selected_id
+            .as_ref()
+            .is_none_or(|id| !self.selected_ids.contains(id))
+        {
+            self.selected_id = visible_ids.first().cloned();
+        }
+        if self.selection_anchor.is_none() {
+            self.selection_anchor = self.selected_id.clone();
+        }
+    }
+
     /// Moves selection up (`delta < 0`) or down (`delta > 0`) within `visible_ids`.
+    #[cfg(test)]
     pub fn step_selection(
         &mut self,
         visible_ids: &[DownloadId],
         delta: isize,
+    ) -> Option<DownloadId> {
+        self.step_selection_extending(visible_ids, delta, false)
+    }
+
+    /// Moves selection up or down within `visible_ids`, optionally extending a Shift-range.
+    pub fn step_selection_extending(
+        &mut self,
+        visible_ids: &[DownloadId],
+        delta: isize,
+        extend: bool,
     ) -> Option<DownloadId> {
         if visible_ids.is_empty() {
             return None;
@@ -762,7 +895,11 @@ impl QueueController {
             (false, Some(i)) => (i + 1).min(visible_ids.len() - 1),
         };
         let next_id = visible_ids[next_idx].clone();
-        self.selected_id = Some(next_id.clone());
+        if extend {
+            self.select_range(visible_ids, next_id.clone(), false);
+        } else {
+            self.select_single(next_id.clone());
+        }
         Some(next_id)
     }
 
@@ -1202,5 +1339,48 @@ mod tests {
             resolve_keyboard_action("delete", list_ctx),
             KeyboardAction::RequestDeleteSelected
         );
+    }
+
+    #[test]
+    fn queue_controller_multi_select_ctrl_shift_and_select_all() {
+        let mut ctrl = QueueController::default();
+        let id1 = DownloadId::from("1".to_string());
+        let id2 = DownloadId::from("2".to_string());
+        let id3 = DownloadId::from("3".to_string());
+        let id4 = DownloadId::from("4".to_string());
+        ctrl.records = vec![
+            make_record("1", "https://example.com/a.bin", DownloadState::Paused, 10),
+            make_record("2", "https://example.com/b.bin", DownloadState::Paused, 20),
+            make_record("3", "https://example.com/c.bin", DownloadState::Paused, 30),
+            make_record("4", "https://example.com/d.bin", DownloadState::Paused, 40),
+        ];
+        let visible = vec![id1.clone(), id2.clone(), id3.clone(), id4.clone()];
+
+        // Single click sets anchor and selection.
+        ctrl.select_single(id1.clone());
+        assert_eq!(ctrl.selected_list(), vec![id1.clone()]);
+
+        // Shift+Click on id3 selects id1..=id3.
+        ctrl.select_range(&visible, id3.clone(), false);
+        assert_eq!(ctrl.selected_list(), vec![id1.clone(), id2.clone(), id3.clone()]);
+        assert_eq!(ctrl.selected_id.as_ref(), Some(&id3));
+
+        // Ctrl+Click toggles id2 off, then id4 on.
+        ctrl.toggle_select(id2.clone());
+        assert!(!ctrl.is_selected(&id2));
+        assert_eq!(ctrl.selected_list(), vec![id1.clone(), id3.clone()]);
+
+        ctrl.toggle_select(id4.clone());
+        assert_eq!(ctrl.selected_list(), vec![id1.clone(), id3.clone(), id4.clone()]);
+
+        // Shift+Down from id1 extends range from anchor.
+        ctrl.select_single(id1.clone());
+        ctrl.step_selection_extending(&visible, 1, true);
+        ctrl.step_selection_extending(&visible, 1, true);
+        assert_eq!(ctrl.selected_list(), vec![id1.clone(), id2.clone(), id3.clone()]);
+
+        // Ctrl+A selects all visible.
+        ctrl.select_all(&visible);
+        assert_eq!(ctrl.selected_list(), visible);
     }
 }

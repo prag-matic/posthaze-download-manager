@@ -200,6 +200,8 @@ impl PosthazeApp {
         }
 
         let visible_rows = Arc::new(rows);
+        let visible_ids: Arc<Vec<DownloadId>> =
+            Arc::new(visible_rows.iter().map(|r| r.id.clone()).collect());
         let row_count = visible_rows.len();
         let entity = cx.entity().clone();
         let scroll_handle = self.table_scroll_handle.clone();
@@ -289,7 +291,15 @@ impl PosthazeApp {
                         uniform_list("downloads-table-scroll", row_count, move |range, _window, cx| {
                             entity.update(cx, |app, cx| {
                                 range
-                                    .map(|idx| app.render_row(&visible_rows[idx], profile, cx).into_any_element())
+                                    .map(|idx| {
+                                        app.render_row(
+                                            &visible_rows[idx],
+                                            visible_ids.clone(),
+                                            profile,
+                                            cx,
+                                        )
+                                        .into_any_element()
+                                    })
                                     .collect::<Vec<_>>()
                             })
                         })
@@ -344,10 +354,11 @@ impl PosthazeApp {
     fn render_row(
         &self,
         row: &DownloadRowView,
+        visible_ids: Arc<Vec<DownloadId>>,
         profile: LayoutProfile,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        let is_selected = self.queue.selected_id.as_ref() == Some(&row.id);
+        let is_selected = self.queue.is_selected(&row.id);
         let (icon_name, label) = state_icon(row.state);
         let state_color = match row.state {
             DownloadState::Active => selenium_amber(),
@@ -401,10 +412,26 @@ impl PosthazeApp {
             })
             .hover(|s| s.bg(paper_hover()))
             .cursor_pointer()
-            .on_click(cx.listener(move |app, _, _, cx| {
-                app.queue.selected_id = Some(id_select.clone());
-                app.load_segments_for(id_select.clone(), cx);
-                if app.queue.settings.ui_click_row_opens_inspector && app.inspector_collapsed {
+            .on_click(cx.listener(move |app, ev: &ClickEvent, _, cx| {
+                let mods = ev.modifiers();
+                let ctrl = mods.control || mods.platform;
+                let shift = mods.shift;
+                if shift {
+                    app.queue
+                        .select_range(&visible_ids, id_select.clone(), ctrl);
+                } else if ctrl {
+                    app.queue.toggle_select(id_select.clone());
+                } else {
+                    app.queue.select_single(id_select.clone());
+                }
+                if let Some(lead) = app.queue.selected_id.clone() {
+                    app.load_segments_for(lead, cx);
+                }
+                if !ctrl
+                    && !shift
+                    && app.queue.settings.ui_click_row_opens_inspector
+                    && app.inspector_collapsed
+                {
                     app.inspector_collapsed = false;
                     app.motion
                         .animate_inspector(COLLAPSED_INSPECTOR_HEIGHT, app.inspector_height);
@@ -423,8 +450,10 @@ impl PosthazeApp {
                     let id_ctx = row.id.clone();
                     move |app, ev: &MouseDownEvent, _, cx| {
                         cx.stop_propagation();
-                        app.queue.selected_id = Some(id_ctx.clone());
-                        app.load_segments_for(id_ctx.clone(), cx);
+                        if !app.queue.is_selected(&id_ctx) {
+                            app.queue.select_single(id_ctx.clone());
+                            app.load_segments_for(id_ctx.clone(), cx);
+                        }
                         app.context_menu = Some(ContextMenuState {
                             download_id: id_ctx.clone(),
                             anchor: ev.position,

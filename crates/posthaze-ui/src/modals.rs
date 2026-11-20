@@ -21,6 +21,10 @@ pub(crate) enum ConfirmAction {
         filename: String,
         delete_file: bool,
     },
+    DeleteMultiple {
+        ids: Vec<DownloadId>,
+        delete_file: bool,
+    },
     ClearCompleted { count: usize },
     OverwriteCollision {
         request: Box<DownloadRequest>,
@@ -654,6 +658,28 @@ where
                 "Remove \"{filename}\" from the list? Partial progress will be discarded; completed files on disk are kept."
             ),
             "Remove",
+        ),
+        ConfirmAction::DeleteMultiple {
+            ids,
+            delete_file: true,
+        } => (
+            "Delete Selected Files",
+            format!(
+                "Permanently delete {} selected download(s) from disk and remove them from the list? This cannot be undone.",
+                ids.len()
+            ),
+            "Delete Files",
+        ),
+        ConfirmAction::DeleteMultiple {
+            ids,
+            delete_file: false,
+        } => (
+            "Remove Selected Downloads",
+            format!(
+                "Remove {} selected download(s) from the list? Partial progress will be discarded; completed files on disk are kept.",
+                ids.len()
+            ),
+            "Remove All",
         ),
         ConfirmAction::ClearCompleted { count } => (
             "Clear Finished Downloads",
