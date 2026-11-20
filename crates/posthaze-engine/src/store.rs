@@ -640,7 +640,8 @@ impl DownloadStore {
                     ui_click_row_opens_inspector, ui_show_add_paused, ui_zoom_percent, ui_theme,
                     ui_table_density, ui_show_speed_col, ui_show_eta_col, ui_show_segs_col,
                     ui_show_toolbar_labels, ui_show_scrollbar_minimap,
-                    ui_show_titlebar_telemetry, ui_start_sidebar_collapsed, ui_accent_override
+                    ui_show_titlebar_telemetry, ui_start_sidebar_collapsed, ui_accent_override,
+                    ui_lock_file_extension
              FROM settings WHERE id = 1",
         )
         .fetch_one(&self.pool)
@@ -703,6 +704,7 @@ impl DownloadStore {
                 let t = s.trim();
                 (!t.is_empty()).then(|| t.to_string())
             });
+        let ui_lock_file_extension = row.try_get::<i64, _>("ui_lock_file_extension")? != 0;
 
         Ok(Settings {
             default_output_dir: PathBuf::from(dir_str),
@@ -736,6 +738,7 @@ impl DownloadStore {
             ui_show_titlebar_telemetry,
             ui_start_sidebar_collapsed,
             ui_accent_override,
+            ui_lock_file_extension,
         })
     }
 
@@ -773,7 +776,8 @@ impl DownloadStore {
                  ui_show_scrollbar_minimap = ?,
                  ui_show_titlebar_telemetry = ?,
                  ui_start_sidebar_collapsed = ?,
-                 ui_accent_override = ?
+                 ui_accent_override = ?,
+                 ui_lock_file_extension = ?
              WHERE id = 1",
         )
         .bind(settings.default_output_dir.to_string_lossy().into_owned())
@@ -807,6 +811,7 @@ impl DownloadStore {
         .bind(i64::from(settings.ui_show_titlebar_telemetry))
         .bind(i64::from(settings.ui_start_sidebar_collapsed))
         .bind(&settings.ui_accent_override)
+        .bind(i64::from(settings.ui_lock_file_extension))
         .execute(&self.pool)
         .await?;
         Ok(())

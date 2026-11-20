@@ -53,6 +53,7 @@ async fn extended_settings_round_trip_and_categorize_helpers() {
         ui_show_titlebar_telemetry: false,
         ui_start_sidebar_collapsed: true,
         ui_accent_override: Some("emerald".to_string()),
+        ui_lock_file_extension: false,
     };
 
     {

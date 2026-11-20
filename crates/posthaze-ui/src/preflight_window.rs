@@ -15,7 +15,8 @@ use crate::assets::BRAND_LOGO_SVG;
 use crate::bridge::{EngineBridge, EngineCommand};
 use crate::curl_parser::{find_header_value, set_or_remove_header};
 use crate::modals::{
-    ConfirmAction, PreflightModalState, render_confirm_modal, render_preflight_card,
+    ConfirmAction, PreflightModalState, PreflightTab, render_confirm_modal, render_preflight_card,
+    split_filename_extension,
 };
 use crate::platform_hooks::spawn_windows_toast;
 use crate::theme::*;
@@ -44,7 +45,7 @@ impl PreflightWindow {
         cascade_idx: usize,
         cx: &mut App,
     ) {
-        let mut bounds = Bounds::centered(None, size(px(460.0), px(298.0)), cx);
+        let mut bounds = Bounds::centered(None, size(px(460.0), px(252.0)), cx);
         let cascade = ((cascade_idx % 6) as f32) * 28.0;
         bounds.origin.x += px(cascade);
         bounds.origin.y += px(cascade);
@@ -54,7 +55,7 @@ impl PreflightWindow {
             focus: true,
             show: true,
             kind: WindowKind::Normal,
-            window_min_size: Some(size(px(420.0), px(260.0))),
+            window_min_size: Some(size(px(420.0), px(230.0))),
             ..TitleBar::window_options()
         };
 
@@ -155,9 +156,17 @@ impl PreflightWindow {
                                 .parent()
                                 .map(PathBuf::from)
                                 .unwrap_or_else(|| win.settings.default_output_dir.clone());
+                            let (stem, probed_ext) = split_filename_extension(&initial_name);
+                            let extension_locked =
+                                win.settings.ui_lock_file_extension && probed_ext.is_some();
+                            let display_name = if extension_locked {
+                                stem
+                            } else {
+                                initial_name
+                            };
                             let filename_input = cx.new(|cx| {
                                 let mut st = InputState::new(window, cx).placeholder("Filename");
-                                st.set_value(initial_name, window, cx);
+                                st.set_value(display_name, window, cx);
                                 st
                             });
                             let dir_input = cx.new(|cx| {
@@ -203,7 +212,9 @@ impl PreflightWindow {
                                 referer_input,
                                 user_agent_input,
                                 headers,
-                                editing_headers: false,
+                                active_tab: PreflightTab::General,
+                                extension_locked,
+                                locked_extension: probed_ext,
                                 workers,
                             };
                         }
@@ -243,6 +254,8 @@ impl PreflightWindow {
             referer_input,
             user_agent_input,
             headers,
+            extension_locked,
+            locked_extension,
             workers,
             ..
         } = &self.state
@@ -250,7 +263,13 @@ impl PreflightWindow {
             return;
         };
 
-        let filename = filename_input.read(cx).value().trim().to_string();
+        let raw_name = filename_input.read(cx).value().trim().to_string();
+        let filename = match (*extension_locked, locked_extension.as_deref()) {
+            (true, Some(ext)) if !raw_name.is_empty() && !raw_name.ends_with(ext) => {
+                format!("{raw_name}{ext}")
+            }
+            _ => raw_name,
+        };
         let dir_str = dir_input.read(cx).value().trim().to_string();
         let cookie_val = cookie_input.read(cx).value().to_string();
         let referer_val = referer_input.read(cx).value().to_string();
@@ -373,58 +392,44 @@ impl PreflightWindow {
         .detach();
     }
 
-    fn browse_save_as(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (current_dir, current_name) = match &self.state {
-            PreflightModalState::Resolved {
-                filename_input,
-                dir_input,
-                ..
-            } => {
-                let d = dir_input.read(cx).value().trim().to_string();
-                let dir = if d.is_empty() {
-                    self.settings.default_output_dir.clone()
-                } else {
-                    PathBuf::from(d)
-                };
-                let n = filename_input.read(cx).value().trim().to_string();
-                let name = if n.is_empty() { None } else { Some(n) };
-                (dir, name)
-            }
-            _ => return,
-        };
-        let rx = cx.prompt_for_new_path(&current_dir, current_name.as_deref());
-        let window_handle = window.window_handle();
-        cx.spawn(async move |this, cx| {
-            let res = rx.await;
-            let _ = cx.update_window(window_handle, |_, window, cx| {
-                if let Ok(Ok(Some(chosen))) = res {
-                    let _ = this.update(cx, |win, cx| {
-                        if let PreflightModalState::Resolved {
-                            filename_input,
-                            dir_input,
-                            ..
-                        } = &win.state
-                        {
-                            if let Some(parent) = chosen.parent() {
-                                let parent_str = parent.to_string_lossy().to_string();
-                                dir_input.update(cx, |st, cx| {
-                                    st.set_value(parent_str, window, cx);
-                                });
-                            }
-                            if let Some(file_name) = chosen.file_name().and_then(|n| n.to_str()) {
-                                let name_str = file_name.to_string();
-                                filename_input.update(cx, |st, cx| {
-                                    st.set_value(name_str, window, cx);
-                                });
-                            }
-                            cx.notify();
-                        }
+    fn toggle_extension_lock(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let PreflightModalState::Resolved {
+            filename_input,
+            extension_locked,
+            locked_extension,
+            ..
+        } = &mut self.state
+        {
+            let current = filename_input.read(cx).value().trim().to_string();
+            if *extension_locked {
+                if let Some(ext) = locked_extension.as_deref()
+                    && !current.ends_with(ext)
+                {
+                    let combined = format!("{current}{ext}");
+                    filename_input.update(cx, |st, cx| {
+                        st.set_value(combined, window, cx);
                     });
                 }
-                window.activate_window();
-            });
-        })
-        .detach();
+                *extension_locked = false;
+            } else {
+                let (stem, found_ext) = split_filename_extension(&current);
+                if let Some(ext) = found_ext {
+                    *locked_extension = Some(ext);
+                    filename_input.update(cx, |st, cx| {
+                        st.set_value(stem, window, cx);
+                    });
+                    *extension_locked = true;
+                } else if let Some(ext) = locked_extension.as_deref() {
+                    if let Some(stripped) = current.strip_suffix(ext) {
+                        filename_input.update(cx, |st, cx| {
+                            st.set_value(stripped.to_string(), window, cx);
+                        });
+                    }
+                    *extension_locked = true;
+                }
+            }
+            cx.notify();
+        }
     }
 
     fn render_titlebar(&self) -> impl IntoElement {
@@ -485,9 +490,9 @@ impl Render for PreflightWindow {
         let entity_delta = cx.entity().clone();
         let entity_confirm = cx.entity().clone();
         let entity_edit = cx.entity().clone();
-        let entity_headers = cx.entity().clone();
+        let entity_tab = cx.entity().clone();
         let entity_browse_dir = cx.entity().clone();
-        let entity_save_as = cx.entity().clone();
+        let entity_ext_lock = cx.entity().clone();
 
         let card = render_preflight_card(
             &self.state,
@@ -530,16 +535,18 @@ impl Render for PreflightWindow {
                 });
                 window.remove_window();
             },
-            move |window, cx| {
-                entity_headers.update(cx, |win, cx| {
-                    if let PreflightModalState::Resolved {
-                        editing_headers, ..
-                    } = &mut win.state
-                    {
-                        *editing_headers = !*editing_headers;
-                        let target_h = if *editing_headers { 416.0 } else { 298.0 };
-                        window.resize(size(px(460.0), px(target_h)));
-                        cx.notify();
+            move |tab, window, cx| {
+                entity_tab.update(cx, |win, cx| {
+                    if let PreflightModalState::Resolved { active_tab, .. } = &mut win.state {
+                        if *active_tab != tab {
+                            *active_tab = tab;
+                            let target_h = match tab {
+                                PreflightTab::General => 252.0,
+                                PreflightTab::Options => 398.0,
+                            };
+                            window.resize(size(px(460.0), px(target_h)));
+                            cx.notify();
+                        }
                     }
                 });
             },
@@ -549,8 +556,8 @@ impl Render for PreflightWindow {
                 });
             },
             move |window, cx| {
-                entity_save_as.update(cx, |win, cx| {
-                    win.browse_save_as(window, cx);
+                entity_ext_lock.update(cx, |win, cx| {
+                    win.toggle_extension_lock(window, cx);
                 });
             },
         );

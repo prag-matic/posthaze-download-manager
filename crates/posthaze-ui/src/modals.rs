@@ -11,7 +11,7 @@ use posthaze_engine::{DownloadId, DownloadRequest, PreflightInfo};
 
 use crate::curl_parser::mask_header_summary;
 use crate::grid_cells::{
-    CellBorder, GridTone, grid_boxed_button, grid_cell_button, grid_kv_row, grid_modal_footer,
+    CellBorder, GridTone, grid_cell_button, grid_kv_row, grid_modal_footer,
 };
 use crate::theme::*;
 use crate::view_model::format_bytes;
@@ -35,7 +35,26 @@ pub(crate) enum ConfirmAction {
     },
 }
 
-/// Active state of the Pre-Flight Add Download Confirmation Modal.
+/// Active tab inside the resolved Pre-Flight Add Download window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PreflightTab {
+    General,
+    Options,
+}
+
+/// Splits `filename` into `(stem, Some(".ext"))`, ignoring leading dotfiles with no extra extension.
+pub(crate) fn split_filename_extension(filename: &str) -> (String, Option<String>) {
+    let trimmed = filename.trim();
+    if let Some(dot) = trimmed.rfind('.')
+        && dot > 0
+        && dot + 1 < trimmed.len()
+    {
+        return (trimmed[..dot].to_string(), Some(trimmed[dot..].to_string()));
+    }
+    (trimmed.to_string(), None)
+}
+
+/// Active modal for pre-flight URL probing and confirmation.
 pub(crate) enum PreflightModalState {
     Probing {
         url: String,
@@ -54,7 +73,9 @@ pub(crate) enum PreflightModalState {
         referer_input: Entity<InputState>,
         user_agent_input: Entity<InputState>,
         headers: Vec<(String, String)>,
-        editing_headers: bool,
+        active_tab: PreflightTab,
+        extension_locked: bool,
+        locked_extension: Option<String>,
         workers: usize,
     },
 }
@@ -87,9 +108,9 @@ pub(crate) fn render_preflight_card<F1, F2, F3, F4, F5, F6, F7, F8>(
     on_worker_delta: F3,
     on_confirm: F4,
     on_edit_url: F5,
-    on_toggle_headers: F6,
+    on_select_tab: F6,
     on_browse_dir: F7,
-    on_save_as: F8,
+    on_toggle_ext_lock: F8,
 ) -> AnyElement
 where
     F1: Fn(&mut Window, &mut App) + Clone + 'static,
@@ -97,7 +118,7 @@ where
     F3: Fn(isize, &mut Window, &mut App) + Clone + 'static,
     F4: Fn(bool, &mut Window, &mut App) + Clone + 'static,
     F5: Fn(String, &mut Window, &mut App) + 'static,
-    F6: Fn(&mut Window, &mut App) + 'static,
+    F6: Fn(PreflightTab, &mut Window, &mut App) + Clone + 'static,
     F7: Fn(&mut Window, &mut App) + 'static,
     F8: Fn(&mut Window, &mut App) + 'static,
 {
@@ -341,7 +362,9 @@ where
             referer_input,
             user_agent_input,
             headers,
-            editing_headers,
+            active_tab,
+            extension_locked,
+            locked_extension,
             workers,
         } => {
             let size_label = info
@@ -370,8 +393,30 @@ where
             };
             let confirm_now = on_confirm.clone();
             let confirm_queue = on_confirm;
+            let tab_general = on_select_tab.clone();
+            let tab_options = on_select_tab;
             let header_count = headers.len();
             let header_summary = (!headers.is_empty()).then(|| mask_header_summary(headers));
+            let options_label = if header_count > 0 {
+                format!("OPTIONS · {segment_count}W · cURL")
+            } else {
+                format!("OPTIONS · {segment_count}W")
+            };
+            let ext_is_locked = *extension_locked;
+            let ext_has_value = locked_extension.is_some();
+            let ext_badge_label = if ext_is_locked {
+                locked_extension
+                    .as_deref()
+                    .map(|e| e.to_ascii_uppercase())
+                    .unwrap_or_else(|| "LOCKED".to_string())
+            } else {
+                "UNLOCKED".to_string()
+            };
+            let ext_tooltip = if ext_is_locked {
+                "Extension locked — click to unlock and edit full filename"
+            } else {
+                "Extension unlocked — click to lock extension"
+            };
 
             div()
                 .w_full()
@@ -428,215 +473,307 @@ where
                 .child(
                     div()
                         .w_full()
-                        .bg(byte_track_bg())
+                        .h(px(26.0))
+                        .bg(graphite_bg())
                         .border_1()
                         .border_color(graphite_border())
                         .flex()
-                        .flex_col()
+                        .items_stretch()
                         .child(
                             div()
-                                .h(px(18.0))
-                                .px_1p5()
-                                .bg(graphite_elevated())
-                                .border_b_1()
+                                .id("pf-tab-general")
+                                .flex_1()
+                                .h_full()
+                                .px_2()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .font_family(MONO_FONT)
+                                .text_size(TYPE_MICRO)
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .cursor_pointer()
+                                .when(*active_tab == PreflightTab::General, |el| {
+                                    el.bg(graphite_elevated())
+                                        .text_color(silver_text())
+                                        .border_b_2()
+                                        .border_color(selenium_amber())
+                                })
+                                .when(*active_tab != PreflightTab::General, |el| {
+                                    el.text_color(silver_muted())
+                                        .hover(|s| s.bg(graphite_elevated()).text_color(silver_text()))
+                                })
+                                .on_click(move |_, window, cx| {
+                                    tab_general(PreflightTab::General, window, cx);
+                                })
+                                .child("GENERAL"),
+                        )
+                        .child(
+                            div()
+                                .id("pf-tab-options")
+                                .flex_1()
+                                .h_full()
+                                .px_2()
+                                .border_l_1()
                                 .border_color(graphite_border())
                                 .flex()
                                 .items_center()
-                                .justify_between()
+                                .justify_center()
                                 .font_family(MONO_FONT)
                                 .text_size(TYPE_MICRO)
-                                .child(
-                                    div().text_color(silver_muted()).child(if info.supports_ranges {
-                                        format!("{segment_count} PARALLEL SEGMENTS")
-                                    } else {
-                                        "SINGLE STREAM".to_string()
-                                    }),
-                                )
-                                .child(
-                                    div()
-                                        .text_color(if info.supports_ranges {
-                                            selenium_amber()
-                                        } else {
-                                            silver_muted()
-                                        })
-                                        .child(segment_meta),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .w_full()
-                                .h(px(7.0))
-                                .flex()
-                                .items_stretch()
-                                .children((0..segment_count).map(|idx| {
-                                    let fill = if !info.supports_ranges {
-                                        silver_muted().opacity(0.45)
-                                    } else if idx == 0 {
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .cursor_pointer()
+                                .when(*active_tab == PreflightTab::Options, |el| {
+                                    el.bg(graphite_elevated())
+                                        .text_color(silver_text())
+                                        .border_b_2()
+                                        .border_color(selenium_amber())
+                                })
+                                .when(*active_tab != PreflightTab::Options, |el| {
+                                    el.text_color(if header_count > 0 {
                                         selenium_amber()
                                     } else {
-                                        cyanotype_blue().opacity(0.85)
-                                    };
-                                    div()
-                                        .flex_1()
-                                        .h_full()
-                                        .bg(fill)
-                                        .when(idx > 0, |el| {
-                                            el.border_l_1().border_color(byte_track_bg())
-                                        })
-                                }))
-                                .with_animation(
-                                    "preflight-interval-reveal",
-                                    Animation::new(Duration::from_millis(180))
-                                        .with_easing(ease_out_quint()),
-                                    |el, delta| el.opacity(0.4 + 0.6 * delta),
-                                ),
+                                        silver_muted()
+                                    })
+                                    .hover(|s| s.bg(graphite_elevated()).text_color(silver_text()))
+                                })
+                                .on_click(move |_, window, cx| {
+                                    tab_options(PreflightTab::Options, window, cx);
+                                })
+                                .child(options_label),
                         ),
                 )
-                .child(compact_input_row_with_action(
-                    "FILE",
-                    filename_input,
-                    Some(
-                        grid_cell_button(
-                            "pf-save-as",
-                            None,
-                            Some("SAVE AS"),
-                            Some("Choose file name and destination folder"),
-                            GridTone::Graphite,
-                            CellBorder::Left,
-                            false,
-                            move |_, window, cx| on_save_as(window, cx),
-                        )
-                        .into_any_element(),
-                    ),
-                ))
-                .child(compact_input_row_with_action(
-                    "SAVE TO",
-                    dir_input,
-                    Some(
-                        grid_cell_button(
-                            "pf-browse-dir",
-                            Some(IconName::FolderOpen),
-                            None,
-                            Some("Choose destination folder"),
-                            GridTone::Graphite,
-                            CellBorder::Left,
-                            true,
-                            move |_, window, cx| on_browse_dir(window, cx),
-                        )
-                        .into_any_element(),
-                    ),
-                ))
-                .child(
-                    div()
-                        .pt_0p5()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .gap_2()
-                        .child(
+                .when(*active_tab == PreflightTab::General, |el| {
+                    el.child(compact_input_row_with_action(
+                        "FILE",
+                        filename_input,
+                        Some(
                             div()
+                                .id("pf-ext-lock")
+                                .h_full()
+                                .px_2()
+                                .border_l_1()
+                                .border_color(graphite_border())
                                 .flex()
                                 .items_center()
-                                .gap_1p5()
-                                .child(grid_boxed_button(
-                                    "preflight-toggle-headers",
-                                    px(26.0),
-                                    Some(IconName::Settings),
-                                    Some(if header_count > 0 {
-                                        "HEADERS (SET)"
-                                    } else {
-                                        "HEADERS"
-                                    }),
-                                    None,
-                                    GridTone::Graphite,
-                                    true,
-                                    move |_, window, cx| on_toggle_headers(window, cx),
-                                ))
-                                .when_some(header_summary, |el, summary| {
-                                    el.child(
+                                .justify_center()
+                                .font_family(MONO_FONT)
+                                .text_size(TYPE_MICRO)
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .cursor_pointer()
+                                .when(ext_is_locked && ext_has_value, |el| {
+                                    el.bg(selenium_amber())
+                                        .text_color(rgb(active_theme().accent_foreground))
+                                        .hover(|s| s.opacity(0.9))
+                                })
+                                .when(!(ext_is_locked && ext_has_value), |el| {
+                                    el.bg(graphite_elevated())
+                                        .text_color(silver_muted())
+                                        .hover(|s| {
+                                            s.bg(selenium_amber())
+                                                .text_color(rgb(active_theme().accent_foreground))
+                                        })
+                                })
+                                .tooltip(move |window, cx| {
+                                    gpui_kit::component::tooltip::Tooltip::new(ext_tooltip)
+                                        .build(window, cx)
+                                })
+                                .on_click(move |_, window, cx| on_toggle_ext_lock(window, cx))
+                                .child(ext_badge_label.clone())
+                                .into_any_element(),
+                        ),
+                    ))
+                    .child(compact_input_row_with_action(
+                        "SAVE TO",
+                        dir_input,
+                        Some(
+                            grid_cell_button(
+                                "pf-browse-dir",
+                                Some(IconName::FolderOpen),
+                                None,
+                                Some("Choose destination folder"),
+                                GridTone::Graphite,
+                                CellBorder::Left,
+                                true,
+                                move |_, window, cx| on_browse_dir(window, cx),
+                            )
+                            .into_any_element(),
+                        ),
+                    ))
+                })
+                .when(*active_tab == PreflightTab::Options, |el| {
+                    el.child(
+                        div()
+                            .w_full()
+                            .bg(byte_track_bg())
+                            .border_1()
+                            .border_color(graphite_border())
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .h(px(18.0))
+                                    .px_1p5()
+                                    .bg(graphite_elevated())
+                                    .border_b_1()
+                                    .border_color(graphite_border())
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .font_family(MONO_FONT)
+                                    .text_size(TYPE_MICRO)
+                                    .child(
+                                        div().text_color(silver_muted()).child(
+                                            if info.supports_ranges {
+                                                format!("{segment_count} PARALLEL SEGMENTS")
+                                            } else {
+                                                "SINGLE STREAM".to_string()
+                                            },
+                                        ),
+                                    )
+                                    .child(
                                         div()
-                                            .id("preflight-headers-badge")
-                                            .px_1p5()
-                                            .py_0p5()
-                                            .rounded(px(3.0))
-                                            .bg(graphite_elevated())
-                                            .border_1()
-                                            .border_color(graphite_border())
+                                            .text_color(if info.supports_ranges {
+                                                selenium_amber()
+                                            } else {
+                                                silver_muted()
+                                            })
+                                            .child(segment_meta),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .w_full()
+                                    .h(px(7.0))
+                                    .flex()
+                                    .items_stretch()
+                                    .children((0..segment_count).map(|idx| {
+                                        let fill = if !info.supports_ranges {
+                                            silver_muted().opacity(0.45)
+                                        } else if idx == 0 {
+                                            selenium_amber()
+                                        } else {
+                                            cyanotype_blue().opacity(0.85)
+                                        };
+                                        div()
+                                            .flex_1()
+                                            .h_full()
+                                            .bg(fill)
+                                            .when(idx > 0, |el| {
+                                                el.border_l_1().border_color(byte_track_bg())
+                                            })
+                                    }))
+                                    .with_animation(
+                                        "preflight-interval-reveal",
+                                        Animation::new(Duration::from_millis(180))
+                                            .with_easing(ease_out_quint()),
+                                        |el, delta| el.opacity(0.4 + 0.6 * delta),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_1p5()
+                                    .child(
+                                        div()
                                             .font_family(MONO_FONT)
                                             .text_size(TYPE_MICRO)
-                                            .text_color(selenium_amber())
-                                            .tooltip(move |window, cx| {
-                                                gpui_kit::component::tooltip::Tooltip::new(
-                                                    summary.clone(),
-                                                )
-                                                .build(window, cx)
-                                            })
-                                            .child("cURL"),
+                                            .text_color(silver_muted())
+                                            .child("REQUEST HEADERS"),
                                     )
-                                }),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .child(
-                                    div()
-                                        .font_family(MONO_FONT)
-                                        .text_size(TYPE_MICRO)
-                                        .text_color(silver_muted())
-                                        .child(if info.supports_ranges {
-                                            "WORKERS"
-                                        } else {
-                                            "WORKERS (1)"
-                                        }),
-                                )
-                                .child(
-                                    div()
-                                        .h(px(26.0))
-                                        .border_1()
-                                        .border_color(graphite_border())
-                                        .flex()
-                                        .items_center()
-                                        .when(info.supports_ranges, |el| {
-                                            let dec = on_worker_delta.clone();
-                                            el.child(grid_cell_button(
-                                                "w-dec",
-                                                Some(IconName::Minus),
-                                                None,
-                                                Some("Decrease workers"),
-                                                GridTone::Graphite,
-                                                CellBorder::Right,
-                                                true,
-                                                move |_, window, cx| dec(-1, window, cx),
-                                            ))
-                                        })
-                                        .child(
+                                    .when_some(header_summary, |el, summary| {
+                                        el.child(
                                             div()
-                                                .w(px(28.0))
-                                                .text_center()
+                                                .id("preflight-headers-badge")
+                                                .px_1p5()
+                                                .py_0p5()
+                                                .rounded(px(3.0))
+                                                .bg(graphite_elevated())
+                                                .border_1()
+                                                .border_color(graphite_border())
                                                 .font_family(MONO_FONT)
-                                                .text_size(TYPE_BODY)
-                                                .text_color(silver_text())
-                                                .child(workers.to_string()),
+                                                .text_size(TYPE_MICRO)
+                                                .text_color(selenium_amber())
+                                                .tooltip(move |window, cx| {
+                                                    gpui_kit::component::tooltip::Tooltip::new(
+                                                        summary.clone(),
+                                                    )
+                                                    .build(window, cx)
+                                                })
+                                                .child("cURL"),
                                         )
-                                        .when(info.supports_ranges, |el| {
-                                            el.child(grid_cell_button(
-                                                "w-inc",
-                                                Some(IconName::Plus),
-                                                None,
-                                                Some("Increase workers"),
-                                                GridTone::Graphite,
-                                                CellBorder::Left,
-                                                true,
-                                                move |_, window, cx| on_worker_delta(1, window, cx),
-                                            ))
-                                        }),
-                                ),
-                        ),
-                )
-                .when(*editing_headers, |el| {
-                    el.child(
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .font_family(MONO_FONT)
+                                            .text_size(TYPE_MICRO)
+                                            .text_color(silver_muted())
+                                            .child(if info.supports_ranges {
+                                                "WORKERS"
+                                            } else {
+                                                "WORKERS (1)"
+                                            }),
+                                    )
+                                    .child(
+                                        div()
+                                            .h(px(26.0))
+                                            .border_1()
+                                            .border_color(graphite_border())
+                                            .flex()
+                                            .items_center()
+                                            .when(info.supports_ranges, |el| {
+                                                let dec = on_worker_delta.clone();
+                                                el.child(grid_cell_button(
+                                                    "w-dec",
+                                                    Some(IconName::Minus),
+                                                    None,
+                                                    Some("Decrease workers"),
+                                                    GridTone::Graphite,
+                                                    CellBorder::Right,
+                                                    true,
+                                                    move |_, window, cx| dec(-1, window, cx),
+                                                ))
+                                            })
+                                            .child(
+                                                div()
+                                                    .w(px(28.0))
+                                                    .text_center()
+                                                    .font_family(MONO_FONT)
+                                                    .text_size(TYPE_BODY)
+                                                    .text_color(silver_text())
+                                                    .child(workers.to_string()),
+                                            )
+                                            .when(info.supports_ranges, |el| {
+                                                el.child(grid_cell_button(
+                                                    "w-inc",
+                                                    Some(IconName::Plus),
+                                                    None,
+                                                    Some("Increase workers"),
+                                                    GridTone::Graphite,
+                                                    CellBorder::Left,
+                                                    true,
+                                                    move |_, window, cx| {
+                                                        on_worker_delta(1, window, cx)
+                                                    },
+                                                ))
+                                            }),
+                                    ),
+                            ),
+                    )
+                    .child(
                         div()
                             .p_2()
                             .bg(graphite_elevated())
@@ -1115,4 +1252,29 @@ where
                 ),
         )
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_filename_extension;
+
+    #[test]
+    fn splits_standard_and_edge_case_extensions() {
+        assert_eq!(
+            split_filename_extension("Silksong_v1.0.2832.rar"),
+            ("Silksong_v1.0.2832".to_string(), Some(".rar".to_string()))
+        );
+        assert_eq!(
+            split_filename_extension("README"),
+            ("README".to_string(), None)
+        );
+        assert_eq!(
+            split_filename_extension(".gitignore"),
+            (".gitignore".to_string(), None)
+        );
+        assert_eq!(
+            split_filename_extension("archive."),
+            ("archive.".to_string(), None)
+        );
+    }
 }

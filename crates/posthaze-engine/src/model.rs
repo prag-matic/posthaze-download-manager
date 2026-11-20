@@ -444,6 +444,8 @@ pub struct Settings {
     pub ui_start_sidebar_collapsed: bool,
     /// Optional accent color preset override identifier (e.g. `"amber"`, `"blue"`, `"emerald"`).
     pub ui_accent_override: Option<String>,
+    /// Whether the Add Download dialog locks the probed file extension from accidental edits.
+    pub ui_lock_file_extension: bool,
 }
 
 impl Default for Settings {
@@ -480,6 +482,7 @@ impl Default for Settings {
             ui_show_titlebar_telemetry: true,
             ui_start_sidebar_collapsed: false,
             ui_accent_override: None,
+            ui_lock_file_extension: true,
         }
     }
 }

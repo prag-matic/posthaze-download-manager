@@ -110,6 +110,7 @@ pub(crate) struct SettingsDraft {
     pub ui_show_titlebar_telemetry: bool,
     pub ui_start_sidebar_collapsed: bool,
     pub ui_accent_override: Option<String>,
+    pub ui_lock_file_extension: bool,
 }
 
 impl SettingsDraft {
@@ -146,6 +147,7 @@ impl SettingsDraft {
             ui_show_titlebar_telemetry: settings.ui_show_titlebar_telemetry,
             ui_start_sidebar_collapsed: settings.ui_start_sidebar_collapsed,
             ui_accent_override: settings.ui_accent_override.clone(),
+            ui_lock_file_extension: settings.ui_lock_file_extension,
         }
     }
 
@@ -223,6 +225,7 @@ impl SettingsDraft {
             ui_show_titlebar_telemetry: self.ui_show_titlebar_telemetry,
             ui_start_sidebar_collapsed: self.ui_start_sidebar_collapsed,
             ui_accent_override: self.ui_accent_override,
+            ui_lock_file_extension: self.ui_lock_file_extension,
         };
         settings.validate().map_err(|e| e.to_string())?;
         Ok(settings)
@@ -356,6 +359,9 @@ impl SettingsModalState {
             SettingsAction::ToggleShowAddPaused => {
                 self.draft.ui_show_add_paused = !self.draft.ui_show_add_paused;
             }
+            SettingsAction::ToggleLockFileExtension => {
+                self.draft.ui_lock_file_extension = !self.draft.ui_lock_file_extension;
+            }
             SettingsAction::SetTableDensity(density) => {
                 self.draft.ui_table_density = density;
             }
@@ -427,6 +433,7 @@ impl SettingsModalState {
                         "ui_show_scrollbar_minimap": settings.ui_show_scrollbar_minimap,
                         "ui_show_titlebar_telemetry": settings.ui_show_titlebar_telemetry,
                         "ui_start_sidebar_collapsed": settings.ui_start_sidebar_collapsed,
+                        "ui_lock_file_extension": settings.ui_lock_file_extension,
                     });
                     if let Ok(pretty) = serde_json::to_string_pretty(&payload) {
                         cx.write_to_clipboard(ClipboardItem::new_string(pretty));
@@ -480,6 +487,7 @@ pub(crate) enum SettingsAction {
     ToggleNotifyOnlyInactive,
     ToggleClickOpensInspector,
     ToggleShowAddPaused,
+    ToggleLockFileExtension,
     SetTableDensity(TableDensity),
     ToggleSpeedCol,
     ToggleEtaCol,
@@ -1508,6 +1516,14 @@ where
                     "Include the Add Paused button alongside Download Now.",
                     state.draft.ui_show_add_paused,
                     SettingsAction::ToggleShowAddPaused,
+                    on_action.clone(),
+                ))
+                .child(toggle_row(
+                    "ui-lock-ext",
+                    "Lock File Extension in Pre-Flight",
+                    "Separate and lock the probed file extension so renaming cannot accidentally remove it.",
+                    state.draft.ui_lock_file_extension,
+                    SettingsAction::ToggleLockFileExtension,
                     on_action.clone(),
                 ))
                 .child(toggle_row(
