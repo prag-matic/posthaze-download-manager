@@ -409,7 +409,7 @@ impl PosthazeApp {
     #[allow(clippy::too_many_arguments)]
     fn toolbar_cell_button(
         &self,
-        id: &'static str,
+        id: impl Into<ElementId>,
         icon: IconName,
         label: Option<&'static str>,
         tooltip_text: &'static str,
@@ -431,6 +431,41 @@ impl PosthazeApp {
             .items_center()
             .justify_center()
             .gap_1p5()
+            .font_family(MONO_FONT)
+            .text_size(TYPE_MICRO)
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(carbon_text())
+            .tooltip(move |window, cx| Tooltip::new(tooltip_text).build(window, cx))
+            .on_click(on_click)
+            .child(Icon::new(icon).size(px(12.0)))
+            .when_some(label, |el, text| el.child(text))
+            .into_any_element()
+    }
+
+    fn row_action_cell(
+        &self,
+        id: SharedString,
+        icon: IconName,
+        label: Option<&'static str>,
+        tooltip_text: &'static str,
+        on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> AnyElement {
+        div()
+            .id(id)
+            .h_full()
+            .px_2p5()
+            .border_l_1()
+            .border_color(paper_border())
+            .bg(table_header_bg().opacity(0.45))
+            .hover(|s| {
+                s.bg(selenium_amber())
+                    .text_color(rgb(active_theme().accent_foreground))
+            })
+            .cursor_pointer()
+            .flex()
+            .items_center()
+            .justify_center()
+            .gap_1()
             .font_family(MONO_FONT)
             .text_size(TYPE_MICRO)
             .font_weight(FontWeight::SEMIBOLD)
@@ -1043,12 +1078,10 @@ impl PosthazeApp {
                     .w(px(COL_ACTIONS))
                     .flex_shrink_0()
                     .h_full()
-                    .pl_2()
                     .flex()
                     .items_center()
                     .justify_end()
                     .overflow_hidden()
-                    .gap_1()
                     .on_click(|_, _, cx| cx.stop_propagation())
                     .when(
                         matches!(
@@ -1056,19 +1089,15 @@ impl PosthazeApp {
                             DownloadState::Active | DownloadState::Queued | DownloadState::Probing
                         ),
                         |el| {
-                            el.child(
-                                Button::new(SharedString::from(format!(
-                                    "pause-{}",
-                                    row.id.as_str()
-                                )))
-                                .xsmall()
-                                .ghost()
-                                .icon(IconName::Pause)
-                                .tooltip("Pause")
-                                .on_click(cx.listener(move |app, _, _, cx| {
+                            el.child(self.row_action_cell(
+                                SharedString::from(format!("pause-{}", row.id.as_str())),
+                                IconName::Pause,
+                                None,
+                                "Pause",
+                                cx.listener(move |app, _, _, cx| {
                                     app.pause_download(id_pause.clone(), cx);
-                                })),
-                            )
+                                }),
+                            ))
                         },
                     )
                     .when(
@@ -1076,34 +1105,25 @@ impl PosthazeApp {
                         |el| {
                             let id_action = id_resume.clone();
                             if row.is_resource_changed {
-                                el.child(
-                                    Button::new(SharedString::from(format!(
-                                        "restart-{}",
-                                        row.id.as_str()
-                                    )))
-                                    .xsmall()
-                                    .primary()
-                                    .icon(IconName::RotateCcw)
-                                    .label("Restart")
-                                    .tooltip("Restart Fresh")
-                                    .on_click(cx.listener(move |app, _, _, cx| {
+                                el.child(self.row_action_cell(
+                                    SharedString::from(format!("restart-{}", row.id.as_str())),
+                                    IconName::RotateCcw,
+                                    Some("RESTART"),
+                                    "Restart Fresh",
+                                    cx.listener(move |app, _, _, cx| {
                                         app.restart_fresh_download(id_action.clone(), cx);
-                                    })),
-                                )
+                                    }),
+                                ))
                             } else {
-                                el.child(
-                                    Button::new(SharedString::from(format!(
-                                        "resume-{}",
-                                        row.id.as_str()
-                                    )))
-                                    .xsmall()
-                                    .ghost()
-                                    .icon(IconName::Play)
-                                    .tooltip("Resume")
-                                    .on_click(cx.listener(move |app, _, _, cx| {
+                                el.child(self.row_action_cell(
+                                    SharedString::from(format!("resume-{}", row.id.as_str())),
+                                    IconName::Play,
+                                    None,
+                                    "Resume",
+                                    cx.listener(move |app, _, _, cx| {
                                         app.resume_download(id_action.clone(), cx);
-                                    })),
-                                )
+                                    }),
+                                ))
                             }
                         },
                     )
@@ -1113,47 +1133,41 @@ impl PosthazeApp {
                             DownloadState::Active | DownloadState::Queued | DownloadState::Probing
                         ),
                         |el| {
-                            el.child(
-                                Button::new(SharedString::from(format!(
-                                    "cancel-{}",
-                                    row.id.as_str()
-                                )))
-                                .xsmall()
-                                .ghost()
-                                .icon(IconName::X)
-                                .tooltip("Cancel")
-                                .on_click(cx.listener(move |app, _, _, cx| {
+                            el.child(self.row_action_cell(
+                                SharedString::from(format!("cancel-{}", row.id.as_str())),
+                                IconName::X,
+                                None,
+                                "Cancel",
+                                cx.listener(move |app, _, _, cx| {
                                     app.cancel_download(id_cancel.clone(), cx);
-                                })),
-                            )
+                                }),
+                            ))
                         },
                     )
                     .when(row.state == DownloadState::Completed, |el| {
-                        el.child(
-                            Button::new(SharedString::from(format!("open-dir-{}", row.id.as_str())))
-                                .xsmall()
-                                .ghost()
-                                .icon(IconName::FolderOpen)
-                                .tooltip("Open Folder")
-                                .on_click(cx.listener(move |app, _, _, cx| {
-                                    app.open_download_folder(output_path.clone(), cx);
-                                })),
-                        )
+                        el.child(self.row_action_cell(
+                            SharedString::from(format!("open-dir-{}", row.id.as_str())),
+                            IconName::FolderOpen,
+                            None,
+                            "Open Folder",
+                            cx.listener(move |app, _, _, cx| {
+                                app.open_download_folder(output_path.clone(), cx);
+                            }),
+                        ))
                     })
-                    .child(
-                        Button::new(SharedString::from(format!("del-{}", row.id.as_str())))
-                            .xsmall()
-                            .ghost()
-                            .icon(IconName::Trash)
-                            .tooltip("Delete")
-                            .on_click(cx.listener(move |app, _, _, cx| {
-                                app.request_delete_download(
-                                    id_delete.clone(),
-                                    filename_del.clone(),
-                                    cx,
-                                );
-                            })),
-                    ),
+                    .child(self.row_action_cell(
+                        SharedString::from(format!("del-{}", row.id.as_str())),
+                        IconName::Trash,
+                        None,
+                        "Delete",
+                        cx.listener(move |app, _, _, cx| {
+                            app.request_delete_download(
+                                id_delete.clone(),
+                                filename_del.clone(),
+                                cx,
+                            );
+                        }),
+                    )),
             )
     }
 }
