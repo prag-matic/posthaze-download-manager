@@ -412,7 +412,8 @@ impl PosthazeApp {
             })
             .hover(|s| s.bg(paper_hover()))
             .cursor_pointer()
-            .on_click(cx.listener(move |app, ev: &ClickEvent, _, cx| {
+            .on_click(cx.listener(move |app, ev: &ClickEvent, window, cx| {
+                app.focus_handle.focus(window, cx);
                 let mods = ev.modifiers();
                 let ctrl = mods.control || mods.platform;
                 let shift = mods.shift;
@@ -448,8 +449,9 @@ impl PosthazeApp {
                 MouseButton::Right,
                 cx.listener({
                     let id_ctx = row.id.clone();
-                    move |app, ev: &MouseDownEvent, _, cx| {
+                    move |app, ev: &MouseDownEvent, window, cx| {
                         cx.stop_propagation();
+                        app.focus_handle.focus(window, cx);
                         if !app.queue.is_selected(&id_ctx) {
                             app.queue.select_single(id_ctx.clone());
                             app.load_segments_for(id_ctx.clone(), cx);

@@ -89,6 +89,7 @@ enum ActiveResize {
 pub(crate) struct PosthazeApp {
     bridge: EngineBridge,
     window_handle: AnyWindowHandle,
+    pub(crate) focus_handle: FocusHandle,
     pub(crate) url_input: Entity<InputState>,
     pub(crate) queue: QueueController,
     pub(crate) filter: FilterTab,
@@ -132,6 +133,7 @@ impl PosthazeApp {
         let mut app = Self {
             bridge,
             window_handle: window.window_handle(),
+            focus_handle: cx.focus_handle(),
             url_input,
             queue: QueueController::default(),
             filter: FilterTab::All,
@@ -1272,6 +1274,7 @@ impl Render for PosthazeApp {
             .size_full()
             .bg(paper_bg())
             .text_color(carbon_text())
+            .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(move |app, event: &KeyDownEvent, window, cx| {
                 let key = event.keystroke.key.as_str();
                 let kb_ctx = KeyboardContext {
