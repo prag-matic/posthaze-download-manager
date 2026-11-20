@@ -355,6 +355,7 @@ impl PosthazeApp {
                             false,
                             cx.listener(|app, _, _, cx| {
                                 app.queue.clear_selection();
+                                app.collapse_inspector_if_open(cx);
                                 cx.notify();
                             }),
                         )),
@@ -807,6 +808,8 @@ impl PosthazeApp {
                 }
                 if let Some(lead) = app.queue.selected_id.clone() {
                     app.load_segments_for(lead, cx);
+                } else {
+                    app.collapse_inspector_if_open(cx);
                 }
                 if !deselected
                     && !ctrl

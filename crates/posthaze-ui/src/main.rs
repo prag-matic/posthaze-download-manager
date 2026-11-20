@@ -694,6 +694,15 @@ impl PosthazeApp {
         cx.notify();
     }
 
+    pub(crate) fn collapse_inspector_if_open(&mut self, cx: &mut Context<Self>) {
+        if !self.inspector_collapsed {
+            self.inspector_collapsed = true;
+            self.motion
+                .animate_inspector(self.inspector_height, COLLAPSED_INSPECTOR_HEIGHT);
+            self.ensure_motion_loop(cx);
+        }
+    }
+
     pub(crate) fn request_delete_selected(&mut self, cx: &mut Context<Self>) {
         let selected = self.queue.selected_list();
         if selected.len() <= 1 {
