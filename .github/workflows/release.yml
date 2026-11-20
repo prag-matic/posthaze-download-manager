@@ -22,6 +22,18 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Repo invariants
+        shell: pwsh
+        run: ./scripts/check-repo.ps1
+
+      - name: Verify tag matches Cargo.toml version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $cargo = Get-Content Cargo.toml -Raw
+          $null = $cargo -match '(?ms)\[workspace\.package\].*?^version\s*=\s*"([^"]+)"'
+          if ("v$($Matches[1])" -ne $env:GITHUB_REF_NAME) { throw "Tag $env:GITHUB_REF_NAME != Cargo.toml v$($Matches[1])" }
+
       - name: Verify documentation
         env:
           RUSTDOCFLAGS: -D warnings
@@ -39,7 +51,10 @@ jobs:
       - name: Package portable ZIP
         shell: pwsh
         run: |
-          $tag = if ($env:GITHUB_REF_TYPE -eq "tag") { $env:GITHUB_REF_NAME } else { "v0.1.1" }
+          if ($env:GITHUB_REF_TYPE -eq "tag") { $tag = $env:GITHUB_REF_NAME } else {
+            $null = (Get-Content Cargo.toml -Raw) -match '(?ms)\[workspace\.package\].*?^version\s*=\s*"([^"]+)"'
+            $tag = "v$($Matches[1])"
+          }
           $ver = $tag.TrimStart("v")
           "RELEASE_VERSION=$ver" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 

@@ -1,0 +1,4 @@
+#!/bin/sh
+# Enable with: git config core.hooksPath .githooks
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-repo.ps1 || exit 1
+cargo clippy --workspace --all-targets -- -D warnings || exit 1
