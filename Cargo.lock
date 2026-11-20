@@ -5616,6 +5616,7 @@ name = "posthaze-ui"
 version = "0.1.0"
 dependencies = [
  "gpui-kit",
+ "image",
  "posthaze-engine",
  "raw-window-handle",
  "serde",
