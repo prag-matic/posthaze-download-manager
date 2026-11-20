@@ -102,87 +102,114 @@ where
             .w_full()
             .flex_1()
             .min_h_0()
-            .p_3()
             .bg(graphite_bg())
             .flex()
             .flex_col()
-            .gap_2()
             .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
+                    .w_full()
+                    .h(px(3.0))
+                    .bg(byte_track_bg())
+                    .overflow_hidden()
                     .child(
                         div()
-                            .text_size(px(14.0))
-                            .line_height(px(18.0))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(silver_text())
-                            .child("Checking Download"),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_1p5()
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .child(
-                                        Icon::new(IconName::LoaderCircle)
-                                            .size(px(13.0))
-                                            .text_color(selenium_amber()),
-                                    )
-                                    .with_animation(
-                                        "preflight-probing-pulse",
-                                        Animation::new(Duration::from_millis(900))
-                                            .repeat()
-                                            .with_easing(pulsating_between(0.45, 1.0)),
-                                        |el, delta| el.opacity(delta),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .font_family(MONO_FONT)
-                                    .text_size(TYPE_MICRO)
-                                    .text_color(selenium_amber())
-                                    .child("Probing..."),
+                            .w(px(120.0))
+                            .h_full()
+                            .bg(selenium_amber())
+                            .with_animation(
+                                "preflight-shutter-sweep",
+                                Animation::new(Duration::from_millis(1050))
+                                    .repeat()
+                                    .with_easing(ease_in_out),
+                                |el, delta| el.ml(px(-40.0 + delta * 460.0)),
                             ),
                     ),
             )
             .child(
                 div()
-                    .font_family(MONO_FONT)
-                    .text_size(TYPE_MICRO)
-                    .line_height(px(15.0))
-                    .text_color(silver_muted())
-                    .truncate()
-                    .child(url.clone()),
-            )
-            .when(!headers.is_empty(), |el| {
-                el.child(
-                    div()
-                        .font_family(MONO_FONT)
-                        .text_size(TYPE_MICRO)
-                        .text_color(silver_muted())
-                        .child(format!("Sending {} custom header(s)", headers.len())),
-                )
-            })
-            .child(
-                div()
-                    .mt_auto()
-                    .pt_1()
-                    .child(grid_modal_footer(GridTone::Graphite).child(grid_cell_button(
-                        "probe-cancel",
-                        Some(IconName::X),
-                        Some("CANCEL"),
-                        None,
-                        GridTone::Graphite,
-                        CellBorder::Left,
-                        false,
-                        move |_, window, cx| on_close(window, cx),
-                    ))),
+                    .w_full()
+                    .flex_1()
+                    .min_h_0()
+                    .p_3()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .text_size(px(14.0))
+                                    .line_height(px(18.0))
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(silver_text())
+                                    .child("Probing Target"),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_1p5()
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .child(
+                                                Icon::new(IconName::LoaderCircle)
+                                                    .size(px(13.0))
+                                                    .text_color(selenium_amber()),
+                                            )
+                                            .with_animation(
+                                                "preflight-probing-pulse",
+                                                Animation::new(Duration::from_millis(900))
+                                                    .repeat()
+                                                    .with_easing(pulsating_between(0.45, 1.0)),
+                                                |el, delta| el.opacity(delta),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .font_family(MONO_FONT)
+                                            .text_size(TYPE_MICRO)
+                                            .text_color(selenium_amber())
+                                            .child("HEAD / RANGE"),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .font_family(MONO_FONT)
+                            .text_size(TYPE_MICRO)
+                            .line_height(px(15.0))
+                            .text_color(silver_muted())
+                            .truncate()
+                            .child(url.clone()),
+                    )
+                    .when(!headers.is_empty(), |el| {
+                        el.child(
+                            div()
+                                .font_family(MONO_FONT)
+                                .text_size(TYPE_MICRO)
+                                .text_color(silver_muted())
+                                .child(format!("Sending {} custom header(s)", headers.len())),
+                        )
+                    })
+                    .child(
+                        div().mt_auto().pt_1().child(
+                            grid_modal_footer(GridTone::Graphite).child(grid_cell_button(
+                                "probe-cancel",
+                                Some(IconName::X),
+                                Some("CANCEL"),
+                                None,
+                                GridTone::Graphite,
+                                CellBorder::Left,
+                                false,
+                                move |_, window, cx| on_close(window, cx),
+                            )),
+                        ),
+                    ),
             ),
         PreflightModalState::Error {
             url,
@@ -322,6 +349,21 @@ where
             } else {
                 format!("HTTP 200 · {size_label}")
             };
+            let segment_count = if info.supports_ranges {
+                (*workers).clamp(1, 32)
+            } else {
+                1
+            };
+            let segment_meta = if info.supports_ranges {
+                match info.content_length {
+                    Some(total) if total > 0 => {
+                        format!("{}/seg", format_bytes((total / segment_count as u64).max(1)))
+                    }
+                    _ => "Dynamic split".to_string(),
+                }
+            } else {
+                "No Range".to_string()
+            };
             let confirm_now = on_confirm.clone();
             let confirm_queue = on_confirm;
             let header_count = headers.len();
@@ -378,6 +420,73 @@ where
                         .text_color(silver_muted())
                         .truncate()
                         .child(info.final_url.clone()),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .bg(byte_track_bg())
+                        .border_1()
+                        .border_color(graphite_border())
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .h(px(18.0))
+                                .px_1p5()
+                                .bg(graphite_elevated())
+                                .border_b_1()
+                                .border_color(graphite_border())
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .font_family(MONO_FONT)
+                                .text_size(TYPE_MICRO)
+                                .child(
+                                    div().text_color(silver_muted()).child(if info.supports_ranges {
+                                        format!("{segment_count} PARALLEL SEGMENTS")
+                                    } else {
+                                        "SINGLE STREAM".to_string()
+                                    }),
+                                )
+                                .child(
+                                    div()
+                                        .text_color(if info.supports_ranges {
+                                            selenium_amber()
+                                        } else {
+                                            silver_muted()
+                                        })
+                                        .child(segment_meta),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .w_full()
+                                .h(px(7.0))
+                                .flex()
+                                .items_stretch()
+                                .children((0..segment_count).map(|idx| {
+                                    let fill = if !info.supports_ranges {
+                                        silver_muted().opacity(0.45)
+                                    } else if idx == 0 {
+                                        selenium_amber()
+                                    } else {
+                                        cyanotype_blue().opacity(0.85)
+                                    };
+                                    div()
+                                        .flex_1()
+                                        .h_full()
+                                        .bg(fill)
+                                        .when(idx > 0, |el| {
+                                            el.border_l_1().border_color(byte_track_bg())
+                                        })
+                                }))
+                                .with_animation(
+                                    "preflight-interval-reveal",
+                                    Animation::new(Duration::from_millis(180))
+                                        .with_easing(ease_out_quint()),
+                                    |el, delta| el.opacity(0.4 + 0.6 * delta),
+                                ),
+                        ),
                 )
                 .child(compact_input_row("FILE", filename_input))
                 .child(compact_input_row("SAVE TO", dir_input))

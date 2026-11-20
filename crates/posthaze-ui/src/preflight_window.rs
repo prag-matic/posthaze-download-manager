@@ -44,7 +44,7 @@ impl PreflightWindow {
         cascade_idx: usize,
         cx: &mut App,
     ) {
-        let mut bounds = Bounds::centered(None, size(px(460.0), px(272.0)), cx);
+        let mut bounds = Bounds::centered(None, size(px(460.0), px(298.0)), cx);
         let cascade = ((cascade_idx % 6) as f32) * 28.0;
         bounds.origin.x += px(cascade);
         bounds.origin.y += px(cascade);
@@ -54,7 +54,7 @@ impl PreflightWindow {
             focus: true,
             show: true,
             kind: WindowKind::Normal,
-            window_min_size: Some(size(px(420.0), px(240.0))),
+            window_min_size: Some(size(px(420.0), px(260.0))),
             ..TitleBar::window_options()
         };
 
@@ -451,7 +451,7 @@ impl Render for PreflightWindow {
                     } = &mut win.state
                     {
                         *editing_headers = !*editing_headers;
-                        let target_h = if *editing_headers { 392.0 } else { 272.0 };
+                        let target_h = if *editing_headers { 416.0 } else { 298.0 };
                         window.resize(size(px(460.0), px(target_h)));
                         cx.notify();
                     }
