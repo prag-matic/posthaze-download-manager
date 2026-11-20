@@ -53,6 +53,8 @@ pub(crate) struct MotionState {
     last_step_at: Option<Instant>,
     sidebar_anim: Option<PanelAnim>,
     inspector_anim: Option<PanelAnim>,
+    table_scroll_anim: Option<PanelAnim>,
+    table_scroll_pending_y: Option<f32>,
     sash_detent_flash_at: Option<Instant>,
 }
 
@@ -91,6 +93,36 @@ impl MotionState {
     /// Clears any active inspector animation during direct pointer drag (zero lag).
     pub(crate) fn set_inspector_immediate(&mut self) {
         self.inspector_anim = None;
+    }
+
+    /// Starts or updates a smooth vertical scroll transition for the downloads table.
+    pub(crate) fn animate_table_scroll(&mut self, from: f32, to: f32) {
+        let current = self.table_scroll_anim.map(|a| a.current).unwrap_or(from);
+        if (to - current).abs() <= 0.5 {
+            self.table_scroll_anim = None;
+            self.table_scroll_pending_y = Some(to);
+        } else {
+            self.table_scroll_anim = Some(PanelAnim {
+                current,
+                target: to,
+            });
+        }
+    }
+
+    /// Returns the active animated table scroll offset, if any.
+    pub(crate) fn current_table_scroll(&self) -> Option<f32> {
+        self.table_scroll_anim.map(|a| a.current)
+    }
+
+    /// Returns the next scroll offset to apply to the scroll handle, if one was stepped.
+    pub(crate) fn take_table_scroll_y(&mut self) -> Option<f32> {
+        self.table_scroll_pending_y.take()
+    }
+
+    /// Cancels any active keyboard scroll animation when the user scrolls manually.
+    pub(crate) fn clear_table_scroll(&mut self) {
+        self.table_scroll_anim = None;
+        self.table_scroll_pending_y = None;
     }
 
     /// Returns the active animated sidebar width, or `fallback` when settled.
@@ -275,6 +307,18 @@ impl MotionState {
                 any_active = true;
             } else {
                 self.inspector_anim = None;
+            }
+        }
+        if let Some(mut anim) = self.table_scroll_anim {
+            let diff = anim.target - anim.current;
+            if diff.abs() > 0.5 {
+                anim.current += diff * panel_alpha;
+                self.table_scroll_anim = Some(anim);
+                self.table_scroll_pending_y = Some(anim.current);
+                any_active = true;
+            } else {
+                self.table_scroll_anim = None;
+                self.table_scroll_pending_y = Some(anim.target);
             }
         }
         if let Some(started) = self.sash_detent_flash_at {

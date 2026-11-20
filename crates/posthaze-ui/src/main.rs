@@ -329,10 +329,26 @@ impl PosthazeApp {
                     .await;
                 let keep_going = this
                     .update(cx, |app, cx| {
+                        if let Some(expected_y) = app.motion.current_table_scroll() {
+                            let actual_y = {
+                                let inner = app.table_scroll_handle.0.borrow();
+                                -f32::from(inner.base_handle.offset().y)
+                            };
+                            if (actual_y - expected_y).abs() > 2.5 {
+                                app.motion.clear_table_scroll();
+                            }
+                        }
                         let active = app.motion.step(Instant::now());
-                        if active {
+                        let next_y = app.motion.take_table_scroll_y();
+                        if let Some(y) = next_y {
+                            let inner = app.table_scroll_handle.0.borrow_mut();
+                            let cur = inner.base_handle.offset();
+                            inner.base_handle.set_offset(point(cur.x, px(-y)));
+                        }
+                        if active || next_y.is_some() {
                             cx.notify();
-                        } else {
+                        }
+                        if !active {
                             app.motion_loop_running = false;
                         }
                         active
@@ -1351,8 +1367,29 @@ impl Render for PosthazeApp {
                                 .step_selection_extending(&visible_ids, delta, shift)
                         {
                             if let Some(idx) = visible_ids.iter().position(|id| id == &next_id) {
-                                app.table_scroll_handle
-                                    .scroll_to_item(idx, ScrollStrategy::Nearest);
+                                const ROW_HEIGHT: f32 = 38.0;
+                                let (scroll_top, viewport_h, max_scroll) = {
+                                    let inner = app.table_scroll_handle.0.borrow();
+                                    let top = -f32::from(inner.base_handle.offset().y);
+                                    let vh = f32::from(inner.base_handle.bounds().size.height);
+                                    let max_s = f32::from(inner.base_handle.max_offset().y);
+                                    (top, vh, max_s)
+                                };
+                                if viewport_h > 1.0 && max_scroll > 0.5 {
+                                    let row_top = idx as f32 * ROW_HEIGHT;
+                                    let row_bottom = row_top + ROW_HEIGHT;
+                                    let target_top = if row_top < scroll_top {
+                                        Some(row_top.clamp(0.0, max_scroll))
+                                    } else if row_bottom > scroll_top + viewport_h {
+                                        Some((row_bottom - viewport_h).clamp(0.0, max_scroll))
+                                    } else {
+                                        None
+                                    };
+                                    if let Some(target) = target_top {
+                                        app.motion.animate_table_scroll(scroll_top, target);
+                                        app.ensure_motion_loop(cx);
+                                    }
+                                }
                             }
                             app.load_segments_for(next_id, cx);
                             cx.notify();
