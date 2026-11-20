@@ -481,7 +481,6 @@ impl PosthazeApp {
             .child(
                 div()
                     .id(SharedString::from(format!("state-{}", row.id.as_str())))
-                    .ml(px(13.0))
                     .w(px(COL_STATE))
                     .flex_shrink_0()
                     .h_full()
