@@ -221,7 +221,8 @@ impl PosthazeApp {
                     .h(px(28.0))
                     .flex()
                     .items_center()
-                    .px_4()
+                    .pl_4()
+                    .pr(px(20.0))
                     .bg(table_header_bg())
                     .border_b_1()
                     .border_color(paper_border())
@@ -449,6 +450,7 @@ impl PosthazeApp {
             .child(
                 div()
                     .id(SharedString::from(format!("state-{}", row.id.as_str())))
+                    .ml(px(13.0))
                     .w(px(COL_STATE))
                     .flex_shrink_0()
                     .h_full()
