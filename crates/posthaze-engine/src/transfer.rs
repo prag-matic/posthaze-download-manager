@@ -9,6 +9,7 @@ use reqwest::header::RANGE;
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 
+use crate::model::SegmentCheckpoint;
 use crate::probe::apply_custom_headers;
 use crate::store::DownloadStore;
 use crate::throttle::BandwidthLimiter;
@@ -34,15 +35,6 @@ pub(crate) enum ControlSignal {
     Run,
     Pause,
     Cancel,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SegmentCheckpoint {
-    pub segment_index: usize,
-    pub start: u64,
-    pub cursor: u64,
-    pub end: Option<u64>,
-    pub completed: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

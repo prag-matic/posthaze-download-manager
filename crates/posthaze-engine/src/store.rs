@@ -12,8 +12,8 @@ use sqlx::sqlite::{
     SqliteSynchronous,
 };
 
+use crate::model::{PlannedSegment, SegmentCheckpoint};
 use crate::probe::ProbeResult;
-use crate::transfer::{SegmentCheckpoint, plan_segments};
 use crate::{
     CollisionPolicy, DeleteDefaultAction, DownloadId, DownloadRequest, DownloadState, EngineError,
     ProxyMode, Settings,
@@ -195,7 +195,7 @@ impl DownloadStore {
         probe: &ProbeResult,
         output_path: &Path,
         part_path: &Path,
-        max_workers: usize,
+        segments: &[PlannedSegment],
     ) -> Result<(), EngineError> {
         let mut tx = self.pool.begin().await?;
         let now = unix_now();
@@ -226,16 +226,7 @@ impl DownloadStore {
         .execute(&mut *tx)
         .await?;
 
-        let segments: Vec<(u64, Option<u64>)> = match (probe.supports_ranges, probe.content_length)
-        {
-            (true, Some(total)) if total > 0 => plan_segments(total, max_workers)
-                .into_iter()
-                .map(|s| (s.start, Some(s.end)))
-                .collect(),
-            _ => vec![(0, probe.content_length)],
-        };
-
-        for (idx, (start, end)) in segments.into_iter().enumerate() {
+        for (idx, seg) in segments.iter().enumerate() {
             sqlx::query(
                 "INSERT INTO segments (
                     download_id, segment_index, start_offset, cursor_offset, end_offset, completed
@@ -243,9 +234,9 @@ impl DownloadStore {
             )
             .bind(id.as_str())
             .bind(idx as i64)
-            .bind(start as i64)
-            .bind(start as i64)
-            .bind(end.map(|v| v as i64))
+            .bind(seg.start as i64)
+            .bind(seg.start as i64)
+            .bind(seg.end.map(|v| v as i64))
             .execute(&mut *tx)
             .await?;
         }
