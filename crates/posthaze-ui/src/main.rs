@@ -1807,10 +1807,9 @@ impl PosthazeApp {
                     .child(
                         div()
                             .h_full()
-                            .px_3()
+                            .pr_3()
                             .border_r_1()
                             .border_color(graphite_border())
-                            .bg(graphite_elevated())
                             .flex()
                             .items_center()
                             .gap_2()
