@@ -218,22 +218,18 @@ where
                                 .text_color(silver_muted())
                                 .child(format!("Sending {} custom header(s)", headers.len())),
                         )
-                    })
-                    .child(
-                        div().mt_auto().pt_1().child(
-                            grid_modal_footer(GridTone::Graphite).child(grid_cell_button(
-                                "probe-cancel",
-                                Some(IconName::X),
-                                Some("CANCEL"),
-                                None,
-                                GridTone::Graphite,
-                                CellBorder::Left,
-                                false,
-                                move |_, window, cx| on_close(window, cx),
-                            )),
-                        ),
-                    ),
-            ),
+                    }),
+            )
+            .child(grid_modal_footer(GridTone::Graphite).child(grid_cell_button(
+                "probe-cancel",
+                Some(IconName::X),
+                Some("CANCEL"),
+                None,
+                GridTone::Graphite,
+                CellBorder::Left,
+                false,
+                move |_, window, cx| on_close(window, cx),
+            ))),
         PreflightModalState::Error {
             url,
             headers,
@@ -247,14 +243,21 @@ where
                 .w_full()
                 .flex_1()
                 .min_h_0()
-                .p_3()
                 .bg(graphite_bg())
                 .border_t_2()
                 .border_color(errata_vermilion())
                 .flex()
                 .flex_col()
-                .gap_2()
                 .child(
+                    div()
+                        .w_full()
+                        .flex_1()
+                        .min_h_0()
+                        .p_3()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(
                     div()
                         .flex()
                         .items_center()
@@ -303,53 +306,49 @@ where
                             .text_color(silver_muted())
                             .child("Tip: Use DevTools -> Copy as cURL if this site requires a browser session."),
                     )
-                })
+                }),
+                )
                 .child(
-                    div()
-                        .mt_auto()
-                        .pt_1()
-                        .child(
-                            grid_modal_footer(GridTone::Graphite)
-                                .child(grid_cell_button(
-                                    "probe-edit",
-                                    Some(IconName::Clipboard),
-                                    Some("EDIT URL"),
-                                    None,
-                                    GridTone::Graphite,
-                                    CellBorder::Left,
-                                    false,
-                                    move |_, window, cx| {
-                                        on_edit_url(url_edit.clone(), window, cx);
-                                    },
-                                ))
-                                .child(grid_cell_button(
-                                    "probe-close",
-                                    Some(IconName::X),
-                                    Some("CLOSE"),
-                                    None,
-                                    GridTone::Graphite,
-                                    CellBorder::Left,
-                                    false,
-                                    move |_, window, cx| on_close(window, cx),
-                                ))
-                                .child(grid_cell_button(
-                                    "probe-retry",
-                                    Some(IconName::RefreshCw),
-                                    Some("RETRY"),
-                                    None,
-                                    GridTone::Primary,
-                                    CellBorder::Left,
-                                    false,
-                                    move |_, window, cx| {
-                                        on_retry(
-                                            url_retry.clone(),
-                                            headers_retry.clone(),
-                                            window,
-                                            cx,
-                                        );
-                                    },
-                                )),
-                        ),
+                    grid_modal_footer(GridTone::Graphite)
+                        .child(grid_cell_button(
+                            "probe-edit",
+                            Some(IconName::Clipboard),
+                            Some("EDIT URL"),
+                            None,
+                            GridTone::Graphite,
+                            CellBorder::Left,
+                            false,
+                            move |_, window, cx| {
+                                on_edit_url(url_edit.clone(), window, cx);
+                            },
+                        ))
+                        .child(grid_cell_button(
+                            "probe-close",
+                            Some(IconName::X),
+                            Some("CLOSE"),
+                            None,
+                            GridTone::Graphite,
+                            CellBorder::Left,
+                            false,
+                            move |_, window, cx| on_close(window, cx),
+                        ))
+                        .child(grid_cell_button(
+                            "probe-retry",
+                            Some(IconName::RefreshCw),
+                            Some("RETRY"),
+                            None,
+                            GridTone::Primary,
+                            CellBorder::Left,
+                            false,
+                            move |_, window, cx| {
+                                on_retry(
+                                    url_retry.clone(),
+                                    headers_retry.clone(),
+                                    window,
+                                    cx,
+                                );
+                            },
+                        )),
                 )
         }
         PreflightModalState::Resolved {
@@ -412,12 +411,19 @@ where
                 .w_full()
                 .flex_1()
                 .min_h_0()
-                .p_3()
                 .bg(graphite_bg())
                 .flex()
                 .flex_col()
-                .gap_1p5()
                 .child(
+                    div()
+                        .w_full()
+                        .flex_1()
+                        .min_h_0()
+                        .p_3()
+                        .flex()
+                        .flex_col()
+                        .gap_1p5()
+                        .child(
                     div()
                         .flex()
                         .items_center()
@@ -705,46 +711,42 @@ where
                             .child(compact_input_row("REFERER", referer_input))
                             .child(compact_input_row("AGENT", user_agent_input)),
                     )
-                })
+                }),
+                )
                 .child(
-                    div()
-                        .mt_auto()
-                        .pt_1()
-                        .child(
-                            grid_modal_footer(GridTone::Graphite)
-                                .child(grid_cell_button(
-                                    "pf-cancel",
-                                    Some(IconName::X),
-                                    Some("CANCEL"),
-                                    None,
-                                    GridTone::Graphite,
-                                    CellBorder::Left,
-                                    false,
-                                    move |_, window, cx| on_close(window, cx),
-                                ))
-                                .when(show_add_paused, |el| {
-                                    el.child(grid_cell_button(
-                                        "pf-queue",
-                                        Some(IconName::Clock),
-                                        Some("ADD PAUSED"),
-                                        Some("Save to list in Paused state without starting transfer"),
-                                        GridTone::Graphite,
-                                        CellBorder::Left,
-                                        false,
-                                        move |_, window, cx| confirm_queue(false, window, cx),
-                                    ))
-                                })
-                                .child(grid_cell_button(
-                                    "pf-now",
-                                    Some(IconName::Download),
-                                    Some("DOWNLOAD NOW"),
-                                    None,
-                                    GridTone::Primary,
-                                    CellBorder::Left,
-                                    false,
-                                    move |_, window, cx| confirm_now(true, window, cx),
-                                )),
-                        ),
+                    grid_modal_footer(GridTone::Graphite)
+                        .child(grid_cell_button(
+                            "pf-cancel",
+                            Some(IconName::X),
+                            Some("CANCEL"),
+                            None,
+                            GridTone::Graphite,
+                            CellBorder::Left,
+                            false,
+                            move |_, window, cx| on_close(window, cx),
+                        ))
+                        .when(show_add_paused, |el| {
+                            el.child(grid_cell_button(
+                                "pf-queue",
+                                Some(IconName::Clock),
+                                Some("ADD PAUSED"),
+                                Some("Save to list in Paused state without starting transfer"),
+                                GridTone::Graphite,
+                                CellBorder::Left,
+                                false,
+                                move |_, window, cx| confirm_queue(false, window, cx),
+                            ))
+                        })
+                        .child(grid_cell_button(
+                            "pf-now",
+                            Some(IconName::Download),
+                            Some("DOWNLOAD NOW"),
+                            None,
+                            GridTone::Primary,
+                            CellBorder::Left,
+                            false,
+                            move |_, window, cx| confirm_now(true, window, cx),
+                        )),
                 )
         }
     }
