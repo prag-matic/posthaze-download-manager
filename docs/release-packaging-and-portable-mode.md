@@ -16,3 +16,8 @@ The workspace `Cargo.toml` defines `[profile.release]` with `lto = true`, `codeg
 - **Rolling File Logs:** `posthaze-ui` initializes a `tracing` file subscriber at startup writing `posthaze.log` into `default_logs_dir()` (`<data_dir>\logs\`), rotating at `2 MiB` and retaining up to `5` historical log files (`posthaze.1.log` .. `posthaze.5.log`).
 - **Panic Hook:** Unexpected panics record their payload and source location into `posthaze.log` before terminating.
 - **Open Logs Folder:** **Settings → Reset → OPEN LOGS FOLDER** ensures the logs directory exists and opens it directly in Windows Explorer.
+
+## Single-Instance Wake & `--minimized` Launch
+
+- **Single-Instance Wake:** Launching `posthaze-ui` without `--minimized` checks if the named-pipe IPC server is already listening. If so, it sends `{"type":"show"}` (`PipeCommand::ShowMainWindow`) over the pipe to restore and focus the running main window and exits immediately.
+- **`--minimized` Flag:** Launching `posthaze-ui --minimized` creates the main window minimized and unfocused so background **Browser Capture** stays active without interrupting the desktop.

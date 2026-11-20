@@ -61,6 +61,10 @@ use crate::view_model::{
 
 fn main() {
     diagnostics::init_diagnostics(default_logs_dir());
+    let start_minimized = std::env::args().any(|arg| arg == "--minimized");
+    if ipc::try_connect_existing_instance(!start_minimized) {
+        return;
+    }
     let bridge = EngineBridge::open(default_db_path()).expect("failed to initialize engine");
 
     gpui_kit::application()
@@ -75,16 +79,21 @@ fn main() {
                     size(px(1020.0), px(640.0)),
                     cx,
                 ))),
+                focus: !start_minimized,
                 window_min_size: Some(size(px(1020.0), px(640.0))),
                 ..TitleBar::window_options()
             };
 
-        let bridge = bridge.clone();
-        gpui_kit::open_window(window_options, cx, move |window, cx| {
-            cx.new(|cx| PosthazeApp::new(bridge, window, cx))
-        })
-        .expect("failed to open Posthaze window");
-    });
+            let bridge = bridge.clone();
+            gpui_kit::open_window(window_options, cx, move |window, cx| {
+                let entity = cx.new(|cx| PosthazeApp::new(bridge, window, cx));
+                if start_minimized {
+                    window.minimize_window();
+                }
+                entity
+            })
+            .expect("failed to open Posthaze window");
+        });
 }
 
 #[derive(Clone, Copy)]
@@ -262,28 +271,37 @@ impl PosthazeApp {
         let window_handle = self.window_handle;
         let bridge = self.bridge.clone();
         cx.spawn(async move |this, cx| {
-            while let Some(req) = rx.recv().await {
-                let bridge_for_win = bridge.clone();
-                let main_app = this.clone();
-                let _ = cx.update(|cx| {
-                    let (settings, cascade) = main_app
-                        .update(cx, |app, _| {
-                            let idx = app.next_probe_cascade;
-                            app.next_probe_cascade = app.next_probe_cascade.wrapping_add(1);
-                            (app.queue.settings.clone(), idx)
-                        })
-                        .unwrap_or_default();
-                    PreflightWindow::open(
-                        bridge_for_win,
-                        settings,
-                        req.url,
-                        req.headers,
-                        window_handle,
-                        main_app,
-                        cascade,
-                        cx,
-                    );
-                });
+            while let Some(cmd) = rx.recv().await {
+                match cmd {
+                    ipc::PipeCommand::ShowMainWindow => {
+                        let _ = cx.update_window(window_handle, |_, window, _| {
+                            window.activate_window();
+                        });
+                    }
+                    ipc::PipeCommand::Enqueue(req) => {
+                        let bridge_for_win = bridge.clone();
+                        let main_app = this.clone();
+                        let _ = cx.update(|cx| {
+                            let (settings, cascade) = main_app
+                                .update(cx, |app, _| {
+                                    let idx = app.next_probe_cascade;
+                                    app.next_probe_cascade = app.next_probe_cascade.wrapping_add(1);
+                                    (app.queue.settings.clone(), idx)
+                                })
+                                .unwrap_or_default();
+                            PreflightWindow::open(
+                                bridge_for_win,
+                                settings,
+                                req.url,
+                                req.headers,
+                                window_handle,
+                                main_app,
+                                cascade,
+                                cx,
+                            );
+                        });
+                    }
+                }
             }
         })
         .detach();
