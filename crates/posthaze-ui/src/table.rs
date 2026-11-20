@@ -1254,10 +1254,10 @@ fn render_table_scrubber(
             let bucket = (idx * MINIMAP_BUCKETS) / row_count;
             match row.state {
                 DownloadState::Failed => buckets[bucket] = MinimapMark::Failed,
-                DownloadState::Active | DownloadState::Probing => {
-                    if buckets[bucket] != MinimapMark::Failed {
-                        buckets[bucket] = MinimapMark::Active;
-                    }
+                DownloadState::Active | DownloadState::Probing
+                    if buckets[bucket] != MinimapMark::Failed =>
+                {
+                    buckets[bucket] = MinimapMark::Active;
                 }
                 _ => {}
             }

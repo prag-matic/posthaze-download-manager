@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release-windows:
+    name: Build Windows Installer & Portable ZIP
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Verify documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps
+
+      - name: Run clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run test suite
+        run: cargo test --workspace
+
+      - name: Build release binaries
+        run: cargo build --release --workspace
+
+      - name: Package portable ZIP
+        shell: pwsh
+        run: |
+          $tag = if ($env:GITHUB_REF_TYPE -eq "tag") { $env:GITHUB_REF_NAME } else { "v0.1.0" }
+          $ver = $tag.TrimStart("v")
+          "RELEASE_VERSION=$ver" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $staging = "dist\portable-staging\posthaze-$ver-windows-x64"
+          New-Item -ItemType Directory -Force -Path $staging | Out-Null
+
+          Copy-Item "target\release\posthaze-ui.exe" -Destination $staging
+          Copy-Item "target\release\posthaze-cli.exe" -Destination $staging
+          New-Item -ItemType File -Force -Path "$staging\posthaze.portable" | Out-Null
+          Copy-Item "extensions" -Destination "$staging\extensions" -Recurse
+
+          $zipPath = "dist\posthaze-$ver-windows-x64-portable.zip"
+          Compress-Archive -Path "$staging\*" -DestinationPath $zipPath -Force
+          Remove-Item -Recurse -Force "dist\portable-staging"
+
+      - name: Build Inno Setup installer
+        shell: pwsh
+        run: |
+          $iscc = Get-Command iscc -ErrorAction SilentlyContinue
+          if (-not $iscc) {
+            choco install innosetup -y --no-progress
+            $env:Path += ";C:\Program Files (x86)\Inno Setup 6"
+          }
+          iscc "/DMyAppVersion=$env:RELEASE_VERSION" packaging\windows\posthaze.iss
+
+      - name: Generate SHA-256 checksums
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem dist\*.exe, dist\*.zip | Sort-Object Name
+          $lines = foreach ($f in $files) {
+            $hash = (Get-FileHash $f.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($f.Name)"
+          }
+          $lines | Set-Content -Path "dist\SHA256SUMS.txt" -Encoding ascii
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.exe
+            dist/*.zip
+            dist/SHA256SUMS.txt
+          body: |
+            ## Posthaze ${{ env.RELEASE_VERSION }} (Windows x64)
+
+            ### Downloads
+            - **Installer (`*-setup.exe`)**: Per-user Windows installer (no admin required) bundling `posthaze-ui.exe`, `posthaze-cli.exe`, and `extensions/chrome/`.
+            - **Portable (`*-portable.zip`)**: Self-contained archive with `posthaze.portable` (stores `state.db` and `logs/` in `./data/`).
+
+            ### Windows SmartScreen Note
+            `v0.1.0` binaries are currently **unsigned**. Windows Defender SmartScreen may show *"Windows protected your PC"* on first launch; click **More info** → **Run anyway** after verifying the SHA-256 checksum against `SHA256SUMS.txt`:
+
+            ```powershell
+            Get-FileHash .\posthaze-${{ env.RELEASE_VERSION }}-windows-x64-setup.exe -Algorithm SHA256
+            ```

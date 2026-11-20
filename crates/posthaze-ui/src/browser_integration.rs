@@ -101,7 +101,7 @@ pub(crate) fn resolve_cli_executable() -> Result<PathBuf, String> {
 pub(crate) fn query_browser_statuses() -> Vec<(&'static str, bool)> {
     BrowserKind::ALL
         .iter()
-        .map(|browser| (*&browser.label(), is_browser_registered(*browser)))
+        .map(|browser| (browser.label(), is_browser_registered(*browser)))
         .collect()
 }
 

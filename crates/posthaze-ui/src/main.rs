@@ -339,7 +339,7 @@ impl PosthazeApp {
                     ipc::PipeCommand::Enqueue(req) => {
                         let bridge_for_win = bridge.clone();
                         let main_app = this.clone();
-                        let _ = cx.update(|cx| {
+                        cx.update(|cx| {
                             let (settings, cascade) = main_app
                                 .update(cx, |app, _| {
                                     let idx = app.next_probe_cascade;

@@ -33,6 +33,7 @@ pub(crate) struct ActiveControl {
 }
 
 /// Execution mode for a queued `Download`.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum TransferMode {
     Fresh(DownloadRequest),
     Resume {
@@ -1177,7 +1178,7 @@ mod tests {
         let mut not_started = sample_record(None, None, None);
         not_started.part_path = None;
         let mode = resolve_resume_mode(not_started, Vec::new(), PathBuf::from("downloads")).unwrap();
-        assert!(matches!(mode, TransferMode::Fresh(req) if req.output_dir == PathBuf::from("downloads")));
+        assert!(matches!(mode, TransferMode::Fresh(req) if req.output_dir == std::path::Path::new("downloads")));
 
         let mut no_ranges = sample_record(Some(1000), None, None);
         no_ranges.supports_ranges = false;

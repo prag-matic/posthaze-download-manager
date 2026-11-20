@@ -35,6 +35,7 @@ pub(crate) struct PreflightWindow {
 
 impl PreflightWindow {
     /// Opens a new foreground `PreflightWindow` for `url` and starts probing immediately.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn open(
         bridge: EngineBridge,
         settings: Settings,

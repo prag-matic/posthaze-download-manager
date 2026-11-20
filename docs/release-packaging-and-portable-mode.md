@@ -31,3 +31,8 @@ The workspace `Cargo.toml` defines `[profile.release]` with `lto = true`, `codeg
 ## Built-In Browser Native Messaging Registration (`Settings → Integration`)
 
 - **One-Click Registration (`browser_integration.rs`):** **Settings → Integration** displays live HKCU registration status for **Google Chrome**, **Microsoft Edge**, and **Brave Browser**, accepts the 32-character Extension ID, writes `posthaze-native-host.cmd` + `com.posthaze.host.json` into `default_data_dir()`, and updates the `HKCU\Software\...\NativeMessagingHosts\com.posthaze.host` registry keys.
+
+## Windows Installer, Portable ZIP & Release Pipeline
+
+- **Inno Setup (`packaging/windows/posthaze.iss`):** Per-user Windows installer (`PrivilegesRequired=lowest`) installing `posthaze-ui.exe`, `posthaze-cli.exe`, and `extensions/chrome/` into `%LOCALAPPDATA%\Programs\Posthaze`, with Start Menu shortcuts and optional Desktop / Windows Startup (`--minimized`) tasks.
+- **GitHub Actions (`.github/workflows/release.yml`):** Tag-triggered (`v*`) workflow that verifies `cargo doc`, `cargo clippy -- -D warnings`, and `cargo test --workspace`, builds release binaries, packages `posthaze-<version>-windows-x64-portable.zip` (with `posthaze.portable`) and `posthaze-<version>-windows-x64-setup.exe`, generates `SHA256SUMS.txt`, and publishes the GitHub Release with unsigned SmartScreen verification guidance.
