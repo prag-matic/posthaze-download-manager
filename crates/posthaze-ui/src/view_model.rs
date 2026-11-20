@@ -397,15 +397,33 @@ pub fn format_eta(eta_secs: Option<u64>) -> String {
 }
 
 /// Filters and sorts [`DownloadRowView`] items for the center table.
+#[cfg(test)]
 pub fn filter_and_sort_rows(
     rows: &[DownloadRowView],
     filter: FilterTab,
     sort_col: SortColumn,
     sort_dir: SortDirection,
 ) -> Vec<DownloadRowView> {
+    filter_and_sort_rows_with_query(rows, filter, "", sort_col, sort_dir)
+}
+
+/// Filters `rows` by tab and optional search `query` (matching filename or URL), then sorts.
+pub fn filter_and_sort_rows_with_query(
+    rows: &[DownloadRowView],
+    filter: FilterTab,
+    query: &str,
+    sort_col: SortColumn,
+    sort_dir: SortDirection,
+) -> Vec<DownloadRowView> {
+    let q = query.trim().to_ascii_lowercase();
     let mut out: Vec<DownloadRowView> = rows
         .iter()
-        .filter(|r| filter.matches(r.state))
+        .filter(|r| {
+            filter.matches(r.state)
+                && (q.is_empty()
+                    || r.filename.to_ascii_lowercase().contains(&q)
+                    || r.url.to_ascii_lowercase().contains(&q))
+        })
         .cloned()
         .collect();
     out.sort_by(|a, b| {
@@ -1391,5 +1409,42 @@ mod tests {
         assert!(ctrl.selected_list().is_empty());
         assert_eq!(ctrl.selected_id, None);
         assert_eq!(ctrl.selection_anchor, None);
+    }
+
+    #[test]
+    fn filter_and_sort_rows_with_query_matches_filename_and_url() {
+        let r1 = DownloadRowView::from_record(
+            &make_record("1", "https://cdn.example.com/ubuntu-24.04.iso", DownloadState::Paused, 10),
+            None,
+            0,
+            None,
+        );
+        let r2 = DownloadRowView::from_record(
+            &make_record("2", "https://mirror.arch.org/linux.tar.zst", DownloadState::Completed, 20),
+            None,
+            0,
+            None,
+        );
+        let rows = vec![r1, r2];
+
+        let by_name = filter_and_sort_rows_with_query(
+            &rows,
+            FilterTab::All,
+            "UBUNTU",
+            SortColumn::CreatedAt,
+            SortDirection::Ascending,
+        );
+        assert_eq!(by_name.len(), 1);
+        assert_eq!(by_name[0].id, DownloadId::from("1".to_string()));
+
+        let by_url = filter_and_sort_rows_with_query(
+            &rows,
+            FilterTab::All,
+            "mirror.arch.org",
+            SortColumn::CreatedAt,
+            SortDirection::Ascending,
+        );
+        assert_eq!(by_url.len(), 1);
+        assert_eq!(by_url[0].id, DownloadId::from("2".to_string()));
     }
 }

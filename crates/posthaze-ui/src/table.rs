@@ -134,12 +134,68 @@ impl PosthazeApp {
             .filter(|r| self.queue.is_selected(&r.id))
             .collect();
         if selected.is_empty() {
+            let has_query = !self.search_input.read(cx).value().is_empty();
             return div()
                 .h(px(34.0))
                 .w_full()
+                .flex()
+                .items_center()
                 .bg(paper_bg())
                 .border_b_1()
                 .border_color(paper_border())
+                .child(
+                    div()
+                        .w(px(16.0 + COL_STATE))
+                        .flex_shrink_0()
+                        .h_full()
+                        .px_3()
+                        .border_r_1()
+                        .border_color(paper_border())
+                        .bg(table_header_bg())
+                        .flex()
+                        .items_center()
+                        .gap_1p5()
+                        .font_family(MONO_FONT)
+                        .text_size(TYPE_MICRO)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(carbon_muted())
+                        .child(Icon::new(IconName::Search).size(px(12.0)))
+                        .child("FILTER"),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(120.0))
+                        .h_full()
+                        .px_2()
+                        .bg(graphite_bg().opacity(0.35))
+                        .flex()
+                        .items_center()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .font_family(MONO_FONT)
+                                .text_size(TYPE_BODY)
+                                .child(Input::new(&self.search_input).appearance(false)),
+                        ),
+                )
+                .when(has_query, |el| {
+                    el.child(self.toolbar_cell_button(
+                        "search-clear",
+                        IconName::X,
+                        None,
+                        "Clear Filter",
+                        false,
+                        cx.listener(|app, _, window, cx| {
+                            app.search_input.update(cx, |state, cx| {
+                                state.set_value("", window, cx);
+                            });
+                            app.focus_handle.focus(window, cx);
+                            cx.notify();
+                        }),
+                    ))
+                })
                 .into_any_element();
         }
 

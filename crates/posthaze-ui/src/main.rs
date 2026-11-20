@@ -49,8 +49,8 @@ use crate::view_model::{
     FilterTab, INSPECTOR_MAGNETIC_SNAP_RADIUS, KeyboardAction, KeyboardContext,
     PrimaryDownloadAction, QueueController, RAIL_SIDEBAR_WIDTH, SIDEBAR_MAGNETIC_SNAP_RADIUS,
     SortColumn, SortDirection, UiEffect, apply_magnetic_detent, compute_fifo_ranks,
-    compute_layout_profile, derive_display_filename, filter_and_sort_rows, resolve_inspector_drag,
-    resolve_keyboard_action, resolve_sidebar_drag,
+    compute_layout_profile, derive_display_filename, filter_and_sort_rows_with_query,
+    resolve_inspector_drag, resolve_keyboard_action, resolve_sidebar_drag,
 };
 
 fn main() {
@@ -91,6 +91,7 @@ pub(crate) struct PosthazeApp {
     window_handle: AnyWindowHandle,
     pub(crate) focus_handle: FocusHandle,
     pub(crate) url_input: Entity<InputState>,
+    pub(crate) search_input: Entity<InputState>,
     pub(crate) queue: QueueController,
     pub(crate) filter: FilterTab,
     pub(crate) sort_col: SortColumn,
@@ -130,11 +131,22 @@ impl PosthazeApp {
         })
         .detach();
 
+        let search_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("Filter by filename or URL...")
+        });
+        cx.subscribe_in(&search_input, window, |_, _, ev: &InputEvent, _, cx| {
+            if matches!(ev, InputEvent::Change) {
+                cx.notify();
+            }
+        })
+        .detach();
+
         let mut app = Self {
             bridge,
             window_handle: window.window_handle(),
             focus_handle: cx.focus_handle(),
             url_input,
+            search_input,
             queue: QueueController::default(),
             filter: FilterTab::All,
             sort_col: SortColumn::CreatedAt,
@@ -1069,9 +1081,11 @@ impl Render for PosthazeApp {
             .filter(|r| matches!(r.state, DownloadState::Active | DownloadState::Probing))
             .count();
 
-        let visible_rows = filter_and_sort_rows(
+        let search_query = self.search_input.read(cx).value();
+        let visible_rows = filter_and_sort_rows_with_query(
             &all_rows,
             self.filter,
+            &search_query,
             self.sort_col,
             self.sort_dir,
         );
@@ -1311,7 +1325,8 @@ impl Render for PosthazeApp {
                     has_any_preflight: app.preflight_modal.is_some(),
                     has_settings_modal: app.settings_modal.is_some(),
                     has_file_op_modal: app.file_op_modal.is_some(),
-                    url_input_focused: app.url_input.read(cx).focus_handle(cx).is_focused(window),
+                    url_input_focused: app.url_input.read(cx).focus_handle(cx).is_focused(window)
+                        || app.search_input.read(cx).focus_handle(cx).is_focused(window),
                 };
 
                 let ctrl_or_cmd =
