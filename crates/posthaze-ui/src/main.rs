@@ -1785,7 +1785,7 @@ impl PosthazeApp {
                             .font_family(MONO_FONT)
                             .text_size(TYPE_HEADER)
                             .text_color(silver_muted())
-                            .child("v0.3.0"),
+                            .child(concat!("v", env!("CARGO_PKG_VERSION"), " beta")),
                     )
                     // Engine / Queue telemetry cell
                     .when(self.queue.settings.ui_show_titlebar_telemetry, |el| {
