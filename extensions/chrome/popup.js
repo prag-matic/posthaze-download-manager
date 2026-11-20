@@ -87,11 +87,20 @@ for (const [el, key, parse] of [
 }
 
 openUiBtn.addEventListener("click", async () => {
-  const resp = await chrome.runtime.sendMessage({ action: "show_ui" });
-  renderStatus({
-    ok: Boolean(resp && resp.ok),
-    message: (resp && (resp.message || resp.error)) || "No response from native host."
-  });
+  try {
+    const resp = await chrome.runtime.sendMessage({ action: "show_ui" });
+    renderStatus({
+      ok: Boolean(resp && resp.ok),
+      message:
+        (resp && (resp.message || resp.error)) ||
+        "Extension updated — click Reload in chrome://extensions."
+    });
+  } catch (err) {
+    renderStatus({
+      ok: false,
+      message: err && err.message ? err.message : "Extension bridge error."
+    });
+  }
   await pingHost();
 });
 
@@ -99,7 +108,9 @@ pingBtn.addEventListener("click", async () => {
   const resp = await pingHost();
   renderStatus({
     ok: Boolean(resp && resp.ok),
-    message: (resp && (resp.message || resp.error)) || "No response from native host."
+    message:
+      (resp && (resp.message || resp.error)) ||
+      "Extension updated — click Reload in chrome://extensions."
   });
 });
 

@@ -241,7 +241,18 @@ fn launch_ui_process() -> NativeResponse {
     if !ui_exe.is_file() {
         return NativeResponse::failure(format!("{} not found", ui_exe.display()));
     }
-    match std::process::Command::new(&ui_exe).spawn() {
+    let mut cmd = std::process::Command::new(&ui_exe);
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+    }
+    match cmd.spawn() {
         Ok(_) => NativeResponse::success("launched", "Launched Posthaze UI"),
         Err(err) => NativeResponse::failure(format!("Failed to launch Posthaze UI: {err}")),
     }
