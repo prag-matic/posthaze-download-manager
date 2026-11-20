@@ -60,6 +60,7 @@ impl PosthazeApp {
                         };
                         div()
                             .id(SharedString::from(format!("rail-{}", tab.label())))
+                            .relative()
                             .w_full()
                             .h(px(36.0))
                             .flex()
@@ -72,12 +73,7 @@ impl PosthazeApp {
                                 graphite_bg()
                             })
                             .border_b_1()
-                            .border_l_2()
-                            .border_color(if selected {
-                                selenium_amber()
-                            } else {
-                                graphite_border()
-                            })
+                            .border_color(graphite_border())
                             .hover(|s| s.bg(graphite_elevated()))
                             .tooltip({
                                 let label = format!("{} ({count})", tab.label());
@@ -87,6 +83,19 @@ impl PosthazeApp {
                                 app.filter = tab;
                                 cx.notify();
                             }))
+                            .child(
+                                div()
+                                    .absolute()
+                                    .left_0()
+                                    .top_0()
+                                    .bottom_0()
+                                    .w(px(2.0))
+                                    .bg(if selected {
+                                        selenium_amber()
+                                    } else {
+                                        Hsla::transparent_black()
+                                    }),
+                            )
                             .child(Icon::new(tab_icon).size(px(15.0)).text_color(tab_color))
                     })),
                 )

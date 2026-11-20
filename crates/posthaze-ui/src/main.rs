@@ -1807,14 +1807,13 @@ impl PosthazeApp {
                     .child(
                         div()
                             .h_full()
-                            .pr_3()
+                            .px_3()
                             .border_r_1()
                             .border_color(graphite_border())
                             .bg(graphite_elevated())
                             .flex()
                             .items_center()
                             .gap_2()
-                            .child(div().w(px(3.0)).h_full().mr_1().bg(selenium_amber()))
                             .child(
                                 svg()
                                     .path(BRAND_LOGO_SVG)
