@@ -110,6 +110,7 @@ pub(crate) struct PosthazeApp {
     active_resize: Option<ActiveResize>,
     pub(crate) motion: MotionState,
     motion_loop_running: bool,
+    startup_layout_applied: bool,
     pub(crate) table_scroll_handle: UniformListScrollHandle,
     refresh_in_flight: bool,
     refresh_pending: bool,
@@ -165,6 +166,7 @@ impl PosthazeApp {
             active_resize: None,
             motion: MotionState::default(),
             motion_loop_running: false,
+            startup_layout_applied: false,
             table_scroll_handle: UniformListScrollHandle::new(),
             refresh_in_flight: false,
             refresh_pending: false,
@@ -179,7 +181,18 @@ impl PosthazeApp {
 
     fn apply_snapshot(&mut self, snapshot: EngineSnapshot, cx: &mut Context<Self>) {
         let effect = self.queue.apply_snapshot(snapshot);
-        theme::apply_theme(&self.queue.settings.ui_theme, None, cx);
+        if !self.startup_layout_applied {
+            self.startup_layout_applied = true;
+            if self.queue.settings.ui_start_sidebar_collapsed {
+                self.sidebar_collapsed = true;
+            }
+        }
+        theme::apply_theme_with_accent(
+            &self.queue.settings.ui_theme,
+            self.queue.settings.ui_accent_override.as_deref(),
+            None,
+            cx,
+        );
         if let Some(effect) = effect {
             self.execute_ui_effects(vec![effect], cx);
         }
@@ -1046,7 +1059,8 @@ impl Render for PosthazeApp {
             right_width,
             f32::from(viewport.height),
             self.inspector_height,
-        );
+        )
+        .with_settings(&self.queue.settings);
         let target_inspector_height = if self.inspector_collapsed {
             COLLAPSED_INSPECTOR_HEIGHT
         } else {
@@ -1227,7 +1241,12 @@ impl Render for PosthazeApp {
                 move |window, cx| {
                     e_cancel.update(cx, |app, cx| {
                         app.settings_modal = None;
-                        theme::apply_theme(&app.queue.settings.ui_theme, Some(window), cx);
+                        theme::apply_theme_with_accent(
+                            &app.queue.settings.ui_theme,
+                            app.queue.settings.ui_accent_override.as_deref(),
+                            Some(window),
+                            cx,
+                        );
                         cx.notify();
                     });
                 },
@@ -1359,7 +1378,12 @@ impl Render for PosthazeApp {
                             changed = true;
                         }
                         if app.settings_modal.take().is_some() {
-                            theme::apply_theme(&app.queue.settings.ui_theme, Some(window), cx);
+                            theme::apply_theme_with_accent(
+                                &app.queue.settings.ui_theme,
+                                app.queue.settings.ui_accent_override.as_deref(),
+                                Some(window),
+                                cx,
+                            );
                             changed = true;
                         }
                         if app.file_op_modal.take().is_some() {
@@ -1392,7 +1416,7 @@ impl Render for PosthazeApp {
                                 .step_selection_extending(&visible_ids, delta, shift)
                         {
                             if let Some(idx) = visible_ids.iter().position(|id| id == &next_id) {
-                                const ROW_HEIGHT: f32 = 38.0;
+                                let row_height = app.queue.settings.ui_table_density.row_height_px();
                                 let (scroll_top, viewport_h, max_scroll) = {
                                     let inner = app.table_scroll_handle.0.borrow();
                                     let top = -f32::from(inner.base_handle.offset().y);
@@ -1401,8 +1425,8 @@ impl Render for PosthazeApp {
                                     (top, vh, max_s)
                                 };
                                 if viewport_h > 1.0 && max_scroll > 0.5 {
-                                    let row_top = idx as f32 * ROW_HEIGHT;
-                                    let row_bottom = row_top + ROW_HEIGHT;
+                                    let row_top = idx as f32 * row_height;
+                                    let row_bottom = row_top + row_height;
                                     let target_top = if row_top < scroll_top {
                                         Some(row_top.clamp(0.0, max_scroll))
                                     } else if row_bottom > scroll_top + viewport_h {
@@ -1844,33 +1868,35 @@ impl PosthazeApp {
                             .child("v0.3.0"),
                     )
                     // Engine / Queue telemetry cell
-                    .child(
-                        div()
-                            .h_full()
-                            .px_3()
-                            .border_r_1()
-                            .border_color(graphite_border())
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .font_family(MONO_FONT)
-                            .text_size(TYPE_HEADER)
-                            .text_color(silver_muted())
-                            .child(div().w(px(6.0)).h(px(6.0)).bg(if active_slots > 0 {
-                                selenium_amber()
-                            } else {
-                                graphite_border()
-                            }))
-                            .child(if active_slots > 0 {
-                                format!(
-                                    "ACTIVE {active_slots}/{} · {}",
-                                    self.queue.settings.max_concurrent_downloads,
-                                    view_model::format_speed(total_speed)
-                                )
-                            } else {
-                                format!("IDLE · {total_count} QUEUED")
-                            }),
-                    ),
+                    .when(self.queue.settings.ui_show_titlebar_telemetry, |el| {
+                        el.child(
+                            div()
+                                .h_full()
+                                .px_3()
+                                .border_r_1()
+                                .border_color(graphite_border())
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .font_family(MONO_FONT)
+                                .text_size(TYPE_HEADER)
+                                .text_color(silver_muted())
+                                .child(div().w(px(6.0)).h(px(6.0)).bg(if active_slots > 0 {
+                                    selenium_amber()
+                                } else {
+                                    graphite_border()
+                                }))
+                                .child(if active_slots > 0 {
+                                    format!(
+                                        "ACTIVE {active_slots}/{} · {}",
+                                        self.queue.settings.max_concurrent_downloads,
+                                        view_model::format_speed(total_speed)
+                                    )
+                                } else {
+                                    format!("IDLE · {total_count} QUEUED")
+                                }),
+                        )
+                    }),
             )
     }
 }

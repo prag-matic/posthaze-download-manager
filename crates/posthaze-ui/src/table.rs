@@ -633,6 +633,7 @@ impl PosthazeApp {
         let scrubber = render_table_scrubber(
             &visible_rows,
             self.queue.selected_id.as_ref(),
+            self.queue.settings.ui_show_scrollbar_minimap,
             &scroll_handle,
         );
 
@@ -821,10 +822,12 @@ impl PosthazeApp {
             .then(|| row.error_message.clone())
             .flatten();
 
+        let row_height = self.queue.settings.ui_table_density.row_height_px();
+
         div()
             .id(SharedString::from(format!("row-{}", row.id.as_str())))
             .w_full()
-            .h(px(38.0))
+            .h(px(row_height))
             .flex()
             .items_center()
             .pr(px(14.0))
@@ -1252,13 +1255,14 @@ enum MinimapMark {
 fn render_table_scrubber(
     rows: &[DownloadRowView],
     selected_id: Option<&DownloadId>,
+    show_minimap: bool,
     scroll_handle: &UniformListScrollHandle,
 ) -> impl IntoElement + use<> {
     let row_count = rows.len();
     let mut buckets = [MinimapMark::None; MINIMAP_BUCKETS];
     let mut selected_ratio = None;
 
-    if row_count > 0 {
+    if show_minimap && row_count > 0 {
         for (idx, row) in rows.iter().enumerate() {
             let bucket = (idx * MINIMAP_BUCKETS) / row_count;
             match row.state {
@@ -1292,54 +1296,56 @@ fn render_table_scrubber(
             this.border_l_1()
                 .border_color(paper_border())
                 .bg(table_header_bg().opacity(0.65))
-                .child(
-                    div()
-                        .absolute()
-                        .inset_0()
-                        .child(
-                            canvas(
-                                |_, _, _| {},
-                                move |bounds, _, window, _| {
-                                    let track_h = f32::from(bounds.size.height);
-                                    if track_h <= 4.0 {
-                                        return;
-                                    }
-                                    let active_color = selenium_amber().opacity(0.85);
-                                    let failed_color = errata_vermilion().opacity(0.9);
-                                    for (i, mark) in buckets.iter().enumerate() {
-                                        let color = match mark {
-                                            MinimapMark::None => continue,
-                                            MinimapMark::Active => active_color,
-                                            MinimapMark::Failed => failed_color,
-                                        };
-                                        let y = bounds.origin.y
-                                            + px(
-                                                (i as f32 / MINIMAP_BUCKETS as f32)
-                                                    * (track_h - 3.0),
-                                            );
-                                        window.paint_quad(fill(
-                                            Bounds::new(
-                                                point(bounds.origin.x + px(1.0), y),
-                                                size(px(3.0), px(2.5)),
-                                            ),
-                                            color,
-                                        ));
-                                    }
-                                    if let Some(ratio) = selected_ratio {
-                                        let y = bounds.origin.y + px(ratio * (track_h - 3.0));
-                                        window.paint_quad(fill(
-                                            Bounds::new(
-                                                point(bounds.origin.x + px(1.0), y),
-                                                size(px(12.0), px(2.0)),
-                                            ),
-                                            cyanotype_blue().opacity(0.75),
-                                        ));
-                                    }
-                                },
-                            )
-                            .size_full(),
-                        ),
-                )
+                .when(show_minimap, |el| {
+                    el.child(
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .child(
+                                canvas(
+                                    |_, _, _| {},
+                                    move |bounds, _, window, _| {
+                                        let track_h = f32::from(bounds.size.height);
+                                        if track_h <= 4.0 {
+                                            return;
+                                        }
+                                        let active_color = selenium_amber().opacity(0.85);
+                                        let failed_color = errata_vermilion().opacity(0.9);
+                                        for (i, mark) in buckets.iter().enumerate() {
+                                            let color = match mark {
+                                                MinimapMark::None => continue,
+                                                MinimapMark::Active => active_color,
+                                                MinimapMark::Failed => failed_color,
+                                            };
+                                            let y = bounds.origin.y
+                                                + px(
+                                                    (i as f32 / MINIMAP_BUCKETS as f32)
+                                                        * (track_h - 3.0),
+                                                );
+                                            window.paint_quad(fill(
+                                                Bounds::new(
+                                                    point(bounds.origin.x + px(1.0), y),
+                                                    size(px(3.0), px(2.5)),
+                                                ),
+                                                color,
+                                            ));
+                                        }
+                                        if let Some(ratio) = selected_ratio {
+                                            let y = bounds.origin.y + px(ratio * (track_h - 3.0));
+                                            window.paint_quad(fill(
+                                                Bounds::new(
+                                                    point(bounds.origin.x + px(1.0), y),
+                                                    size(px(12.0), px(2.0)),
+                                                ),
+                                                cyanotype_blue().opacity(0.75),
+                                            ));
+                                        }
+                                    },
+                                )
+                                .size_full(),
+                            ),
+                    )
+                })
         })
         .child(
             div()

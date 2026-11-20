@@ -7,7 +7,7 @@ use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::Icon;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
-use posthaze_engine::{CollisionPolicy, DeleteDefaultAction, ProxyMode, Settings};
+use posthaze_engine::{CollisionPolicy, DeleteDefaultAction, ProxyMode, Settings, TableDensity};
 
 use crate::grid_cells::{CellBorder, GridTone, grid_cell_button, grid_section_header};
 use crate::modals::{labeled_input, modal_backdrop};
@@ -98,6 +98,15 @@ pub(crate) struct SettingsDraft {
     pub ui_show_add_paused: bool,
     pub ui_zoom_percent: u16,
     pub ui_theme: String,
+    pub ui_table_density: TableDensity,
+    pub ui_show_speed_col: bool,
+    pub ui_show_eta_col: bool,
+    pub ui_show_segs_col: bool,
+    pub ui_show_toolbar_labels: bool,
+    pub ui_show_scrollbar_minimap: bool,
+    pub ui_show_titlebar_telemetry: bool,
+    pub ui_start_sidebar_collapsed: bool,
+    pub ui_accent_override: Option<String>,
 }
 
 impl SettingsDraft {
@@ -125,6 +134,15 @@ impl SettingsDraft {
             ui_show_add_paused: settings.ui_show_add_paused,
             ui_zoom_percent: settings.ui_zoom_percent,
             ui_theme: settings.ui_theme.clone(),
+            ui_table_density: settings.ui_table_density,
+            ui_show_speed_col: settings.ui_show_speed_col,
+            ui_show_eta_col: settings.ui_show_eta_col,
+            ui_show_segs_col: settings.ui_show_segs_col,
+            ui_show_toolbar_labels: settings.ui_show_toolbar_labels,
+            ui_show_scrollbar_minimap: settings.ui_show_scrollbar_minimap,
+            ui_show_titlebar_telemetry: settings.ui_show_titlebar_telemetry,
+            ui_start_sidebar_collapsed: settings.ui_start_sidebar_collapsed,
+            ui_accent_override: settings.ui_accent_override.clone(),
         }
     }
 
@@ -193,6 +211,15 @@ impl SettingsDraft {
             ui_show_add_paused: self.ui_show_add_paused,
             ui_zoom_percent: self.ui_zoom_percent,
             ui_theme: self.ui_theme,
+            ui_table_density: self.ui_table_density,
+            ui_show_speed_col: self.ui_show_speed_col,
+            ui_show_eta_col: self.ui_show_eta_col,
+            ui_show_segs_col: self.ui_show_segs_col,
+            ui_show_toolbar_labels: self.ui_show_toolbar_labels,
+            ui_show_scrollbar_minimap: self.ui_show_scrollbar_minimap,
+            ui_show_titlebar_telemetry: self.ui_show_titlebar_telemetry,
+            ui_start_sidebar_collapsed: self.ui_start_sidebar_collapsed,
+            ui_accent_override: self.ui_accent_override,
         };
         settings.validate().map_err(|e| e.to_string())?;
         Ok(settings)
@@ -326,14 +353,91 @@ impl SettingsModalState {
             SettingsAction::ToggleShowAddPaused => {
                 self.draft.ui_show_add_paused = !self.draft.ui_show_add_paused;
             }
+            SettingsAction::SetTableDensity(density) => {
+                self.draft.ui_table_density = density;
+            }
+            SettingsAction::ToggleSpeedCol => {
+                self.draft.ui_show_speed_col = !self.draft.ui_show_speed_col;
+            }
+            SettingsAction::ToggleEtaCol => {
+                self.draft.ui_show_eta_col = !self.draft.ui_show_eta_col;
+            }
+            SettingsAction::ToggleSegsCol => {
+                self.draft.ui_show_segs_col = !self.draft.ui_show_segs_col;
+            }
+            SettingsAction::ToggleToolbarLabels => {
+                self.draft.ui_show_toolbar_labels = !self.draft.ui_show_toolbar_labels;
+            }
+            SettingsAction::ToggleScrollbarMinimap => {
+                self.draft.ui_show_scrollbar_minimap = !self.draft.ui_show_scrollbar_minimap;
+            }
+            SettingsAction::ToggleTitlebarTelemetry => {
+                self.draft.ui_show_titlebar_telemetry = !self.draft.ui_show_titlebar_telemetry;
+            }
+            SettingsAction::ToggleStartSidebarCollapsed => {
+                self.draft.ui_start_sidebar_collapsed = !self.draft.ui_start_sidebar_collapsed;
+            }
+            SettingsAction::SetAccentOverride(accent) => {
+                self.draft.ui_accent_override = accent;
+                crate::theme::apply_theme_with_accent(
+                    &self.draft.ui_theme,
+                    self.draft.ui_accent_override.as_deref(),
+                    Some(window),
+                    cx,
+                );
+            }
             SettingsAction::SetTheme(theme_id) => {
-                let palette = crate::theme::apply_theme(&theme_id, Some(window), cx);
+                let palette = crate::theme::apply_theme_with_accent(
+                    &theme_id,
+                    self.draft.ui_accent_override.as_deref(),
+                    Some(window),
+                    cx,
+                );
                 self.draft.ui_theme = palette.id.to_string();
+            }
+            SettingsAction::CopyConfigJson => {
+                if let Ok(settings) = self.apply_to_settings(cx) {
+                    let payload = serde_json::json!({
+                        "default_output_dir": settings.default_output_dir,
+                        "max_workers": settings.max_workers,
+                        "max_concurrent_downloads": settings.max_concurrent_downloads,
+                        "sync_on_complete": settings.sync_on_complete,
+                        "proxy_mode": format!("{:?}", settings.proxy_mode),
+                        "proxy_url": settings.proxy_url,
+                        "download_speed_limit_kib": settings.download_speed_limit_kib,
+                        "auto_categorize_folders": settings.auto_categorize_folders,
+                        "collision_policy": format!("{:?}", settings.collision_policy),
+                        "delete_action_default": format!("{:?}", settings.delete_action_default),
+                        "auto_retry_count": settings.auto_retry_count,
+                        "completion_cmd_enabled": settings.completion_cmd_enabled,
+                        "completion_cmd_path": settings.completion_cmd_path,
+                        "completion_cmd_args": settings.completion_cmd_args,
+                        "ui_theme": settings.ui_theme,
+                        "ui_accent_override": settings.ui_accent_override,
+                        "ui_zoom_percent": settings.ui_zoom_percent,
+                        "ui_table_density": settings.ui_table_density.as_str(),
+                        "ui_show_speed_col": settings.ui_show_speed_col,
+                        "ui_show_eta_col": settings.ui_show_eta_col,
+                        "ui_show_segs_col": settings.ui_show_segs_col,
+                        "ui_show_toolbar_labels": settings.ui_show_toolbar_labels,
+                        "ui_show_scrollbar_minimap": settings.ui_show_scrollbar_minimap,
+                        "ui_show_titlebar_telemetry": settings.ui_show_titlebar_telemetry,
+                        "ui_start_sidebar_collapsed": settings.ui_start_sidebar_collapsed,
+                    });
+                    if let Ok(pretty) = serde_json::to_string_pretty(&payload) {
+                        cx.write_to_clipboard(ClipboardItem::new_string(pretty));
+                    }
+                }
             }
             SettingsAction::ResetToDefaults => {
                 *self = Self::from_settings(&Settings::default(), window, cx);
                 self.active_tab = SettingsTab::Reset;
-                crate::theme::apply_theme(&self.draft.ui_theme, Some(window), cx);
+                crate::theme::apply_theme_with_accent(
+                    &self.draft.ui_theme,
+                    self.draft.ui_accent_override.as_deref(),
+                    Some(window),
+                    cx,
+                );
             }
         }
     }
@@ -372,6 +476,16 @@ pub(crate) enum SettingsAction {
     ToggleNotifyOnlyInactive,
     ToggleClickOpensInspector,
     ToggleShowAddPaused,
+    SetTableDensity(TableDensity),
+    ToggleSpeedCol,
+    ToggleEtaCol,
+    ToggleSegsCol,
+    ToggleToolbarLabels,
+    ToggleScrollbarMinimap,
+    ToggleTitlebarTelemetry,
+    ToggleStartSidebarCollapsed,
+    SetAccentOverride(Option<String>),
+    CopyConfigJson,
     ResetToDefaults,
 }
 
@@ -1100,6 +1214,8 @@ where
     div()
         .flex()
         .flex_col()
+        .gap_3()
+        .child(section_heading("Workspace & Chrome"))
         .child(
             div()
                 .pb_2p5()
@@ -1107,7 +1223,7 @@ where
                 .border_color(graphite_border())
                 .flex()
                 .flex_col()
-                .gap_2p5()
+                .gap_2()
                 .child(toggle_row(
                     "ui-click-insp",
                     "Open Byte-Map Inspector on Click",
@@ -1123,8 +1239,93 @@ where
                     state.draft.ui_show_add_paused,
                     SettingsAction::ToggleShowAddPaused,
                     on_action.clone(),
+                ))
+                .child(toggle_row(
+                    "ui-start-rail",
+                    "Start with Sidebar Collapsed",
+                    "Launch into the compact left icon rail instead of the expanded filter rail.",
+                    state.draft.ui_start_sidebar_collapsed,
+                    SettingsAction::ToggleStartSidebarCollapsed,
+                    on_action.clone(),
+                ))
+                .child(toggle_row(
+                    "ui-titlebar-tel",
+                    "Show Live Telemetry in Titlebar",
+                    "Display active transfer slots, throughput, and queue count in the top bar.",
+                    state.draft.ui_show_titlebar_telemetry,
+                    SettingsAction::ToggleTitlebarTelemetry,
+                    on_action.clone(),
+                ))
+                .child(toggle_row(
+                    "ui-toolbar-labels",
+                    "Show Toolbar Button Labels",
+                    "Display text labels on top-bar action cells (uncheck for icon-only cells).",
+                    state.draft.ui_show_toolbar_labels,
+                    SettingsAction::ToggleToolbarLabels,
+                    on_action.clone(),
+                ))
+                .child(toggle_row(
+                    "ui-minimap",
+                    "Show Scrollbar Minimap",
+                    "Highlight Active and Failed row positions along the table scrollbar rail.",
+                    state.draft.ui_show_scrollbar_minimap,
+                    SettingsAction::ToggleScrollbarMinimap,
+                    on_action.clone(),
                 )),
         )
+        .child(section_heading("Table Density & Columns"))
+        .child(setting_row(
+            "Table Row Density",
+            "Control vertical row height across the virtualized Downloads table.",
+            segmented_track()
+                .child(choice_btn(
+                    "density-compact",
+                    "COMPACT",
+                    state.draft.ui_table_density == TableDensity::Compact,
+                    SettingsAction::SetTableDensity(TableDensity::Compact),
+                    on_action.clone(),
+                ))
+                .child(choice_btn(
+                    "density-standard",
+                    "STANDARD",
+                    state.draft.ui_table_density == TableDensity::Standard,
+                    SettingsAction::SetTableDensity(TableDensity::Standard),
+                    on_action.clone(),
+                ))
+                .child(choice_btn(
+                    "density-comfortable",
+                    "COMFORTABLE",
+                    state.draft.ui_table_density == TableDensity::Comfortable,
+                    SettingsAction::SetTableDensity(TableDensity::Comfortable),
+                    on_action.clone(),
+                )),
+        ))
+        .child(setting_row(
+            "Visible Columns",
+            "Toggle optional telemetry columns (automatically hidden on narrow windows).",
+            segmented_track()
+                .child(choice_btn(
+                    "col-speed",
+                    "SPEED",
+                    state.draft.ui_show_speed_col,
+                    SettingsAction::ToggleSpeedCol,
+                    on_action.clone(),
+                ))
+                .child(choice_btn(
+                    "col-eta",
+                    "ETA",
+                    state.draft.ui_show_eta_col,
+                    SettingsAction::ToggleEtaCol,
+                    on_action.clone(),
+                ))
+                .child(choice_btn(
+                    "col-segs",
+                    "SEGS",
+                    state.draft.ui_show_segs_col,
+                    SettingsAction::ToggleSegsCol,
+                    on_action.clone(),
+                )),
+        ))
         .child(setting_row(
             "Interface Scale",
             "Adjust overall text and control sizing.",
@@ -1158,11 +1359,81 @@ where
                     on_action.clone(),
                 )),
         ))
+        .child(section_heading("Accent Override"))
         .child(
             div()
-                .pt_3()
-                .border_t_1()
-                .border_color(graphite_border())
+                .flex()
+                .flex_wrap()
+                .gap_1p5()
+                .child({
+                    let active = state.draft.ui_accent_override.is_none();
+                    let act = on_action.clone();
+                    div()
+                        .id("accent-default")
+                        .h(px(28.0))
+                        .px_2p5()
+                        .border_1()
+                        .border_color(if active {
+                            selenium_amber()
+                        } else {
+                            graphite_border()
+                        })
+                        .bg(if active {
+                            graphite_elevated()
+                        } else {
+                            graphite_bg()
+                        })
+                        .hover(|s| s.bg(graphite_elevated()))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .font_family(MONO_FONT)
+                        .text_size(TYPE_MICRO)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(if active { silver_text() } else { silver_muted() })
+                        .on_click(move |_, window, cx| {
+                            act(SettingsAction::SetAccentOverride(None), window, cx);
+                        })
+                        .child("THEME DEFAULT")
+                })
+                .children(ACCENT_PRESETS.iter().map(|preset| {
+                    let active = state.draft.ui_accent_override.as_deref() == Some(preset.id);
+                    let act = on_action.clone();
+                    let pid = preset.id.to_string();
+                    div()
+                        .id(SharedString::from(format!("accent-{}", preset.id)))
+                        .h(px(28.0))
+                        .px_2p5()
+                        .border_1()
+                        .border_color(if active {
+                            rgb(preset.accent).into()
+                        } else {
+                            graphite_border()
+                        })
+                        .bg(if active {
+                            graphite_elevated()
+                        } else {
+                            graphite_bg()
+                        })
+                        .hover(|s| s.bg(graphite_elevated()))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .gap_1p5()
+                        .font_family(MONO_FONT)
+                        .text_size(TYPE_MICRO)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(if active { silver_text() } else { silver_muted() })
+                        .on_click(move |_, window, cx| {
+                            act(SettingsAction::SetAccentOverride(Some(pid.clone())), window, cx);
+                        })
+                        .child(swatch_dot(preset.accent))
+                        .child(preset.name.to_uppercase())
+                })),
+        )
+        .child(
+            div()
+                .pt_2()
                 .flex()
                 .flex_col()
                 .gap_2()
@@ -1258,7 +1529,7 @@ where
 
 fn render_reset_tab<F>(on_action: F) -> AnyElement
 where
-    F: Fn(SettingsAction, &mut Window, &mut App) + 'static,
+    F: Fn(SettingsAction, &mut Window, &mut App) + Clone + 'static,
 {
     div()
         .flex()
@@ -1273,11 +1544,31 @@ where
                 .text_xs()
                 .line_height(px(18.0))
                 .text_color(silver_muted())
-                .child("Restores save folder, collision and removal rules, proxy, speed limit, notifications, post-download command, and interface scale to factory defaults. Downloads in your Queue are kept untouched."),
+                .child("Export your active configuration as JSON, or restore save folder, collision and removal rules, proxy, speed limit, notifications, post-download command, and interface customization to factory defaults. Downloads in your Queue are kept untouched."),
         )
         .child(
             div()
                 .flex()
+                .gap_2()
+                .child({
+                    let act = on_action.clone();
+                    div()
+                        .h(px(32.0))
+                        .border_1()
+                        .border_color(graphite_border())
+                        .child(grid_cell_button(
+                            "settings-copy-json",
+                            Some(IconName::Copy),
+                            Some("COPY CONFIG JSON"),
+                            Some("Copy current settings as formatted JSON"),
+                            GridTone::Graphite,
+                            CellBorder::None,
+                            false,
+                            move |_, window, cx| {
+                                act(SettingsAction::CopyConfigJson, window, cx);
+                            },
+                        ))
+                })
                 .child(
                     div()
                         .h(px(32.0))

@@ -16,7 +16,7 @@ use crate::model::{PlannedSegment, SegmentCheckpoint};
 use crate::probe::ProbeResult;
 use crate::{
     CollisionPolicy, DeleteDefaultAction, DownloadId, DownloadRequest, DownloadState, EngineError,
-    FailureKind, ProxyMode, Settings,
+    FailureKind, ProxyMode, Settings, TableDensity,
 };
 
 const DOWNLOAD_SELECT_COLUMNS: &str = "
@@ -637,7 +637,10 @@ impl DownloadStore {
                     collision_policy, delete_action_default, auto_retry_count,
                     completion_cmd_enabled, completion_cmd_path, completion_cmd_args,
                     notify_on_added, notify_on_completed, notify_on_failed, notify_only_inactive,
-                    ui_click_row_opens_inspector, ui_show_add_paused, ui_zoom_percent, ui_theme
+                    ui_click_row_opens_inspector, ui_show_add_paused, ui_zoom_percent, ui_theme,
+                    ui_table_density, ui_show_speed_col, ui_show_eta_col, ui_show_segs_col,
+                    ui_show_toolbar_labels, ui_show_scrollbar_minimap,
+                    ui_show_titlebar_telemetry, ui_start_sidebar_collapsed, ui_accent_override
              FROM settings WHERE id = 1",
         )
         .fetch_one(&self.pool)
@@ -685,6 +688,21 @@ impl DownloadStore {
         } else {
             ui_theme_raw
         };
+        let ui_table_density =
+            TableDensity::from_db(row.try_get::<String, _>("ui_table_density")?.as_str());
+        let ui_show_speed_col = row.try_get::<i64, _>("ui_show_speed_col")? != 0;
+        let ui_show_eta_col = row.try_get::<i64, _>("ui_show_eta_col")? != 0;
+        let ui_show_segs_col = row.try_get::<i64, _>("ui_show_segs_col")? != 0;
+        let ui_show_toolbar_labels = row.try_get::<i64, _>("ui_show_toolbar_labels")? != 0;
+        let ui_show_scrollbar_minimap = row.try_get::<i64, _>("ui_show_scrollbar_minimap")? != 0;
+        let ui_show_titlebar_telemetry = row.try_get::<i64, _>("ui_show_titlebar_telemetry")? != 0;
+        let ui_start_sidebar_collapsed = row.try_get::<i64, _>("ui_start_sidebar_collapsed")? != 0;
+        let ui_accent_override: Option<String> = row
+            .try_get::<Option<String>, _>("ui_accent_override")?
+            .and_then(|s| {
+                let t = s.trim();
+                (!t.is_empty()).then(|| t.to_string())
+            });
 
         Ok(Settings {
             default_output_dir: PathBuf::from(dir_str),
@@ -709,6 +727,15 @@ impl DownloadStore {
             ui_show_add_paused,
             ui_zoom_percent,
             ui_theme,
+            ui_table_density,
+            ui_show_speed_col,
+            ui_show_eta_col,
+            ui_show_segs_col,
+            ui_show_toolbar_labels,
+            ui_show_scrollbar_minimap,
+            ui_show_titlebar_telemetry,
+            ui_start_sidebar_collapsed,
+            ui_accent_override,
         })
     }
 
@@ -737,7 +764,16 @@ impl DownloadStore {
                  ui_click_row_opens_inspector = ?,
                  ui_show_add_paused = ?,
                  ui_zoom_percent = ?,
-                 ui_theme = ?
+                 ui_theme = ?,
+                 ui_table_density = ?,
+                 ui_show_speed_col = ?,
+                 ui_show_eta_col = ?,
+                 ui_show_segs_col = ?,
+                 ui_show_toolbar_labels = ?,
+                 ui_show_scrollbar_minimap = ?,
+                 ui_show_titlebar_telemetry = ?,
+                 ui_start_sidebar_collapsed = ?,
+                 ui_accent_override = ?
              WHERE id = 1",
         )
         .bind(settings.default_output_dir.to_string_lossy().into_owned())
@@ -762,6 +798,15 @@ impl DownloadStore {
         .bind(i64::from(settings.ui_show_add_paused))
         .bind(i64::from(settings.ui_zoom_percent))
         .bind(&settings.ui_theme)
+        .bind(settings.ui_table_density.as_str())
+        .bind(i64::from(settings.ui_show_speed_col))
+        .bind(i64::from(settings.ui_show_eta_col))
+        .bind(i64::from(settings.ui_show_segs_col))
+        .bind(i64::from(settings.ui_show_toolbar_labels))
+        .bind(i64::from(settings.ui_show_scrollbar_minimap))
+        .bind(i64::from(settings.ui_show_titlebar_telemetry))
+        .bind(i64::from(settings.ui_start_sidebar_collapsed))
+        .bind(&settings.ui_accent_override)
         .execute(&self.pool)
         .await?;
         Ok(())

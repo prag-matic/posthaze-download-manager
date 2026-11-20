@@ -338,6 +338,47 @@ pub fn categorize_subfolder(filename: &str) -> Option<&'static str> {
     }
 }
 
+/// Row height and padding density for the `Downloads` table UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TableDensity {
+    /// High-density 30px rows for large queues.
+    Compact,
+    /// Balanced 38px rows (default).
+    #[default]
+    Standard,
+    /// Relaxed 46px rows with extra vertical breathing room.
+    Comfortable,
+}
+
+impl TableDensity {
+    /// Returns the persisted database string representation.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Compact => "compact",
+            Self::Standard => "standard",
+            Self::Comfortable => "comfortable",
+        }
+    }
+
+    /// Parses a persisted density identifier, defaulting to [`TableDensity::Standard`].
+    pub fn from_db(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "compact" => Self::Compact,
+            "comfortable" => Self::Comfortable,
+            _ => Self::Standard,
+        }
+    }
+
+    /// Returns the logical pixel height of a single `Downloads` table row.
+    pub fn row_height_px(self) -> f32 {
+        match self {
+            Self::Compact => 30.0,
+            Self::Standard => 38.0,
+            Self::Comfortable => 46.0,
+        }
+    }
+}
+
 /// Persisted application configuration for [`DownloadEngine`](crate::DownloadEngine).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
@@ -385,6 +426,24 @@ pub struct Settings {
     pub ui_zoom_percent: u16,
     /// Active UI color theme identifier (e.g. `"chronophotographic"`, `"cyanotype"`, `"archival"`).
     pub ui_theme: String,
+    /// Row height density preset for the `Downloads` table.
+    pub ui_table_density: TableDensity,
+    /// Whether the `SPEED` column is shown in the `Downloads` table.
+    pub ui_show_speed_col: bool,
+    /// Whether the `ETA` column is shown in the `Downloads` table.
+    pub ui_show_eta_col: bool,
+    /// Whether the `SEGS` column is shown in the `Downloads` table.
+    pub ui_show_segs_col: bool,
+    /// Whether top-toolbar action cells show text labels alongside icons.
+    pub ui_show_toolbar_labels: bool,
+    /// Whether the vertical scrollbar rail renders `Active`/`Failed` row minimap ticks.
+    pub ui_show_scrollbar_minimap: bool,
+    /// Whether the custom titlebar displays live `Queue` telemetry.
+    pub ui_show_titlebar_telemetry: bool,
+    /// Whether the left filter rail starts collapsed on launch.
+    pub ui_start_sidebar_collapsed: bool,
+    /// Optional accent color preset override identifier (e.g. `"amber"`, `"blue"`, `"emerald"`).
+    pub ui_accent_override: Option<String>,
 }
 
 impl Default for Settings {
@@ -412,6 +471,15 @@ impl Default for Settings {
             ui_show_add_paused: true,
             ui_zoom_percent: 100,
             ui_theme: "chronophotographic".to_string(),
+            ui_table_density: TableDensity::Standard,
+            ui_show_speed_col: true,
+            ui_show_eta_col: true,
+            ui_show_segs_col: true,
+            ui_show_toolbar_labels: true,
+            ui_show_scrollbar_minimap: true,
+            ui_show_titlebar_telemetry: true,
+            ui_start_sidebar_collapsed: false,
+            ui_accent_override: None,
         }
     }
 }

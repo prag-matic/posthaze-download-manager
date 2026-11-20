@@ -89,6 +89,17 @@ pub struct LayoutProfile {
     pub effective_inspector_height: f32,
 }
 
+impl LayoutProfile {
+    /// Applies persisted `Settings` column and toolbar-label preferences onto this responsive profile.
+    pub fn with_settings(mut self, settings: &Settings) -> Self {
+        self.show_speed &= settings.ui_show_speed_col;
+        self.show_eta &= settings.ui_show_eta_col;
+        self.show_segs &= settings.ui_show_segs_col;
+        self.compact_toolbar |= !settings.ui_show_toolbar_labels;
+        self
+    }
+}
+
 /// Computes adaptive table/toolbar visibility and viewport-safe inspector height.
 pub fn compute_layout_profile(
     right_width: f32,

@@ -44,6 +44,15 @@ async fn extended_settings_round_trip_and_categorize_helpers() {
         ui_show_add_paused: false,
         ui_zoom_percent: 110,
         ui_theme: "cyanotype".to_string(),
+        ui_table_density: posthaze_engine::TableDensity::Compact,
+        ui_show_speed_col: false,
+        ui_show_eta_col: true,
+        ui_show_segs_col: false,
+        ui_show_toolbar_labels: false,
+        ui_show_scrollbar_minimap: false,
+        ui_show_titlebar_telemetry: false,
+        ui_start_sidebar_collapsed: true,
+        ui_accent_override: Some("emerald".to_string()),
     };
 
     {

@@ -234,6 +234,74 @@ pub const BUILTIN_THEMES: [ThemePalette; 5] = [
     ARCHIVAL_PAPER,
 ];
 
+/// Optional accent override preset layered over a [`ThemePalette`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AccentPreset {
+    /// Persisted override identifier (stored in `Settings.ui_accent_override`).
+    pub id: &'static str,
+    /// Human-readable label shown in Settings > Interface.
+    pub name: &'static str,
+    pub accent: u32,
+    pub accent_hover: u32,
+    pub accent_active: u32,
+    pub accent_foreground: u32,
+    pub focus_ring: u32,
+}
+
+/// Curated accent override presets for Settings > Interface.
+pub const ACCENT_PRESETS: &[AccentPreset] = &[
+    AccentPreset {
+        id: "amber",
+        name: "Selenium Amber",
+        accent: 0xE58A35,
+        accent_hover: 0xF59E42,
+        accent_active: 0xCC7524,
+        accent_foreground: 0x141311,
+        focus_ring: 0xE58A35,
+    },
+    AccentPreset {
+        id: "blue",
+        name: "Cyanotype Blue",
+        accent: 0x3B82F6,
+        accent_hover: 0x60A5FA,
+        accent_active: 0x2563EB,
+        accent_foreground: 0xFFFFFF,
+        focus_ring: 0x3B82F6,
+    },
+    AccentPreset {
+        id: "emerald",
+        name: "Halide Emerald",
+        accent: 0x22C55E,
+        accent_hover: 0x4ADE80,
+        accent_active: 0x16A34A,
+        accent_foreground: 0x0A0B0A,
+        focus_ring: 0x22C55E,
+    },
+    AccentPreset {
+        id: "cyan",
+        name: "Phosphor Cyan",
+        accent: 0x22D3EE,
+        accent_hover: 0x67E8F9,
+        accent_active: 0x06B6D4,
+        accent_foreground: 0x090D14,
+        focus_ring: 0x22D3EE,
+    },
+    AccentPreset {
+        id: "crimson",
+        name: "Errata Crimson",
+        accent: 0xEF4444,
+        accent_hover: 0xF87171,
+        accent_active: 0xDC2626,
+        accent_foreground: 0xFFFFFF,
+        focus_ring: 0xEF4444,
+    },
+];
+
+/// Looks up an [`AccentPreset`] by `id`.
+pub fn find_accent_preset(id: &str) -> Option<&'static AccentPreset> {
+    ACCENT_PRESETS.iter().find(|p| p.id == id)
+}
+
 static ACTIVE_THEME: RwLock<ThemePalette> = RwLock::new(CHRONOPHOTOGRAPHIC);
 
 /// Looks up a built-in [`ThemePalette`] by `id`, falling back to [`CHRONOPHOTOGRAPHIC`].
@@ -251,18 +319,30 @@ pub fn active_theme() -> ThemePalette {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Sets the active palette without mutating GPUI globals (useful in unit tests).
-pub fn set_active_theme(id: &str) -> &'static ThemePalette {
-    let palette = find_theme(id);
+/// Sets the active palette with an optional accent preset override and returns the resolved copy.
+pub fn set_active_theme_with_accent(id: &str, accent_override: Option<&str>) -> ThemePalette {
+    let mut palette = *find_theme(id);
+    if let Some(preset) = accent_override.and_then(find_accent_preset) {
+        palette.accent = preset.accent;
+        palette.accent_hover = preset.accent_hover;
+        palette.accent_active = preset.accent_active;
+        palette.accent_foreground = preset.accent_foreground;
+        palette.focus_ring = preset.focus_ring;
+    }
     *ACTIVE_THEME
         .write()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = *palette;
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = palette;
     palette
 }
 
-/// Activates `id` and synchronizes `gpui_kit::component::Theme` globals.
-pub fn apply_theme(id: &str, window: Option<&mut Window>, cx: &mut App) -> &'static ThemePalette {
-    let palette = set_active_theme(id);
+/// Activates `id` with an optional accent override and synchronizes `gpui_kit::component::Theme` globals.
+pub fn apply_theme_with_accent(
+    id: &str,
+    accent_override: Option<&str>,
+    window: Option<&mut Window>,
+    cx: &mut App,
+) -> ThemePalette {
+    let palette = set_active_theme_with_accent(id, accent_override);
     let mode = match palette.tone {
         PaletteTone::Dark => ThemeMode::Dark,
         PaletteTone::Light => ThemeMode::Light,
@@ -314,6 +394,12 @@ pub fn apply_theme(id: &str, window: Option<&mut Window>, cx: &mut App) -> &'sta
     theme.tokens.button_active.background = rgb(palette.paper_selected).into();
 
     palette
+}
+
+/// Activates `id` without an accent override.
+#[allow(dead_code)]
+pub fn apply_theme(id: &str, window: Option<&mut Window>, cx: &mut App) -> ThemePalette {
+    apply_theme_with_accent(id, None, window, cx)
 }
 
 /// Rail & bottom inspector background.
