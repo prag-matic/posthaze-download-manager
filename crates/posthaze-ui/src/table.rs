@@ -32,80 +32,87 @@ const COL_ACTIONS: f32 = 148.0;
 impl PosthazeApp {
     pub(crate) fn render_toolbar(&self, profile: LayoutProfile, cx: &mut Context<Self>) -> impl IntoElement {
         div()
-            .h(px(40.0))
             .w_full()
             .flex()
-            .items_center()
-            .pr(px(20.0))
-            .bg(paper_bg())
-            .border_b_1()
-            .border_color(paper_border())
-            // 3px intake accent bar + 13px margin = 16px left offset matching table header & rows
+            .flex_col()
             .child(
                 div()
-                    .w(px(3.0))
-                    .flex_shrink_0()
-                    .h_full()
-                    .mr(px(13.0))
-                    .bg(selenium_amber()),
-            )
-            // STATE-aligned intake label cell (matches COL_STATE vertical grid line)
-            .child(
-                div()
-                    .w(px(COL_STATE))
-                    .flex_shrink_0()
-                    .h_full()
-                    .pr_2()
-                    .border_r_1()
-                    .border_color(paper_border())
+                    .h(px(40.0))
+                    .w_full()
                     .flex()
                     .items_center()
-                    .gap_1p5()
-                    .font_family(MONO_FONT)
-                    .text_size(TYPE_MICRO)
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(selenium_amber())
+                    .pl_4()
+                    .pr(px(20.0))
+                    .bg(paper_bg())
+                    .border_b_1()
+                    .border_color(paper_border())
+                    // STATE-aligned ADD URL label cell (matches COL_STATE vertical grid line)
                     .child(
-                        Icon::new(IconName::Plus)
-                            .size(px(13.0))
-                            .text_color(selenium_amber()),
+                        div()
+                            .w(px(COL_STATE))
+                            .flex_shrink_0()
+                            .h_full()
+                            .pr_2()
+                            .border_r_1()
+                            .border_color(paper_border())
+                            .flex()
+                            .items_center()
+                            .gap_1p5()
+                            .font_family(MONO_FONT)
+                            .text_size(TYPE_MICRO)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(carbon_muted())
+                            .child(
+                                Icon::new(IconName::Plus)
+                                    .size(px(13.0))
+                                    .text_color(carbon_muted()),
+                            )
+                            .child("ADD URL"),
                     )
-                    .child("INTAKE"),
-            )
-            // FILENAME-aligned URL intake cell
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(180.0))
-                    .h_full()
-                    .px_2()
-                    .border_r_1()
-                    .border_color(paper_border())
-                    .bg(graphite_bg().opacity(0.45))
-                    .flex()
-                    .items_center()
-                    .gap_1p5()
+                    // FILENAME-aligned URL intake cell
                     .child(
                         div()
                             .flex_1()
-                            .min_w_0()
-                            .font_family(MONO_FONT)
-                            .text_size(TYPE_BODY)
-                            .child(Input::new(&self.url_input).appearance(false)),
+                            .min_w(px(180.0))
+                            .h_full()
+                            .px_2()
+                            .border_r_1()
+                            .border_color(paper_border())
+                            .bg(graphite_bg().opacity(0.45))
+                            .flex()
+                            .items_center()
+                            .gap_1p5()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .font_family(MONO_FONT)
+                                    .text_size(TYPE_BODY)
+                                    .child(Input::new(&self.url_input).appearance(false)),
+                            )
+                            .child(
+                                Button::new("paste-probe")
+                                    .xsmall()
+                                    .primary()
+                                    .icon(IconName::ClipboardPaste)
+                                    .tooltip("Paste & Probe")
+                                    .on_click(cx.listener(|app, _, window, cx| {
+                                        app.paste_and_probe_from_clipboard(window, cx);
+                                    })),
+                            ),
                     )
-                    .child(
-                        Button::new("paste-probe")
-                            .xsmall()
-                            .primary()
-                            .icon(IconName::ClipboardPaste)
-                            .tooltip("Paste & Probe")
-                            .on_click(cx.listener(|app, _, window, cx| {
-                                app.paste_and_probe_from_clipboard(window, cx);
-                            })),
-                    ),
+                    // Extensible top-header tools slot
+                    .child(self.render_toolbar_tools(profile, cx)),
             )
-            // Extensible top-header tools slot
-            .child(self.render_toolbar_tools(profile, cx))
+            // Merged full-width separator row between toolbar and download list
+            .child(
+                div()
+                    .h(px(6.0))
+                    .w_full()
+                    .bg(table_header_bg())
+                    .border_b_1()
+                    .border_color(paper_border()),
+            )
     }
 
     /// Modular tool strip on the right of the top intake row; add future header tools here.
