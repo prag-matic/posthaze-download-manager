@@ -33,7 +33,7 @@ use posthaze_engine::{
 };
 
 use crate::assets::{BRAND_LOGO_SVG, PosthazeAssets};
-use crate::bridge::EngineBridge;
+use crate::bridge::{EngineBridge, EngineCommand, EngineSnapshot};
 use crate::context_menu::{ContextMenuAction, ContextMenuState, render_context_menu};
 use crate::curl_parser::{find_header_value, parse_url_or_curl, set_or_remove_header};
 use crate::inspector::{InspectorCallbacks, render_inspector};
@@ -171,38 +171,26 @@ impl PosthazeApp {
         app
     }
 
-    fn refresh_from_engine(&self, cx: &mut Context<Self>) {
-        let rx = self.bridge.dispatch(move |engine| async move {
-            let records = engine.list_downloads().await;
-            let settings = engine.get_settings().await;
-            let mut all_segments = HashMap::new();
-            if let Ok(ref recs) = records {
-                for rec in recs {
-                    if let Ok(segs) = engine.list_segments(&rec.id).await
-                        && !segs.is_empty()
-                    {
-                        all_segments.insert(rec.id.clone(), segs);
-                    }
-                }
+    fn apply_snapshot(&mut self, snapshot: EngineSnapshot, cx: &mut Context<Self>) {
+        self.records = snapshot.records;
+        self.settings = snapshot.settings;
+        theme::apply_theme(&self.settings.ui_theme, None, cx);
+        self.persisted_segments = snapshot.segments;
+        if self.selected_id.is_none() {
+            self.selected_id = self.records.first().map(|r| r.id.clone());
+            if let Some(id) = self.selected_id.clone() {
+                self.load_segments_for(id, cx);
             }
-            (records, settings, all_segments)
-        });
+        }
+        cx.notify();
+    }
+
+    fn refresh_from_engine(&self, cx: &mut Context<Self>) {
+        let rx = self.bridge.load_snapshot();
         cx.spawn(async move |this, cx| {
-            if let Ok((Ok(records), Ok(settings), all_segments)) = rx.await {
+            if let Ok(Ok(snapshot)) = rx.await {
                 let _ = this.update(cx, |app, cx| {
-                    app.records = records;
-                    app.settings = settings;
-                    theme::apply_theme(&app.settings.ui_theme, None, cx);
-                    for (id, segs) in all_segments {
-                        app.persisted_segments.insert(id, segs);
-                    }
-                    if app.selected_id.is_none() {
-                        app.selected_id = app.records.first().map(|r| r.id.clone());
-                        if let Some(id) = app.selected_id.clone() {
-                            app.load_segments_for(id, cx);
-                        }
-                    }
-                    cx.notify();
+                    app.apply_snapshot(snapshot, cx);
                 });
             }
         })
@@ -210,9 +198,7 @@ impl PosthazeApp {
     }
 
     fn load_segments_for(&self, id: DownloadId, cx: &mut Context<Self>) {
-        let rx = self
-            .bridge
-            .dispatch(move |engine| async move { engine.list_segments(&id).await.map(|s| (id, s)) });
+        let rx = self.bridge.load_segments(id);
         cx.spawn(async move |this, cx| {
             if let Ok(Ok((id, segs))) = rx.await {
                 let _ = this.update(cx, |app, cx| {
@@ -434,13 +420,8 @@ impl PosthazeApp {
         let out_dir = self.settings.default_output_dir.clone();
         let default_workers = self.settings.max_workers.clamp(1, 32);
         let window_handle = window.window_handle();
-        let probe_url = url.clone();
         let probe_headers = headers.clone();
-        let rx = self.bridge.dispatch(move |engine| async move {
-            engine
-                .probe_with_headers(probe_url, out_dir, &probe_headers)
-                .await
-        });
+        let rx = self.bridge.probe(url.clone(), out_dir, probe_headers);
 
         cx.spawn(async move |this, cx| {
             let res = rx.await;
@@ -630,43 +611,23 @@ impl PosthazeApp {
         start_immediately: bool,
         cx: &mut Context<Self>,
     ) {
-
-        let rx = self.bridge.dispatch(move |engine| async move {
-            if start_immediately {
-                engine.start(req).await.map(|h| h.id().clone())
-            } else {
-                engine.enqueue_paused(req).await
+        let cmd = if start_immediately {
+            EngineCommand::Start { request: req }
+        } else {
+            EngineCommand::EnqueuePaused { request: req }
+        };
+        self.run_command_with(cmd, cx, move |app, created_id| {
+            if let Some(id) = created_id
+                && (start_immediately || app.selected_id.is_none())
+            {
+                app.selected_id = Some(id);
             }
+            app.status_banner = None;
         });
-        cx.spawn(async move |this, cx| {
-            let res = rx.await;
-            let _ = this.update(cx, |app, cx| {
-                match res {
-                    Ok(Ok(id)) => {
-                        if start_immediately || app.selected_id.is_none() {
-                            app.selected_id = Some(id);
-                        }
-                        app.status_banner = None;
-                        app.refresh_from_engine(cx);
-                    }
-                    Ok(Err(err)) => {
-                        app.status_banner = Some(format!("Failed to start download: {err}"));
-                    }
-                    Err(_) => {
-                        app.status_banner = Some("Engine bridge channel closed".to_string());
-                    }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
     }
 
     fn restart_fresh_download(&mut self, id: DownloadId, cx: &mut Context<Self>) {
-        let rx = self
-            .bridge
-            .dispatch(move |engine| async move { engine.restart_fresh(&id).await.map(|_| ()) });
-        self.run_unit_action(rx, cx);
+        self.run_command(EngineCommand::RestartFresh(id), cx);
     }
 
     fn open_settings_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -681,10 +642,7 @@ impl PosthazeApp {
         match modal.apply_to_settings(cx) {
             Ok(new_settings) => {
                 self.settings_modal = None;
-                let rx = self
-                    .bridge
-                    .dispatch(move |engine| async move { engine.update_settings(new_settings).await });
-                self.run_unit_action(rx, cx);
+                self.run_command(EngineCommand::UpdateSettings(new_settings), cx);
             }
             Err(err) => {
                 modal.error = Some(err);
@@ -706,24 +664,15 @@ impl PosthazeApp {
     }
 
     fn pause_download(&mut self, id: DownloadId, cx: &mut Context<Self>) {
-        let rx = self
-            .bridge
-            .dispatch(move |engine| async move { engine.pause(&id).await });
-        self.run_unit_action(rx, cx);
+        self.run_command(EngineCommand::Pause(id), cx);
     }
 
     fn resume_download(&mut self, id: DownloadId, cx: &mut Context<Self>) {
-        let rx = self
-            .bridge
-            .dispatch(move |engine| async move { engine.resume(&id).await.map(|_| ()) });
-        self.run_unit_action(rx, cx);
+        self.run_command(EngineCommand::Resume(id), cx);
     }
 
     fn cancel_download(&mut self, id: DownloadId, cx: &mut Context<Self>) {
-        let rx = self
-            .bridge
-            .dispatch(move |engine| async move { engine.cancel(&id).await });
-        self.run_unit_action(rx, cx);
+        self.run_command(EngineCommand::Cancel(id), cx);
     }
 
     fn request_delete_download(&mut self, id: DownloadId, filename: String, cx: &mut Context<Self>) {
@@ -752,10 +701,7 @@ impl PosthazeApp {
     }
 
     fn delete_download(&mut self, id: DownloadId, delete_file: bool, cx: &mut Context<Self>) {
-        let rx = self
-            .bridge
-            .dispatch(move |engine| async move { engine.delete(&id, delete_file).await });
-        self.run_unit_action(rx, cx);
+        self.run_command(EngineCommand::Delete { id, delete_file }, cx);
     }
 
     fn request_clear_completed(&mut self, cx: &mut Context<Self>) {
@@ -863,9 +809,7 @@ impl PosthazeApp {
                     error: None,
                 });
                 cx.notify();
-                let rx = self
-                    .bridge
-                    .dispatch(move |engine| async move { engine.compute_file_blake3(&id).await });
+                let rx = self.bridge.compute_blake3(id);
                 cx.spawn(async move |this, cx| {
                     let res = rx.await;
                     let _ = this.update(cx, |app, cx| {
@@ -952,10 +896,7 @@ impl PosthazeApp {
                 }
                 let id = id.clone();
                 self.file_op_modal = None;
-                let rx = self.bridge.dispatch(move |engine| async move {
-                    engine.rename_completed_file(&id, &new_name).await.map(|_| ())
-                });
-                self.run_unit_action(rx, cx);
+                self.run_command(EngineCommand::RenameFile { id, new_name }, cx);
             }
             FileOpModalState::Move { id, input, error } => {
                 let dir_str = input.read(cx).value().trim().to_string();
@@ -967,10 +908,7 @@ impl PosthazeApp {
                 let id = id.clone();
                 let target_dir = PathBuf::from(dir_str);
                 self.file_op_modal = None;
-                let rx = self.bridge.dispatch(move |engine| async move {
-                    engine.move_completed_file(&id, target_dir).await.map(|_| ())
-                });
-                self.run_unit_action(rx, cx);
+                self.run_command(EngineCommand::MoveFile { id, target_dir }, cx);
             }
             FileOpModalState::Integrity { .. } => {
                 self.file_op_modal = None;
@@ -1016,13 +954,7 @@ impl PosthazeApp {
             .filter(|r| matches!(r.state, DownloadState::Paused | DownloadState::Failed))
             .map(|r| r.id.clone())
             .collect();
-        let rx = self.bridge.dispatch(move |engine| async move {
-            for id in ids {
-                let _ = engine.resume(&id).await;
-            }
-            Ok(())
-        });
-        self.run_unit_action(rx, cx);
+        self.run_command(EngineCommand::ResumeMany(ids), cx);
     }
 
     fn pause_all(&mut self, cx: &mut Context<Self>) {
@@ -1037,13 +969,7 @@ impl PosthazeApp {
             })
             .map(|r| r.id.clone())
             .collect();
-        let rx = self.bridge.dispatch(move |engine| async move {
-            for id in ids {
-                let _ = engine.pause(&id).await;
-            }
-            Ok(())
-        });
-        self.run_unit_action(rx, cx);
+        self.run_command(EngineCommand::PauseMany(ids), cx);
     }
 
     fn clear_completed(&mut self, cx: &mut Context<Self>) {
@@ -1053,33 +979,42 @@ impl PosthazeApp {
             .filter(|r| matches!(r.state, DownloadState::Completed | DownloadState::Cancelled))
             .map(|r| r.id.clone())
             .collect();
-        let rx = self.bridge.dispatch(move |engine| async move {
-            for id in ids {
-                let _ = engine.delete(&id, false).await;
-            }
-            Ok(())
-        });
-        self.run_unit_action(rx, cx);
+        self.run_command(
+            EngineCommand::DeleteMany {
+                ids,
+                delete_file: false,
+            },
+            cx,
+        );
     }
 
-    fn run_unit_action(
+    fn run_command(&self, command: EngineCommand, cx: &mut Context<Self>) {
+        self.run_command_with(command, cx, |_, _| {});
+    }
+
+    fn run_command_with<F>(
         &self,
-        rx: tokio::sync::oneshot::Receiver<Result<(), posthaze_engine::EngineError>>,
+        command: EngineCommand,
         cx: &mut Context<Self>,
-    ) {
+        on_success: F,
+    ) where
+        F: FnOnce(&mut Self, Option<DownloadId>) + 'static,
+    {
+        let rx = self.bridge.execute(command);
         cx.spawn(async move |this, cx| {
             let result = rx.await;
-            let _ = this.update(cx, |app, cx| {
-                match result {
-                    Ok(Ok(())) => app.refresh_from_engine(cx),
-                    Ok(Err(err)) => {
-                        app.status_banner = Some(err.to_string());
-                        cx.notify();
-                    }
-                    Err(_) => {
-                        app.status_banner = Some("Engine bridge channel closed".to_string());
-                        cx.notify();
-                    }
+            let _ = this.update(cx, |app, cx| match result {
+                Ok(Ok(outcome)) => {
+                    on_success(app, outcome.created_id);
+                    app.apply_snapshot(outcome.snapshot, cx);
+                }
+                Ok(Err(err)) => {
+                    app.status_banner = Some(err.to_string());
+                    cx.notify();
+                }
+                Err(_) => {
+                    app.status_banner = Some("Engine bridge channel closed".to_string());
+                    cx.notify();
                 }
             });
         })
