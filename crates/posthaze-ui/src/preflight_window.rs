@@ -491,6 +491,7 @@ impl PreflightWindow {
                         el.child(
                             div()
                                 .id("pf-tb-add")
+                                .relative()
                                 .h_full()
                                 .px_2p5()
                                 .border_r_1()
@@ -504,8 +505,15 @@ impl PreflightWindow {
                                 .when(tab == PreflightTab::General, |el| {
                                     el.bg(graphite_elevated())
                                         .text_color(silver_text())
-                                        .border_b_2()
-                                        .border_color(selenium_amber())
+                                        .child(
+                                            div()
+                                                .absolute()
+                                                .bottom_0()
+                                                .left_0()
+                                                .right_0()
+                                                .h(px(2.0))
+                                                .bg(selenium_amber()),
+                                        )
                                 })
                                 .when(tab != PreflightTab::General, |el| {
                                     el.text_color(silver_muted())
@@ -522,6 +530,7 @@ impl PreflightWindow {
                         .child(
                             div()
                                 .id("pf-tb-options")
+                                .relative()
                                 .h_full()
                                 .px_2p5()
                                 .border_r_1()
@@ -535,8 +544,15 @@ impl PreflightWindow {
                                 .when(tab == PreflightTab::Options, |el| {
                                     el.bg(graphite_elevated())
                                         .text_color(silver_text())
-                                        .border_b_2()
-                                        .border_color(selenium_amber())
+                                        .child(
+                                            div()
+                                                .absolute()
+                                                .bottom_0()
+                                                .left_0()
+                                                .right_0()
+                                                .h(px(2.0))
+                                                .bg(selenium_amber()),
+                                        )
                                 })
                                 .when(tab != PreflightTab::Options, |el| {
                                     el.text_color(silver_muted())
