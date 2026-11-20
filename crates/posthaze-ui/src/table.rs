@@ -4,13 +4,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui_kit::assets::IconName;
+use gpui_kit::base::{Scrollbar, ScrollbarMode};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::Input;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, InteractiveElementExt as _, Sizable};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
-use posthaze_engine::DownloadState;
+use posthaze_engine::{DownloadId, DownloadState};
 
 use crate::PosthazeApp;
 use crate::assets::BRAND_LOGO_SVG;
@@ -202,6 +203,11 @@ impl PosthazeApp {
         let row_count = visible_rows.len();
         let entity = cx.entity().clone();
         let scroll_handle = self.table_scroll_handle.clone();
+        let scrubber = render_table_scrubber(
+            &visible_rows,
+            self.queue.selected_id.as_ref(),
+            &scroll_handle,
+        );
 
         div()
             .flex_1()
@@ -271,18 +277,25 @@ impl PosthazeApp {
                             .child("ACTIONS"),
                     ),
             )
-            // Virtualized Scrollable Rows
+            // Virtualized Scrollable Rows + Calibrated Telemetry Scrubber
             .child(
-                uniform_list("downloads-table-scroll", row_count, move |range, _window, cx| {
-                    entity.update(cx, |app, cx| {
-                        range
-                            .map(|idx| app.render_row(&visible_rows[idx], profile, cx).into_any_element())
-                            .collect::<Vec<_>>()
-                    })
-                })
-                .flex_1()
-                .size_full()
-                .track_scroll(&scroll_handle),
+                div()
+                    .relative()
+                    .flex_1()
+                    .size_full()
+                    .overflow_hidden()
+                    .child(
+                        uniform_list("downloads-table-scroll", row_count, move |range, _window, cx| {
+                            entity.update(cx, |app, cx| {
+                                range
+                                    .map(|idx| app.render_row(&visible_rows[idx], profile, cx).into_any_element())
+                                    .collect::<Vec<_>>()
+                            })
+                        })
+                        .size_full()
+                        .track_scroll(&scroll_handle),
+                    )
+                    .child(scrubber),
             )
             .into_any_element()
     }
@@ -377,7 +390,7 @@ impl PosthazeApp {
             .h(px(38.0))
             .flex()
             .items_center()
-            .pr_4()
+            .pr(px(20.0))
             .border_b_1()
             .border_color(paper_border())
             .bg(if is_selected {
@@ -776,4 +789,146 @@ impl PosthazeApp {
                     ),
             )
     }
+}
+
+const MINIMAP_BUCKETS: usize = 128;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MinimapMark {
+    None,
+    Active,
+    Failed,
+}
+
+fn render_table_scrubber(
+    rows: &[DownloadRowView],
+    selected_id: Option<&DownloadId>,
+    scroll_handle: &UniformListScrollHandle,
+) -> impl IntoElement + use<> {
+    let row_count = rows.len();
+    let mut buckets = [MinimapMark::None; MINIMAP_BUCKETS];
+    let mut selected_ratio = None;
+
+    if row_count > 0 {
+        for (idx, row) in rows.iter().enumerate() {
+            let bucket = (idx * MINIMAP_BUCKETS) / row_count;
+            match row.state {
+                DownloadState::Failed => buckets[bucket] = MinimapMark::Failed,
+                DownloadState::Active | DownloadState::Probing => {
+                    if buckets[bucket] != MinimapMark::Failed {
+                        buckets[bucket] = MinimapMark::Active;
+                    }
+                }
+                _ => {}
+            }
+            if selected_id == Some(&row.id) {
+                selected_ratio = Some((idx as f32 + 0.5) / row_count as f32);
+            }
+        }
+    }
+
+    let has_overflow = {
+        let inner = scroll_handle.0.borrow();
+        inner.base_handle.max_offset().y > px(0.5)
+    };
+
+    div()
+        .id("downloads-table-scrubber")
+        .absolute()
+        .top_0()
+        .right_0()
+        .bottom_0()
+        .w(px(14.0))
+        .when(has_overflow, |this| {
+            this.border_l_1()
+                .border_color(paper_border())
+                .bg(table_header_bg().opacity(0.65))
+                .child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .child(
+                            canvas(
+                                |_, _, _| {},
+                                move |bounds, _, window, _| {
+                                    let track_h = f32::from(bounds.size.height);
+                                    if track_h <= 4.0 {
+                                        return;
+                                    }
+                                    let active_color = selenium_amber().opacity(0.85);
+                                    let failed_color = errata_vermilion().opacity(0.9);
+                                    for (i, mark) in buckets.iter().enumerate() {
+                                        let color = match mark {
+                                            MinimapMark::None => continue,
+                                            MinimapMark::Active => active_color,
+                                            MinimapMark::Failed => failed_color,
+                                        };
+                                        let y = bounds.origin.y
+                                            + px(
+                                                (i as f32 / MINIMAP_BUCKETS as f32)
+                                                    * (track_h - 3.0),
+                                            );
+                                        window.paint_quad(fill(
+                                            Bounds::new(
+                                                point(bounds.origin.x + px(1.0), y),
+                                                size(px(3.0), px(2.5)),
+                                            ),
+                                            color,
+                                        ));
+                                    }
+                                    if let Some(ratio) = selected_ratio {
+                                        let y = bounds.origin.y + px(ratio * (track_h - 3.0));
+                                        window.paint_quad(fill(
+                                            Bounds::new(
+                                                point(bounds.origin.x + px(1.0), y),
+                                                size(px(12.0), px(2.0)),
+                                            ),
+                                            cyanotype_blue().opacity(0.75),
+                                        ));
+                                    }
+                                },
+                            )
+                            .size_full(),
+                        ),
+                )
+        })
+        .child(
+            div()
+                .absolute()
+                .inset_0()
+                .child(
+                    Scrollbar::vertical(scroll_handle)
+                        .viewport_from_layout()
+                        .mode(ScrollbarMode::Always)
+                        .max_fps(60)
+                        .styles(|s| {
+                            s.track(|t| t.width(px(14.0)).bg(Hsla::transparent_black()))
+                                .track_hover(|t| {
+                                    t.width(px(14.0)).bg(paper_border().opacity(0.28))
+                                })
+                                .track_active(|t| {
+                                    t.width(px(14.0)).bg(paper_border().opacity(0.4))
+                                })
+                                .thumb(|th| {
+                                    th.width(px(6.0))
+                                        .inset(px(2.0))
+                                        .radius(px(1.5))
+                                        .min_length(px(28.0))
+                                        .bg(carbon_muted().opacity(0.55))
+                                })
+                                .thumb_hover(|th| {
+                                    th.width(px(8.0))
+                                        .inset(px(2.0))
+                                        .radius(px(1.5))
+                                        .bg(carbon_text().opacity(0.85))
+                                })
+                                .thumb_active(|th| {
+                                    th.width(px(8.0))
+                                        .inset(px(2.0))
+                                        .radius(px(1.5))
+                                        .bg(selenium_amber())
+                                })
+                        }),
+                ),
+        )
 }
