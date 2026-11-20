@@ -102,56 +102,60 @@ where
             .w_full()
             .flex_1()
             .min_h_0()
-            .p_5()
+            .p_3()
             .bg(graphite_bg())
             .flex()
             .flex_col()
-            .justify_between()
-            .gap_3()
-            .child(
-                div()
-                    .text_size(TYPE_HEADING)
-                    .line_height(px(22.0))
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(silver_text())
-                    .child("Checking Download"),
-            )
+            .gap_2()
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap_2()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_size(px(14.0))
+                            .line_height(px(18.0))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(silver_text())
+                            .child("Checking Download"),
+                    )
                     .child(
                         div()
                             .flex()
                             .items_center()
+                            .gap_1p5()
                             .child(
-                                Icon::new(IconName::LoaderCircle)
-                                    .size(px(14.0))
-                                    .text_color(selenium_amber()),
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .child(
+                                        Icon::new(IconName::LoaderCircle)
+                                            .size(px(13.0))
+                                            .text_color(selenium_amber()),
+                                    )
+                                    .with_animation(
+                                        "preflight-probing-pulse",
+                                        Animation::new(Duration::from_millis(900))
+                                            .repeat()
+                                            .with_easing(pulsating_between(0.45, 1.0)),
+                                        |el, delta| el.opacity(delta),
+                                    ),
                             )
-                            .with_animation(
-                                "preflight-probing-pulse",
-                                Animation::new(Duration::from_millis(900))
-                                    .repeat()
-                                    .with_easing(pulsating_between(0.45, 1.0)),
-                                |el, delta| el.opacity(delta),
+                            .child(
+                                div()
+                                    .font_family(MONO_FONT)
+                                    .text_size(TYPE_MICRO)
+                                    .text_color(selenium_amber())
+                                    .child("Probing..."),
                             ),
-                    )
-                    .child(
-                        div()
-                            .font_family(MONO_FONT)
-                            .text_size(TYPE_BODY)
-                            .line_height(px(18.0))
-                            .text_color(selenium_amber())
-                            .child("Checking file size, filename, and parallel support..."),
                     ),
             )
             .child(
                 div()
                     .font_family(MONO_FONT)
                     .text_size(TYPE_MICRO)
-                    .line_height(px(16.0))
+                    .line_height(px(15.0))
                     .text_color(silver_muted())
                     .truncate()
                     .child(url.clone()),
@@ -162,20 +166,23 @@ where
                         .font_family(MONO_FONT)
                         .text_size(TYPE_MICRO)
                         .text_color(silver_muted())
-                        .child(format!("Sending {} custom request header(s)", headers.len())),
+                        .child(format!("Sending {} custom header(s)", headers.len())),
                 )
             })
             .child(
-                grid_modal_footer(GridTone::Graphite).child(grid_cell_button(
-                    "probe-cancel",
-                    Some(IconName::X),
-                    Some("CANCEL"),
-                    None,
-                    GridTone::Graphite,
-                    CellBorder::Left,
-                    false,
-                    move |_, window, cx| on_close(window, cx),
-                )),
+                div()
+                    .mt_auto()
+                    .pt_1()
+                    .child(grid_modal_footer(GridTone::Graphite).child(grid_cell_button(
+                        "probe-cancel",
+                        Some(IconName::X),
+                        Some("CANCEL"),
+                        None,
+                        GridTone::Graphite,
+                        CellBorder::Left,
+                        false,
+                        move |_, window, cx| on_close(window, cx),
+                    ))),
             ),
         PreflightModalState::Error {
             url,
@@ -190,28 +197,27 @@ where
                 .w_full()
                 .flex_1()
                 .min_h_0()
-                .p_5()
+                .p_3()
                 .bg(graphite_bg())
                 .border_t_2()
                 .border_color(errata_vermilion())
                 .flex()
                 .flex_col()
-                .justify_between()
-                .gap_3()
+                .gap_2()
                 .child(
                     div()
                         .flex()
                         .items_center()
-                        .gap_2()
+                        .gap_1p5()
                         .child(
                             Icon::new(IconName::TriangleAlert)
-                                .size(px(16.0))
+                                .size(px(14.0))
                                 .text_color(errata_vermilion()),
                         )
                         .child(
                             div()
-                                .text_size(TYPE_HEADING)
-                                .line_height(px(22.0))
+                                .text_size(px(14.0))
+                                .line_height(px(18.0))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(errata_vermilion())
                                 .child("Could Not Reach File"),
@@ -221,7 +227,7 @@ where
                     div()
                         .font_family(MONO_FONT)
                         .text_size(TYPE_BODY)
-                        .line_height(px(18.0))
+                        .line_height(px(16.0))
                         .text_color(silver_text())
                         .child(message.clone()),
                 )
@@ -229,7 +235,7 @@ where
                     div()
                         .font_family(MONO_FONT)
                         .text_size(TYPE_MICRO)
-                        .line_height(px(16.0))
+                        .line_height(px(14.0))
                         .text_color(silver_muted())
                         .truncate()
                         .child(url.clone()),
@@ -237,53 +243,63 @@ where
                 .when(is_forbidden, |el| {
                     el.child(
                         div()
-                            .p_2p5()
+                            .p_2()
                             .bg(graphite_elevated())
                             .border_1()
                             .border_color(graphite_border())
-                            .rounded(px(4.0))
-                            .text_xs()
-                            .line_height(px(16.0))
+                            .rounded(px(3.0))
+                            .text_size(TYPE_MICRO)
+                            .line_height(px(14.0))
                             .text_color(silver_muted())
-                            .child("Tip: If this site requires a browser session, right-click the request in DevTools -> Copy as cURL, then paste it into the URL bar."),
+                            .child("Tip: Use DevTools -> Copy as cURL if this site requires a browser session."),
                     )
                 })
                 .child(
-                    grid_modal_footer(GridTone::Graphite)
-                        .child(grid_cell_button(
-                            "probe-edit",
-                            Some(IconName::Clipboard),
-                            Some("EDIT URL"),
-                            None,
-                            GridTone::Graphite,
-                            CellBorder::Left,
-                            false,
-                            move |_, window, cx| {
-                                on_edit_url(url_edit.clone(), window, cx);
-                            },
-                        ))
-                        .child(grid_cell_button(
-                            "probe-close",
-                            Some(IconName::X),
-                            Some("CLOSE"),
-                            None,
-                            GridTone::Graphite,
-                            CellBorder::Left,
-                            false,
-                            move |_, window, cx| on_close(window, cx),
-                        ))
-                        .child(grid_cell_button(
-                            "probe-retry",
-                            Some(IconName::RefreshCw),
-                            Some("RETRY PROBE"),
-                            None,
-                            GridTone::Primary,
-                            CellBorder::Left,
-                            false,
-                            move |_, window, cx| {
-                                on_retry(url_retry.clone(), headers_retry.clone(), window, cx);
-                            },
-                        )),
+                    div()
+                        .mt_auto()
+                        .pt_1()
+                        .child(
+                            grid_modal_footer(GridTone::Graphite)
+                                .child(grid_cell_button(
+                                    "probe-edit",
+                                    Some(IconName::Clipboard),
+                                    Some("EDIT URL"),
+                                    None,
+                                    GridTone::Graphite,
+                                    CellBorder::Left,
+                                    false,
+                                    move |_, window, cx| {
+                                        on_edit_url(url_edit.clone(), window, cx);
+                                    },
+                                ))
+                                .child(grid_cell_button(
+                                    "probe-close",
+                                    Some(IconName::X),
+                                    Some("CLOSE"),
+                                    None,
+                                    GridTone::Graphite,
+                                    CellBorder::Left,
+                                    false,
+                                    move |_, window, cx| on_close(window, cx),
+                                ))
+                                .child(grid_cell_button(
+                                    "probe-retry",
+                                    Some(IconName::RefreshCw),
+                                    Some("RETRY"),
+                                    None,
+                                    GridTone::Primary,
+                                    CellBorder::Left,
+                                    false,
+                                    move |_, window, cx| {
+                                        on_retry(
+                                            url_retry.clone(),
+                                            headers_retry.clone(),
+                                            window,
+                                            cx,
+                                        );
+                                    },
+                                )),
+                        ),
                 )
         }
         PreflightModalState::Resolved {
@@ -300,7 +316,12 @@ where
             let size_label = info
                 .content_length
                 .map(format_bytes)
-                .unwrap_or_else(|| "Unknown Size (Stream)".to_string());
+                .unwrap_or_else(|| "Unknown".to_string());
+            let proto_label = if info.supports_ranges {
+                format!("HTTP 206 · {size_label}")
+            } else {
+                format!("HTTP 200 · {size_label}")
+            };
             let confirm_now = on_confirm.clone();
             let confirm_queue = on_confirm;
             let header_count = headers.len();
@@ -310,28 +331,28 @@ where
                 .w_full()
                 .flex_1()
                 .min_h_0()
-                .p_5()
+                .p_3()
                 .bg(graphite_bg())
                 .flex()
                 .flex_col()
-                .justify_between()
-                .gap_3()
+                .gap_1p5()
                 .child(
                     div()
                         .flex()
                         .items_center()
                         .justify_between()
+                        .gap_2()
                         .child(
                             div()
-                                .text_size(TYPE_HEADING)
-                                .line_height(px(22.0))
+                                .text_size(px(14.0))
+                                .line_height(px(18.0))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(silver_text())
                                 .child("Add Download"),
                         )
                         .child(
                             div()
-                                .px_2()
+                                .px_1p5()
                                 .py_0p5()
                                 .rounded(px(3.0))
                                 .bg(graphite_elevated())
@@ -339,179 +360,191 @@ where
                                 .border_color(graphite_border())
                                 .font_family(MONO_FONT)
                                 .text_size(TYPE_MICRO)
-                                .line_height(px(15.0))
+                                .line_height(px(13.0))
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(if info.supports_ranges {
                                     silver_text()
                                 } else {
                                     silver_muted()
                                 })
-                                .child(if info.supports_ranges {
-                                    "Multi-Segment (HTTP 206)"
-                                } else {
-                                    "Single-Stream (HTTP 200)"
-                                }),
+                                .child(proto_label),
                         ),
                 )
                 .child(
                     div()
                         .font_family(MONO_FONT)
                         .text_size(TYPE_MICRO)
-                        .line_height(px(16.0))
+                        .line_height(px(14.0))
                         .text_color(silver_muted())
                         .truncate()
-                        .child(format!("Size: {size_label} · {}", info.final_url)),
+                        .child(info.final_url.clone()),
                 )
-                .child(labeled_input("Filename", filename_input))
-                .child(labeled_input("Destination Directory", dir_input))
+                .child(compact_input_row("FILE", filename_input))
+                .child(compact_input_row("SAVE TO", dir_input))
                 .child(
                     div()
+                        .pt_0p5()
                         .flex()
                         .items_center()
                         .justify_between()
-                        .child(grid_boxed_button(
-                            "preflight-toggle-headers",
-                            px(28.0),
-                            Some(IconName::Settings),
-                            Some(if header_count > 0 {
-                                "REQUEST HEADERS (SET)"
-                            } else {
-                                "REQUEST HEADERS"
-                            }),
-                            None,
-                            GridTone::Graphite,
-                            true,
-                            move |_, window, cx| on_toggle_headers(window, cx),
-                        ))
-                        .when_some(header_summary, |el, summary| {
-                            el.child(
-                                div()
-                                    .id("preflight-headers-badge")
-                                    .px_2()
-                                    .py_0p5()
-                                    .rounded(px(3.0))
-                                    .bg(graphite_elevated())
-                                    .border_1()
-                                    .border_color(graphite_border())
-                                    .font_family(MONO_FONT)
-                                    .text_size(TYPE_MICRO)
-                                    .text_color(silver_muted())
-                                    .tooltip(move |window, cx| {
-                                        gpui_kit::component::tooltip::Tooltip::new(summary.clone())
-                                            .build(window, cx)
-                                    })
-                                    .child("cURL Headers Active"),
-                            )
-                        }),
-                )
-                .when(*editing_headers, |el| {
-                    el.child(
-                        div()
-                            .p_2p5()
-                            .bg(graphite_elevated())
-                            .border_1()
-                            .border_color(graphite_border())
-                            .rounded(px(4.0))
-                            .flex()
-                            .flex_col()
-                            .gap_2()
-                            .child(labeled_input("Cookie", cookie_input))
-                            .child(labeled_input("Referer", referer_input))
-                            .child(labeled_input("User-Agent", user_agent_input)),
-                    )
-                })
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
+                        .gap_2()
                         .child(
                             div()
-                                .text_xs()
-                                .text_color(silver_muted())
-                                .child(if info.supports_ranges {
-                                    "Concurrent Workers (1..32)"
-                                } else {
-                                    "Concurrent Workers (Locked to 1 for single-stream)"
+                                .flex()
+                                .items_center()
+                                .gap_1p5()
+                                .child(grid_boxed_button(
+                                    "preflight-toggle-headers",
+                                    px(26.0),
+                                    Some(IconName::Settings),
+                                    Some(if header_count > 0 {
+                                        "HEADERS (SET)"
+                                    } else {
+                                        "HEADERS"
+                                    }),
+                                    None,
+                                    GridTone::Graphite,
+                                    true,
+                                    move |_, window, cx| on_toggle_headers(window, cx),
+                                ))
+                                .when_some(header_summary, |el, summary| {
+                                    el.child(
+                                        div()
+                                            .id("preflight-headers-badge")
+                                            .px_1p5()
+                                            .py_0p5()
+                                            .rounded(px(3.0))
+                                            .bg(graphite_elevated())
+                                            .border_1()
+                                            .border_color(graphite_border())
+                                            .font_family(MONO_FONT)
+                                            .text_size(TYPE_MICRO)
+                                            .text_color(selenium_amber())
+                                            .tooltip(move |window, cx| {
+                                                gpui_kit::component::tooltip::Tooltip::new(
+                                                    summary.clone(),
+                                                )
+                                                .build(window, cx)
+                                            })
+                                            .child("cURL"),
+                                    )
                                 }),
                         )
                         .child(
                             div()
-                                .h(px(28.0))
-                                .border_1()
-                                .border_color(graphite_border())
                                 .flex()
                                 .items_center()
-                                .when(info.supports_ranges, |el| {
-                                    let dec = on_worker_delta.clone();
-                                    el.child(grid_cell_button(
-                                        "w-dec",
-                                        Some(IconName::Minus),
-                                        None,
-                                        Some("Decrease workers"),
-                                        GridTone::Graphite,
-                                        CellBorder::Right,
-                                        true,
-                                        move |_, window, cx| dec(-1, window, cx),
-                                    ))
-                                })
+                                .gap_2()
                                 .child(
                                     div()
-                                        .w(px(36.0))
-                                        .text_center()
                                         .font_family(MONO_FONT)
-                                        .text_size(TYPE_BODY)
-                                        .text_color(silver_text())
-                                        .child(workers.to_string()),
+                                        .text_size(TYPE_MICRO)
+                                        .text_color(silver_muted())
+                                        .child(if info.supports_ranges {
+                                            "WORKERS"
+                                        } else {
+                                            "WORKERS (1)"
+                                        }),
                                 )
-                                .when(info.supports_ranges, |el| {
-                                    el.child(grid_cell_button(
-                                        "w-inc",
-                                        Some(IconName::Plus),
-                                        None,
-                                        Some("Increase workers"),
-                                        GridTone::Graphite,
-                                        CellBorder::Left,
-                                        true,
-                                        move |_, window, cx| on_worker_delta(1, window, cx),
-                                    ))
-                                }),
+                                .child(
+                                    div()
+                                        .h(px(26.0))
+                                        .border_1()
+                                        .border_color(graphite_border())
+                                        .flex()
+                                        .items_center()
+                                        .when(info.supports_ranges, |el| {
+                                            let dec = on_worker_delta.clone();
+                                            el.child(grid_cell_button(
+                                                "w-dec",
+                                                Some(IconName::Minus),
+                                                None,
+                                                Some("Decrease workers"),
+                                                GridTone::Graphite,
+                                                CellBorder::Right,
+                                                true,
+                                                move |_, window, cx| dec(-1, window, cx),
+                                            ))
+                                        })
+                                        .child(
+                                            div()
+                                                .w(px(28.0))
+                                                .text_center()
+                                                .font_family(MONO_FONT)
+                                                .text_size(TYPE_BODY)
+                                                .text_color(silver_text())
+                                                .child(workers.to_string()),
+                                        )
+                                        .when(info.supports_ranges, |el| {
+                                            el.child(grid_cell_button(
+                                                "w-inc",
+                                                Some(IconName::Plus),
+                                                None,
+                                                Some("Increase workers"),
+                                                GridTone::Graphite,
+                                                CellBorder::Left,
+                                                true,
+                                                move |_, window, cx| on_worker_delta(1, window, cx),
+                                            ))
+                                        }),
+                                ),
                         ),
                 )
+                .when(*editing_headers, |el| {
+                    el.child(
+                        div()
+                            .p_2()
+                            .bg(graphite_elevated())
+                            .border_1()
+                            .border_color(graphite_border())
+                            .rounded(px(3.0))
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(compact_input_row("COOKIE", cookie_input))
+                            .child(compact_input_row("REFERER", referer_input))
+                            .child(compact_input_row("AGENT", user_agent_input)),
+                    )
+                })
                 .child(
-                    grid_modal_footer(GridTone::Graphite)
-                        .child(grid_cell_button(
-                            "pf-cancel",
-                            Some(IconName::X),
-                            Some("CANCEL"),
-                            None,
-                            GridTone::Graphite,
-                            CellBorder::Left,
-                            false,
-                            move |_, window, cx| on_close(window, cx),
-                        ))
-                        .when(show_add_paused, |el| {
-                            el.child(grid_cell_button(
-                                "pf-queue",
-                                Some(IconName::Clock),
-                                Some("ADD PAUSED"),
-                                Some("Save to list in Paused state without starting transfer"),
-                                GridTone::Graphite,
-                                CellBorder::Left,
-                                false,
-                                move |_, window, cx| confirm_queue(false, window, cx),
-                            ))
-                        })
-                        .child(grid_cell_button(
-                            "pf-now",
-                            Some(IconName::Download),
-                            Some("DOWNLOAD NOW"),
-                            None,
-                            GridTone::Primary,
-                            CellBorder::Left,
-                            false,
-                            move |_, window, cx| confirm_now(true, window, cx),
-                        )),
+                    div()
+                        .mt_auto()
+                        .pt_1()
+                        .child(
+                            grid_modal_footer(GridTone::Graphite)
+                                .child(grid_cell_button(
+                                    "pf-cancel",
+                                    Some(IconName::X),
+                                    Some("CANCEL"),
+                                    None,
+                                    GridTone::Graphite,
+                                    CellBorder::Left,
+                                    false,
+                                    move |_, window, cx| on_close(window, cx),
+                                ))
+                                .when(show_add_paused, |el| {
+                                    el.child(grid_cell_button(
+                                        "pf-queue",
+                                        Some(IconName::Clock),
+                                        Some("ADD PAUSED"),
+                                        Some("Save to list in Paused state without starting transfer"),
+                                        GridTone::Graphite,
+                                        CellBorder::Left,
+                                        false,
+                                        move |_, window, cx| confirm_queue(false, window, cx),
+                                    ))
+                                })
+                                .child(grid_cell_button(
+                                    "pf-now",
+                                    Some(IconName::Download),
+                                    Some("DOWNLOAD NOW"),
+                                    None,
+                                    GridTone::Primary,
+                                    CellBorder::Left,
+                                    false,
+                                    move |_, window, cx| confirm_now(true, window, cx),
+                                )),
+                        ),
                 )
         }
     }
@@ -842,6 +875,41 @@ where
                     false,
                     move |_, window, cx| on_confirm(window, cx),
                 )),
+        )
+}
+
+fn compact_input_row(label: &'static str, state: &Entity<InputState>) -> impl IntoElement {
+    div()
+        .w_full()
+        .h(px(30.0))
+        .bg(graphite_bg())
+        .border_1()
+        .border_color(graphite_border())
+        .flex()
+        .items_center()
+        .child(
+            div()
+                .w(px(68.0))
+                .h_full()
+                .px_2()
+                .bg(graphite_elevated())
+                .border_r_1()
+                .border_color(graphite_border())
+                .flex()
+                .items_center()
+                .font_family(MONO_FONT)
+                .text_size(TYPE_MICRO)
+                .text_color(silver_muted())
+                .child(label),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .px_1p5()
+                .font_family(MONO_FONT)
+                .text_size(TYPE_BODY)
+                .child(Input::new(state).appearance(false)),
         )
 }
 
