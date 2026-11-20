@@ -28,11 +28,11 @@ pub(crate) enum SettingsTab {
 impl SettingsTab {
     pub const ALL: [Self; 7] = [
         Self::General,
+        Self::Interface,
         Self::Downloads,
         Self::Network,
         Self::Notifications,
         Self::Automation,
-        Self::Interface,
         Self::Reset,
     ];
 
@@ -1215,225 +1215,8 @@ where
         .flex()
         .flex_col()
         .gap_3()
-        .child(section_heading("Workspace & Chrome"))
         .child(
             div()
-                .pb_2p5()
-                .border_b_1()
-                .border_color(graphite_border())
-                .flex()
-                .flex_col()
-                .gap_2()
-                .child(toggle_row(
-                    "ui-click-insp",
-                    "Open Byte-Map Inspector on Click",
-                    "Automatically expand the bottom inspector when selecting a download row.",
-                    state.draft.ui_click_row_opens_inspector,
-                    SettingsAction::ToggleClickOpensInspector,
-                    on_action.clone(),
-                ))
-                .child(toggle_row(
-                    "ui-add-paused",
-                    "Show \"Add Paused\" in Pre-Flight",
-                    "Include the Add Paused button alongside Download Now.",
-                    state.draft.ui_show_add_paused,
-                    SettingsAction::ToggleShowAddPaused,
-                    on_action.clone(),
-                ))
-                .child(toggle_row(
-                    "ui-start-rail",
-                    "Start with Sidebar Collapsed",
-                    "Launch into the compact left icon rail instead of the expanded filter rail.",
-                    state.draft.ui_start_sidebar_collapsed,
-                    SettingsAction::ToggleStartSidebarCollapsed,
-                    on_action.clone(),
-                ))
-                .child(toggle_row(
-                    "ui-titlebar-tel",
-                    "Show Live Telemetry in Titlebar",
-                    "Display active transfer slots, throughput, and queue count in the top bar.",
-                    state.draft.ui_show_titlebar_telemetry,
-                    SettingsAction::ToggleTitlebarTelemetry,
-                    on_action.clone(),
-                ))
-                .child(toggle_row(
-                    "ui-toolbar-labels",
-                    "Show Toolbar Button Labels",
-                    "Display text labels on top-bar action cells (uncheck for icon-only cells).",
-                    state.draft.ui_show_toolbar_labels,
-                    SettingsAction::ToggleToolbarLabels,
-                    on_action.clone(),
-                ))
-                .child(toggle_row(
-                    "ui-minimap",
-                    "Show Scrollbar Minimap",
-                    "Highlight Active and Failed row positions along the table scrollbar rail.",
-                    state.draft.ui_show_scrollbar_minimap,
-                    SettingsAction::ToggleScrollbarMinimap,
-                    on_action.clone(),
-                )),
-        )
-        .child(section_heading("Table Density & Columns"))
-        .child(setting_row(
-            "Table Row Density",
-            "Control vertical row height across the virtualized Downloads table.",
-            segmented_track()
-                .child(choice_btn(
-                    "density-compact",
-                    "COMPACT",
-                    state.draft.ui_table_density == TableDensity::Compact,
-                    SettingsAction::SetTableDensity(TableDensity::Compact),
-                    on_action.clone(),
-                ))
-                .child(choice_btn(
-                    "density-standard",
-                    "STANDARD",
-                    state.draft.ui_table_density == TableDensity::Standard,
-                    SettingsAction::SetTableDensity(TableDensity::Standard),
-                    on_action.clone(),
-                ))
-                .child(choice_btn(
-                    "density-comfortable",
-                    "COMFORTABLE",
-                    state.draft.ui_table_density == TableDensity::Comfortable,
-                    SettingsAction::SetTableDensity(TableDensity::Comfortable),
-                    on_action.clone(),
-                )),
-        ))
-        .child(setting_row(
-            "Visible Columns",
-            "Toggle optional telemetry columns (automatically hidden on narrow windows).",
-            segmented_track()
-                .child(choice_btn(
-                    "col-speed",
-                    "SPEED",
-                    state.draft.ui_show_speed_col,
-                    SettingsAction::ToggleSpeedCol,
-                    on_action.clone(),
-                ))
-                .child(choice_btn(
-                    "col-eta",
-                    "ETA",
-                    state.draft.ui_show_eta_col,
-                    SettingsAction::ToggleEtaCol,
-                    on_action.clone(),
-                ))
-                .child(choice_btn(
-                    "col-segs",
-                    "SEGS",
-                    state.draft.ui_show_segs_col,
-                    SettingsAction::ToggleSegsCol,
-                    on_action.clone(),
-                )),
-        ))
-        .child(setting_row(
-            "Interface Scale",
-            "Adjust overall text and control sizing.",
-            segmented_track()
-                .child(choice_btn(
-                    "zoom-90",
-                    "90%",
-                    state.draft.ui_zoom_percent == 90,
-                    SettingsAction::SetZoom(90),
-                    on_action.clone(),
-                ))
-                .child(choice_btn(
-                    "zoom-100",
-                    "100%",
-                    state.draft.ui_zoom_percent == 100,
-                    SettingsAction::SetZoom(100),
-                    on_action.clone(),
-                ))
-                .child(choice_btn(
-                    "zoom-110",
-                    "110%",
-                    state.draft.ui_zoom_percent == 110,
-                    SettingsAction::SetZoom(110),
-                    on_action.clone(),
-                ))
-                .child(choice_btn(
-                    "zoom-125",
-                    "125%",
-                    state.draft.ui_zoom_percent == 125,
-                    SettingsAction::SetZoom(125),
-                    on_action.clone(),
-                )),
-        ))
-        .child(section_heading("Accent Override"))
-        .child(
-            div()
-                .flex()
-                .flex_wrap()
-                .gap_1p5()
-                .child({
-                    let active = state.draft.ui_accent_override.is_none();
-                    let act = on_action.clone();
-                    div()
-                        .id("accent-default")
-                        .h(px(28.0))
-                        .px_2p5()
-                        .border_1()
-                        .border_color(if active {
-                            selenium_amber()
-                        } else {
-                            graphite_border()
-                        })
-                        .bg(if active {
-                            graphite_elevated()
-                        } else {
-                            graphite_bg()
-                        })
-                        .hover(|s| s.bg(graphite_elevated()))
-                        .cursor_pointer()
-                        .flex()
-                        .items_center()
-                        .font_family(MONO_FONT)
-                        .text_size(TYPE_MICRO)
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(if active { silver_text() } else { silver_muted() })
-                        .on_click(move |_, window, cx| {
-                            act(SettingsAction::SetAccentOverride(None), window, cx);
-                        })
-                        .child("THEME DEFAULT")
-                })
-                .children(ACCENT_PRESETS.iter().map(|preset| {
-                    let active = state.draft.ui_accent_override.as_deref() == Some(preset.id);
-                    let act = on_action.clone();
-                    let pid = preset.id.to_string();
-                    div()
-                        .id(SharedString::from(format!("accent-{}", preset.id)))
-                        .h(px(28.0))
-                        .px_2p5()
-                        .border_1()
-                        .border_color(if active {
-                            rgb(preset.accent).into()
-                        } else {
-                            graphite_border()
-                        })
-                        .bg(if active {
-                            graphite_elevated()
-                        } else {
-                            graphite_bg()
-                        })
-                        .hover(|s| s.bg(graphite_elevated()))
-                        .cursor_pointer()
-                        .flex()
-                        .items_center()
-                        .gap_1p5()
-                        .font_family(MONO_FONT)
-                        .text_size(TYPE_MICRO)
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(if active { silver_text() } else { silver_muted() })
-                        .on_click(move |_, window, cx| {
-                            act(SettingsAction::SetAccentOverride(Some(pid.clone())), window, cx);
-                        })
-                        .child(swatch_dot(preset.accent))
-                        .child(preset.name.to_uppercase())
-                })),
-        )
-        .child(
-            div()
-                .pt_2()
                 .flex()
                 .flex_col()
                 .gap_2()
@@ -1523,6 +1306,223 @@ where
                                 )
                         })),
                 ),
+        )
+        .child(section_heading("Accent Override"))
+        .child(
+            div()
+                .pb_2p5()
+                .border_b_1()
+                .border_color(graphite_border())
+                .flex()
+                .flex_wrap()
+                .gap_1p5()
+                .child({
+                    let active = state.draft.ui_accent_override.is_none();
+                    let act = on_action.clone();
+                    div()
+                        .id("accent-default")
+                        .h(px(28.0))
+                        .px_2p5()
+                        .border_1()
+                        .border_color(if active {
+                            selenium_amber()
+                        } else {
+                            graphite_border()
+                        })
+                        .bg(if active {
+                            graphite_elevated()
+                        } else {
+                            graphite_bg()
+                        })
+                        .hover(|s| s.bg(graphite_elevated()))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .font_family(MONO_FONT)
+                        .text_size(TYPE_MICRO)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(if active { silver_text() } else { silver_muted() })
+                        .on_click(move |_, window, cx| {
+                            act(SettingsAction::SetAccentOverride(None), window, cx);
+                        })
+                        .child("THEME DEFAULT")
+                })
+                .children(ACCENT_PRESETS.iter().map(|preset| {
+                    let active = state.draft.ui_accent_override.as_deref() == Some(preset.id);
+                    let act = on_action.clone();
+                    let pid = preset.id.to_string();
+                    div()
+                        .id(SharedString::from(format!("accent-{}", preset.id)))
+                        .h(px(28.0))
+                        .px_2p5()
+                        .border_1()
+                        .border_color(if active {
+                            rgb(preset.accent).into()
+                        } else {
+                            graphite_border()
+                        })
+                        .bg(if active {
+                            graphite_elevated()
+                        } else {
+                            graphite_bg()
+                        })
+                        .hover(|s| s.bg(graphite_elevated()))
+                        .cursor_pointer()
+                        .flex()
+                        .items_center()
+                        .gap_1p5()
+                        .font_family(MONO_FONT)
+                        .text_size(TYPE_MICRO)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(if active { silver_text() } else { silver_muted() })
+                        .on_click(move |_, window, cx| {
+                            act(SettingsAction::SetAccentOverride(Some(pid.clone())), window, cx);
+                        })
+                        .child(swatch_dot(preset.accent))
+                        .child(preset.name.to_uppercase())
+                })),
+        )
+        .child(section_heading("Table Density & Columns"))
+        .child(setting_row(
+            "Table Row Density",
+            "Control vertical row height across the virtualized Downloads table.",
+            segmented_track()
+                .child(choice_btn(
+                    "density-compact",
+                    "COMPACT",
+                    state.draft.ui_table_density == TableDensity::Compact,
+                    SettingsAction::SetTableDensity(TableDensity::Compact),
+                    on_action.clone(),
+                ))
+                .child(choice_btn(
+                    "density-standard",
+                    "STANDARD",
+                    state.draft.ui_table_density == TableDensity::Standard,
+                    SettingsAction::SetTableDensity(TableDensity::Standard),
+                    on_action.clone(),
+                ))
+                .child(choice_btn(
+                    "density-comfortable",
+                    "COMFORTABLE",
+                    state.draft.ui_table_density == TableDensity::Comfortable,
+                    SettingsAction::SetTableDensity(TableDensity::Comfortable),
+                    on_action.clone(),
+                )),
+        ))
+        .child(setting_row(
+            "Visible Columns",
+            "Toggle optional telemetry columns (automatically hidden on narrow windows).",
+            segmented_track()
+                .child(choice_btn(
+                    "col-speed",
+                    "SPEED",
+                    state.draft.ui_show_speed_col,
+                    SettingsAction::ToggleSpeedCol,
+                    on_action.clone(),
+                ))
+                .child(choice_btn(
+                    "col-eta",
+                    "ETA",
+                    state.draft.ui_show_eta_col,
+                    SettingsAction::ToggleEtaCol,
+                    on_action.clone(),
+                ))
+                .child(choice_btn(
+                    "col-segs",
+                    "SEGS",
+                    state.draft.ui_show_segs_col,
+                    SettingsAction::ToggleSegsCol,
+                    on_action.clone(),
+                )),
+        ))
+        .child(setting_row(
+            "Interface Scale",
+            "Adjust overall text and control sizing.",
+            segmented_track()
+                .child(choice_btn(
+                    "zoom-90",
+                    "90%",
+                    state.draft.ui_zoom_percent == 90,
+                    SettingsAction::SetZoom(90),
+                    on_action.clone(),
+                ))
+                .child(choice_btn(
+                    "zoom-100",
+                    "100%",
+                    state.draft.ui_zoom_percent == 100,
+                    SettingsAction::SetZoom(100),
+                    on_action.clone(),
+                ))
+                .child(choice_btn(
+                    "zoom-110",
+                    "110%",
+                    state.draft.ui_zoom_percent == 110,
+                    SettingsAction::SetZoom(110),
+                    on_action.clone(),
+                ))
+                .child(choice_btn(
+                    "zoom-125",
+                    "125%",
+                    state.draft.ui_zoom_percent == 125,
+                    SettingsAction::SetZoom(125),
+                    on_action.clone(),
+                )),
+        ))
+        .child(section_heading("Workspace & Chrome"))
+        .child(
+            div()
+                .pb_2p5()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(toggle_row(
+                    "ui-click-insp",
+                    "Open Byte-Map Inspector on Click",
+                    "Automatically expand the bottom inspector when selecting a download row.",
+                    state.draft.ui_click_row_opens_inspector,
+                    SettingsAction::ToggleClickOpensInspector,
+                    on_action.clone(),
+                ))
+                .child(toggle_row(
+                    "ui-add-paused",
+                    "Show \"Add Paused\" in Pre-Flight",
+                    "Include the Add Paused button alongside Download Now.",
+                    state.draft.ui_show_add_paused,
+                    SettingsAction::ToggleShowAddPaused,
+                    on_action.clone(),
+                ))
+                .child(toggle_row(
+                    "ui-start-rail",
+                    "Start with Sidebar Collapsed",
+                    "Launch into the compact left icon rail instead of the expanded filter rail.",
+                    state.draft.ui_start_sidebar_collapsed,
+                    SettingsAction::ToggleStartSidebarCollapsed,
+                    on_action.clone(),
+                ))
+                .child(toggle_row(
+                    "ui-titlebar-tel",
+                    "Show Live Telemetry in Titlebar",
+                    "Display active transfer slots, throughput, and queue count in the top bar.",
+                    state.draft.ui_show_titlebar_telemetry,
+                    SettingsAction::ToggleTitlebarTelemetry,
+                    on_action.clone(),
+                ))
+                .child(toggle_row(
+                    "ui-toolbar-labels",
+                    "Show Toolbar Button Labels",
+                    "Display text labels on top-bar action cells (uncheck for icon-only cells).",
+                    state.draft.ui_show_toolbar_labels,
+                    SettingsAction::ToggleToolbarLabels,
+                    on_action.clone(),
+                ))
+                .child(toggle_row(
+                    "ui-minimap",
+                    "Show Scrollbar Minimap",
+                    "Highlight Active and Failed row positions along the table scrollbar rail.",
+                    state.draft.ui_show_scrollbar_minimap,
+                    SettingsAction::ToggleScrollbarMinimap,
+                    on_action,
+                )),
         )
         .into_any_element()
 }
