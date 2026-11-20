@@ -45,11 +45,33 @@ impl PosthazeApp {
                     .bg(paper_bg())
                     .border_b_1()
                     .border_color(paper_border())
-                    // STATE-aligned ADD URL button cell (fills full cell width & height)
+                    // URL intake cell
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(180.0))
+                            .h_full()
+                            .pl_4()
+                            .pr_2()
+                            .border_r_1()
+                            .border_color(paper_border())
+                            .bg(graphite_bg().opacity(0.45))
+                            .flex()
+                            .items_center()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .font_family(MONO_FONT)
+                                    .text_size(TYPE_BODY)
+                                    .child(Input::new(&self.url_input).appearance(false)),
+                            ),
+                    )
+                    // ADD URL button cell (right after the URL field, full cell width & height)
                     .child(
                         div()
                             .id("add-url-btn")
-                            .w(px(16.0 + COL_STATE))
+                            .w(px(COL_STATE))
                             .flex_shrink_0()
                             .h_full()
                             .border_r_1()
@@ -87,27 +109,6 @@ impl PosthazeApp {
                             }))
                             .child(Icon::new(IconName::Plus).size(px(12.0)))
                             .child("ADD URL"),
-                    )
-                    // FILENAME-aligned URL intake cell
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(180.0))
-                            .h_full()
-                            .px_2()
-                            .border_r_1()
-                            .border_color(paper_border())
-                            .bg(graphite_bg().opacity(0.45))
-                            .flex()
-                            .items_center()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .font_family(MONO_FONT)
-                                    .text_size(TYPE_BODY)
-                                    .child(Input::new(&self.url_input).appearance(false)),
-                            ),
                     )
                     // Extensible top-header tools slot
                     .child(self.render_toolbar_tools(profile, cx)),
