@@ -31,3 +31,11 @@ _Avoid_: Fingerprint, checksum, cache key
 **Queue**:
 The ordered collection of `Download`s managed by the engine, admitting `Queued` transfers into `Active` execution in FIFO order up to the configured concurrency limit.
 _Avoid_: Pool, backlog, scheduler
+
+**Browser Capture**:
+The handoff of an intercepted browser download URL and its session headers from a browser extension through the Native Messaging Host into a `Pre-Flight` probe.
+_Avoid_: Sniffing, hook, interception
+
+**Pre-Flight**:
+The capability-probing and confirmation step (`Probing` probe + `Add Download` window) executed before a URL is admitted into the `Queue` as a `Download`.
+_Avoid_: Preview, staging, pre-check
