@@ -423,51 +423,51 @@ where
                         .flex()
                         .flex_col()
                         .gap_1()
-                        .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .gap_2()
-                        .child(
-                            div()
-                                .text_size(px(14.0))
-                                .line_height(px(18.0))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(silver_text())
-                                .child("Add Download"),
-                        )
-                        .child(
-                            div()
-                                .px_1p5()
-                                .py_0p5()
-                                .rounded(px(3.0))
-                                .bg(graphite_elevated())
-                                .border_1()
-                                .border_color(graphite_border())
-                                .font_family(MONO_FONT)
-                                .text_size(TYPE_MICRO)
-                                .line_height(px(13.0))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(if info.supports_ranges {
-                                    silver_text()
-                                } else {
-                                    silver_muted()
-                                })
-                                .child(proto_label),
-                        ),
-                )
-                .child(
-                    div()
-                        .font_family(MONO_FONT)
-                        .text_size(TYPE_MICRO)
-                        .line_height(px(14.0))
-                        .text_color(silver_muted())
-                        .truncate()
-                        .child(info.final_url.clone()),
-                )
                 .when(*active_tab == PreflightTab::General, |el| {
-                    el.child(compact_input_row_with_action(
+                    el.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_size(px(14.0))
+                                    .line_height(px(18.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(silver_text())
+                                    .child("Add Download"),
+                            )
+                            .child(
+                                div()
+                                    .px_1p5()
+                                    .py_0p5()
+                                    .rounded(px(3.0))
+                                    .bg(graphite_elevated())
+                                    .border_1()
+                                    .border_color(graphite_border())
+                                    .font_family(MONO_FONT)
+                                    .text_size(TYPE_MICRO)
+                                    .line_height(px(13.0))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(if info.supports_ranges {
+                                        silver_text()
+                                    } else {
+                                        silver_muted()
+                                    })
+                                    .child(proto_label),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .font_family(MONO_FONT)
+                            .text_size(TYPE_MICRO)
+                            .line_height(px(14.0))
+                            .text_color(silver_muted())
+                            .truncate()
+                            .child(info.final_url.clone()),
+                    )
+                    .child(compact_input_row_with_action(
                         "FILE",
                         filename_input,
                         Some(
@@ -528,132 +528,44 @@ where
                     el.child(
                         div()
                             .w_full()
-                            .bg(byte_track_bg())
-                            .border_1()
-                            .border_color(graphite_border())
                             .flex()
                             .flex_col()
+                            .gap_1()
                             .child(
                                 div()
-                                    .h(px(18.0))
-                                    .px_1p5()
-                                    .bg(graphite_elevated())
-                                    .border_b_1()
-                                    .border_color(graphite_border())
                                     .flex()
                                     .items_center()
                                     .justify_between()
-                                    .font_family(MONO_FONT)
-                                    .text_size(TYPE_MICRO)
-                                    .child(
-                                        div().text_color(silver_muted()).child(
-                                            if info.supports_ranges {
-                                                format!("{segment_count} PARALLEL SEGMENTS")
-                                            } else {
-                                                "SINGLE STREAM".to_string()
-                                            },
-                                        ),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_color(if info.supports_ranges {
-                                                selenium_amber()
-                                            } else {
-                                                silver_muted()
-                                            })
-                                            .child(segment_meta),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .w_full()
-                                    .h(px(7.0))
-                                    .flex()
-                                    .items_stretch()
-                                    .children((0..segment_count).map(|idx| {
-                                        let fill = if !info.supports_ranges {
-                                            silver_muted().opacity(0.45)
-                                        } else if idx == 0 {
-                                            selenium_amber()
-                                        } else {
-                                            cyanotype_blue().opacity(0.85)
-                                        };
-                                        div()
-                                            .flex_1()
-                                            .h_full()
-                                            .bg(fill)
-                                            .when(idx > 0, |el| {
-                                                el.border_l_1().border_color(byte_track_bg())
-                                            })
-                                    }))
-                                    .with_animation(
-                                        "preflight-interval-reveal",
-                                        Animation::new(Duration::from_millis(180))
-                                            .with_easing(ease_out_quint()),
-                                        |el, delta| el.opacity(0.4 + 0.6 * delta),
-                                    ),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_1p5()
-                                    .child(
-                                        div()
-                                            .font_family(MONO_FONT)
-                                            .text_size(TYPE_MICRO)
-                                            .text_color(silver_muted())
-                                            .child("REQUEST HEADERS"),
-                                    )
-                                    .when_some(header_summary, |el, summary| {
-                                        el.child(
-                                            div()
-                                                .id("preflight-headers-badge")
-                                                .px_1p5()
-                                                .py_0p5()
-                                                .rounded(px(3.0))
-                                                .bg(graphite_elevated())
-                                                .border_1()
-                                                .border_color(graphite_border())
-                                                .font_family(MONO_FONT)
-                                                .text_size(TYPE_MICRO)
-                                                .text_color(selenium_amber())
-                                                .tooltip(move |window, cx| {
-                                                    gpui_kit::component::tooltip::Tooltip::new(
-                                                        summary.clone(),
-                                                    )
-                                                    .build(window, cx)
-                                                })
-                                                .child("cURL"),
-                                        )
-                                    }),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
                                     .gap_2()
                                     .child(
                                         div()
+                                            .flex()
+                                            .items_center()
+                                            .gap_2()
                                             .font_family(MONO_FONT)
                                             .text_size(TYPE_MICRO)
-                                            .text_color(silver_muted())
-                                            .child(if info.supports_ranges {
-                                                "WORKERS"
-                                            } else {
-                                                "WORKERS (1)"
-                                            }),
+                                            .child(
+                                                div().text_color(silver_text()).child(
+                                                    if info.supports_ranges {
+                                                        format!("{segment_count} PARALLEL SEGMENTS")
+                                                    } else {
+                                                        "SINGLE STREAM".to_string()
+                                                    },
+                                                ),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_color(if info.supports_ranges {
+                                                        selenium_amber()
+                                                    } else {
+                                                        silver_muted()
+                                                    })
+                                                    .child(segment_meta),
+                                            ),
                                     )
                                     .child(
                                         div()
-                                            .h(px(26.0))
+                                            .h(px(24.0))
                                             .border_1()
                                             .border_color(graphite_border())
                                             .flex()
@@ -695,22 +607,79 @@ where
                                                 ))
                                             }),
                                     ),
+                            )
+                            .child(
+                                div()
+                                    .w_full()
+                                    .h(px(8.0))
+                                    .bg(byte_track_bg())
+                                    .border_1()
+                                    .border_color(graphite_border())
+                                    .flex()
+                                    .items_stretch()
+                                    .children((0..segment_count).map(|idx| {
+                                        let fill = if !info.supports_ranges {
+                                            silver_muted().opacity(0.45)
+                                        } else if idx == 0 {
+                                            selenium_amber()
+                                        } else {
+                                            cyanotype_blue().opacity(0.85)
+                                        };
+                                        div()
+                                            .flex_1()
+                                            .h_full()
+                                            .bg(fill)
+                                            .when(idx > 0, |el| {
+                                                el.border_l_1().border_color(byte_track_bg())
+                                            })
+                                    }))
+                                    .with_animation(
+                                        "preflight-interval-reveal",
+                                        Animation::new(Duration::from_millis(180))
+                                            .with_easing(ease_out_quint()),
+                                        |el, delta| el.opacity(0.4 + 0.6 * delta),
+                                    ),
                             ),
                     )
                     .child(
                         div()
-                            .p_2()
-                            .bg(graphite_elevated())
-                            .border_1()
-                            .border_color(graphite_border())
-                            .rounded(px(3.0))
+                            .pt_1p5()
                             .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(compact_input_row("COOKIE", cookie_input))
-                            .child(compact_input_row("REFERER", referer_input))
-                            .child(compact_input_row("AGENT", user_agent_input)),
+                            .items_center()
+                            .justify_between()
+                            .child(
+                                div()
+                                    .font_family(MONO_FONT)
+                                    .text_size(TYPE_MICRO)
+                                    .text_color(silver_muted())
+                                    .child("REQUEST HEADERS"),
+                            )
+                            .when_some(header_summary, |el, summary| {
+                                el.child(
+                                    div()
+                                        .id("preflight-headers-badge")
+                                        .px_1p5()
+                                        .py_0p5()
+                                        .rounded(px(3.0))
+                                        .bg(graphite_elevated())
+                                        .border_1()
+                                        .border_color(graphite_border())
+                                        .font_family(MONO_FONT)
+                                        .text_size(TYPE_MICRO)
+                                        .text_color(selenium_amber())
+                                        .tooltip(move |window, cx| {
+                                            gpui_kit::component::tooltip::Tooltip::new(
+                                                summary.clone(),
+                                            )
+                                            .build(window, cx)
+                                        })
+                                        .child("cURL"),
+                                )
+                            }),
                     )
+                    .child(compact_input_row("COOKIE", cookie_input))
+                    .child(compact_input_row("REFERER", referer_input))
+                    .child(compact_input_row("AGENT", user_agent_input))
                 }),
                 )
                 .child(div().w_full().h(px(1.0)).bg(graphite_border()))

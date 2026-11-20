@@ -439,7 +439,7 @@ impl PreflightWindow {
             *active_tab = tab;
             let target_h = match tab {
                 PreflightTab::General => 198.0,
-                PreflightTab::Options => 348.0,
+                PreflightTab::Options => 264.0,
             };
             window.resize(size(px(460.0), px(target_h)));
             cx.notify();
