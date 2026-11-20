@@ -75,27 +75,78 @@ pub(crate) fn is_window_visible(window: &gpui_kit::Window) -> bool {
 pub(crate) fn sync_windows_startup_registry(enabled: bool) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        use std::os::windows::process::CommandExt as _;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+        use std::os::windows::ffi::OsStrExt as _;
+        use windows_sys::Win32::Foundation::ERROR_FILE_NOT_FOUND;
+        use windows_sys::Win32::System::Registry::{
+            HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE, REG_SZ, RegCloseKey, RegCreateKeyW,
+            RegDeleteValueW, RegOpenKeyExW, RegSetValueExW,
+        };
 
-        let mut cmd = std::process::Command::new("reg.exe");
-        cmd.creation_flags(CREATE_NO_WINDOW);
+        let subkey: Vec<u16> = "Software\\Microsoft\\Windows\\CurrentVersion\\Run\0"
+            .encode_utf16()
+            .collect();
+        let value_name: Vec<u16> = "Posthaze\0".encode_utf16().collect();
+
         if enabled {
             let exe = std::env::current_exe()
                 .map_err(|err| format!("Could not resolve executable path: {err}"))?;
-            let value = format_startup_command(&exe);
-            cmd.args(["add", RUN_KEY, "/v", "Posthaze", "/t", "REG_SZ", "/d", &value, "/f"]);
+            let command = format_startup_command(&exe);
+            let wide_data: Vec<u16> = std::ffi::OsStr::new(&command)
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect();
+            let byte_len = u32::try_from(wide_data.len() * std::mem::size_of::<u16>())
+                .map_err(|_| "Startup command path is too long".to_string())?;
+
+            let mut hkey: HKEY = std::ptr::null_mut();
+            let status =
+                unsafe { RegCreateKeyW(HKEY_CURRENT_USER, subkey.as_ptr(), &mut hkey) };
+            if status != 0 {
+                return Err(format!("Could not open Run registry key (Win32 error {status})"));
+            }
+            let set_status = unsafe {
+                RegSetValueExW(
+                    hkey,
+                    value_name.as_ptr(),
+                    0,
+                    REG_SZ,
+                    wide_data.as_ptr().cast::<u8>(),
+                    byte_len,
+                )
+            };
+            unsafe { RegCloseKey(hkey) };
+            if set_status != 0 {
+                return Err(format!(
+                    "Could not write Posthaze startup entry (Win32 error {set_status})"
+                ));
+            }
+            Ok(())
         } else {
-            cmd.args(["delete", RUN_KEY, "/v", "Posthaze", "/f"]);
+            let mut hkey: HKEY = std::ptr::null_mut();
+            let status = unsafe {
+                RegOpenKeyExW(
+                    HKEY_CURRENT_USER,
+                    subkey.as_ptr(),
+                    0,
+                    KEY_SET_VALUE,
+                    &mut hkey,
+                )
+            };
+            if status == ERROR_FILE_NOT_FOUND {
+                return Ok(());
+            }
+            if status != 0 {
+                return Err(format!("Could not open Run registry key (Win32 error {status})"));
+            }
+            let del_status = unsafe { RegDeleteValueW(hkey, value_name.as_ptr()) };
+            unsafe { RegCloseKey(hkey) };
+            if del_status != 0 && del_status != ERROR_FILE_NOT_FOUND {
+                return Err(format!(
+                    "Could not remove Posthaze startup entry (Win32 error {del_status})"
+                ));
+            }
+            Ok(())
         }
-        let status = cmd
-            .status()
-            .map_err(|err| format!("Could not update Windows startup registry: {err}"))?;
-        if !status.success() && enabled {
-            return Err(format!("reg.exe exited with status {status}"));
-        }
-        Ok(())
     }
     #[cfg(not(target_os = "windows"))]
     {

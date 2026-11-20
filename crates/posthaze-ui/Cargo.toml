@@ -16,7 +16,7 @@ tracing.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
 raw-window-handle = "0.6"
 tray-icon = "0.21"
-windows-sys = { version = "0.60", features = ["Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.60", features = ["Win32_System_Registry", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(windows)'.build-dependencies]
 tauri-winres = "0.3"
