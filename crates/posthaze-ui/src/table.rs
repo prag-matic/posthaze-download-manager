@@ -41,7 +41,6 @@ impl PosthazeApp {
                     .w_full()
                     .flex()
                     .items_center()
-                    .pr(px(20.0))
                     .bg(paper_bg())
                     .border_b_1()
                     .border_color(paper_border())
@@ -133,44 +132,74 @@ impl PosthazeApp {
         div()
             .h_full()
             .flex_shrink_0()
-            .pl_2()
             .flex()
             .items_center()
-            .gap_1()
-            .child(
-                Button::new("resume-all")
-                    .xsmall()
-                    .ghost()
-                    .icon(IconName::Play)
-                    .when(!profile.compact_toolbar, |b| b.label("Resume All"))
-                    .tooltip("Resume All")
-                    .on_click(cx.listener(|app, _, _, cx| {
-                        app.resume_all(cx);
-                    })),
-            )
-            .child(
-                Button::new("pause-all")
-                    .xsmall()
-                    .ghost()
-                    .icon(IconName::Pause)
-                    .when(!profile.compact_toolbar, |b| b.label("Pause All"))
-                    .tooltip("Pause All")
-                    .on_click(cx.listener(|app, _, _, cx| {
-                        app.pause_all(cx);
-                    })),
-            )
-            .child(div().w(px(1.0)).h(px(16.0)).mx_0p5().bg(paper_border()))
-            .child(
-                Button::new("clear-completed")
-                    .xsmall()
-                    .ghost()
-                    .icon(IconName::Trash)
-                    .when(!profile.compact_toolbar, |b| b.label("Clear Completed"))
-                    .tooltip("Clear Completed")
-                    .on_click(cx.listener(|app, _, _, cx| {
-                        app.request_clear_completed(cx);
-                    })),
-            )
+            .child(self.toolbar_cell_button(
+                "resume-all",
+                IconName::Play,
+                (!profile.compact_toolbar).then_some("RESUME ALL"),
+                "Resume All",
+                true,
+                cx.listener(|app, _, _, cx| {
+                    app.resume_all(cx);
+                }),
+            ))
+            .child(self.toolbar_cell_button(
+                "pause-all",
+                IconName::Pause,
+                (!profile.compact_toolbar).then_some("PAUSE ALL"),
+                "Pause All",
+                true,
+                cx.listener(|app, _, _, cx| {
+                    app.pause_all(cx);
+                }),
+            ))
+            .child(self.toolbar_cell_button(
+                "clear-completed",
+                IconName::Trash,
+                (!profile.compact_toolbar).then_some("CLEAR COMPLETED"),
+                "Clear Completed",
+                false,
+                cx.listener(|app, _, _, cx| {
+                    app.request_clear_completed(cx);
+                }),
+            ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn toolbar_cell_button(
+        &self,
+        id: &'static str,
+        icon: IconName,
+        label: Option<&'static str>,
+        tooltip_text: &'static str,
+        right_border: bool,
+        on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> AnyElement {
+        div()
+            .id(id)
+            .h_full()
+            .px_3()
+            .when(right_border, |el| el.border_r_1().border_color(paper_border()))
+            .bg(table_header_bg())
+            .hover(|s| {
+                s.bg(selenium_amber())
+                    .text_color(rgb(active_theme().accent_foreground))
+            })
+            .cursor_pointer()
+            .flex()
+            .items_center()
+            .justify_center()
+            .gap_1p5()
+            .font_family(MONO_FONT)
+            .text_size(TYPE_MICRO)
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(carbon_text())
+            .tooltip(move |window, cx| Tooltip::new(tooltip_text).build(window, cx))
+            .on_click(on_click)
+            .child(Icon::new(icon).size(px(12.0)))
+            .when_some(label, |el, text| el.child(text))
+            .into_any_element()
     }
 
     pub(crate) fn render_table(
