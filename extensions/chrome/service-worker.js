@@ -164,6 +164,21 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   });
 });
 
+const bypassedUrls = new Map();
+
+function markBypassedUrl(url) {
+  bypassedUrls.set(url, Date.now() + 15000);
+}
+
+function consumeBypassedUrl(url) {
+  const expiresAt = bypassedUrls.get(url);
+  if (!expiresAt) {
+    return false;
+  }
+  bypassedUrls.delete(url);
+  return Date.now() <= expiresAt;
+}
+
 chrome.downloads.onCreated.addListener(async (item) => {
   const settings = await chrome.storage.local.get(DEFAULT_SETTINGS);
   if (!settings.interceptEnabled) {
@@ -173,15 +188,19 @@ chrome.downloads.onCreated.addListener(async (item) => {
   if (!url.startsWith("http://") && !url.startsWith("https://")) {
     return;
   }
+  if (consumeBypassedUrl(url)) {
+    return;
+  }
   if (shouldSkipDownload(item, url, settings)) {
     return;
   }
 
-  // Pause first so we can resume safely if the native host is unreachable.
+  // Cancel & erase immediately so Chrome does not animate or keep a duplicate download item.
   try {
-    await chrome.downloads.pause(item.id);
+    await chrome.downloads.cancel(item.id);
+    await chrome.downloads.erase({ id: item.id });
   } catch {
-    // Download may not be pausable yet; continue handoff attempt.
+    // Ignore if already completed/canceled.
   }
 
   const headers = await buildHeaders(url, item.referrer || "");
@@ -192,18 +211,13 @@ chrome.downloads.onCreated.addListener(async (item) => {
     headers
   });
 
-  if (resp && resp.ok) {
+  // Fall back to Chrome's own downloader only if the native host handoff failed.
+  if (!resp || !resp.ok) {
+    markBypassedUrl(url);
     try {
-      await chrome.downloads.cancel(item.id);
-      await chrome.downloads.erase({ id: item.id });
+      await chrome.downloads.download({ url });
     } catch {
-      // Ignore if already completed/canceled.
-    }
-  } else {
-    try {
-      await chrome.downloads.resume(item.id);
-    } catch {
-      // Ignore if download already finished or canceled.
+      bypassedUrls.delete(url);
     }
   }
 });
