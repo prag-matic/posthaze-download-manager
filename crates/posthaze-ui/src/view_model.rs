@@ -658,11 +658,7 @@ impl QueueController {
         {
             self.selected_id = self.selected_ids.iter().next().cloned();
         }
-        if self.selected_id.is_none() {
-            if let Some(first) = self.records.first().map(|r| r.id.clone()) {
-                self.select_single(first);
-            }
-        } else if let Some(ref sel) = self.selected_id {
+        if let Some(ref sel) = self.selected_id {
             self.selected_ids.insert(sel.clone());
         }
         self.selected_id.clone().map(UiEffect::LoadSegments)

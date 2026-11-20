@@ -787,18 +787,29 @@ impl PosthazeApp {
                 let mods = ev.modifiers();
                 let ctrl = mods.control || mods.platform;
                 let shift = mods.shift;
+                let is_double_click = ev.click_count() >= 2;
+                let mut deselected = false;
                 if shift {
                     app.queue
                         .select_range(&visible_ids, id_select.clone(), ctrl);
                 } else if ctrl {
                     app.queue.toggle_select(id_select.clone());
-                } else {
+                } else if is_double_click {
                     app.queue.select_single(id_select.clone());
+                } else {
+                    let selected = app.queue.selected_list();
+                    if selected.len() == 1 && selected[0] == id_select {
+                        app.queue.clear_selection();
+                        deselected = true;
+                    } else {
+                        app.queue.select_single(id_select.clone());
+                    }
                 }
                 if let Some(lead) = app.queue.selected_id.clone() {
                     app.load_segments_for(lead, cx);
                 }
-                if !ctrl
+                if !deselected
+                    && !ctrl
                     && !shift
                     && app.queue.settings.ui_click_row_opens_inspector
                     && app.inspector_collapsed
