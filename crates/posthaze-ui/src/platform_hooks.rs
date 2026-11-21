@@ -9,32 +9,26 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(target_os = "windows")]
 use std::sync::{Mutex, OnceLock};
 
+use crate::theme::{PaletteTone, ThemeBackdrop};
+
 /// Minimum Windows build number supporting `DWMWA_SYSTEMBACKDROP_TYPE` (Windows 11 22H2).
 const MIN_MICA_WINDOWS_BUILD: u32 = 22621;
 
-/// Window backdrop material applied via GPUI and Win32 DWM.
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DwmBackdrop {
-    /// Standard opaque window surface (`DWMSBT_NONE`).
-    Opaque,
-    /// Windows 11 Mica backdrop (`DWMSBT_MAINWINDOW`).
-    Mica,
-    /// Windows 11 Mica Alt backdrop (`DWMSBT_TABBEDWINDOW`).
-    MicaAlt,
-}
-
-impl DwmBackdrop {
-    /// Converts this backdrop material to GPUI's `WindowBackgroundAppearance`.
-    #[allow(dead_code)]
-    pub(crate) const fn to_window_background(self) -> gpui_kit::WindowBackgroundAppearance {
-        match self {
-            Self::Opaque => gpui_kit::WindowBackgroundAppearance::Opaque,
-            Self::Mica => gpui_kit::WindowBackgroundAppearance::MicaBackdrop,
-            Self::MicaAlt => gpui_kit::WindowBackgroundAppearance::MicaAltBackdrop,
-        }
+/// UTF-16 null-terminated registry subkey for Windows Personalize theme settings.
+#[cfg(target_os = "windows")]
+const PERSONALIZE_SUBKEY: &str =
+    "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize\0";
+#[cfg(target_os = "windows")]
+const PERSONALIZE_SUBKEY_UTF16: [u16; PERSONALIZE_SUBKEY.len()] = {
+    let bytes = PERSONALIZE_SUBKEY.as_bytes();
+    let mut buf = [0u16; PERSONALIZE_SUBKEY.len()];
+    let mut i = 0;
+    while i < bytes.len() {
+        buf[i] = bytes[i] as u16;
+        i += 1;
     }
-}
+    buf
+};
 
 /// Reason why native Windows 11 Mica translucency is unavailable and Posthaze
 /// has fallen back to its calibrated opaque palette.
@@ -118,8 +112,8 @@ fn is_direct_composition_disabled_value(value: Option<&str>) -> bool {
 static DWM_REJECTED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(target_os = "windows")]
-fn last_window_backdrops() -> &'static Mutex<HashMap<isize, (DwmBackdrop, bool)>> {
-    static MAP: OnceLock<Mutex<HashMap<isize, (DwmBackdrop, bool)>>> = OnceLock::new();
+fn last_window_backdrops() -> &'static Mutex<HashMap<isize, (ThemeBackdrop, PaletteTone)>> {
+    static MAP: OnceLock<Mutex<HashMap<isize, (ThemeBackdrop, PaletteTone)>>> = OnceLock::new();
     MAP.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -162,35 +156,56 @@ fn is_high_contrast_active() -> bool {
 }
 
 #[cfg(target_os = "windows")]
-fn is_transparency_enabled() -> bool {
+fn read_personalize_dword(value_name: &str) -> Option<u32> {
     use windows_sys::Win32::Foundation::ERROR_SUCCESS;
     use windows_sys::Win32::System::Registry::{
         HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW,
     };
 
-    let subkey: Vec<u16> =
-        "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize\0"
-            .encode_utf16()
-            .collect();
-    let value_name: Vec<u16> = "EnableTransparency\0".encode_utf16().collect();
-    let mut data: u32 = 1;
+    let wide_name: Vec<u16> = value_name
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut data: u32 = 0;
     let mut data_size = std::mem::size_of::<u32>() as u32;
     let status = unsafe {
         RegGetValueW(
             HKEY_CURRENT_USER,
-            subkey.as_ptr(),
-            value_name.as_ptr(),
+            PERSONALIZE_SUBKEY_UTF16.as_ptr(),
+            wide_name.as_ptr(),
             RRF_RT_REG_DWORD,
             std::ptr::null_mut(),
             (&mut data as *mut u32).cast::<std::ffi::c_void>(),
             &mut data_size,
         )
     };
-    if status == ERROR_SUCCESS {
-        data != 0
-    } else {
-        // Missing key or value defaults to enabled on Windows.
-        true
+    (status == ERROR_SUCCESS).then_some(data)
+}
+
+#[cfg(target_os = "windows")]
+fn is_transparency_enabled() -> bool {
+    // Missing key or value defaults to enabled on Windows.
+    read_personalize_dword("EnableTransparency").is_none_or(|data| data != 0)
+}
+
+/// Maps Windows `AppsUseLightTheme` registry DWORD value to GPUI's [`gpui_kit::WindowAppearance`].
+fn parse_apps_use_light_theme(value: Option<u32>) -> gpui_kit::WindowAppearance {
+    match value {
+        Some(v) if v != 0 => gpui_kit::WindowAppearance::Light,
+        _ => gpui_kit::WindowAppearance::Dark,
+    }
+}
+
+/// Queries the initial OS appearance before any GPUI window is open so `Mica (System)`
+/// opens on frame 1 with the correct Dark/Light polarity and DWM backdrop.
+pub(crate) fn initial_os_appearance() -> gpui_kit::WindowAppearance {
+    #[cfg(target_os = "windows")]
+    {
+        parse_apps_use_light_theme(read_personalize_dword("AppsUseLightTheme"))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        parse_apps_use_light_theme(None)
     }
 }
 
@@ -263,13 +278,36 @@ fn extend_dwm_frame(hwnd: windows_sys::Win32::Foundation::HWND, margin: i32) -> 
     unsafe { DwmExtendFrameIntoClientArea(hwnd, &margins) }
 }
 
+#[cfg(target_os = "windows")]
+fn check_dwm_hr(
+    hr: i32,
+    op: &'static str,
+    window: &gpui_kit::Window,
+    hwnd: windows_sys::Win32::Foundation::HWND,
+    reset_margins_on_err: bool,
+) -> Result<(), String> {
+    if hr < 0 {
+        tracing::warn!(
+            hr = format_args!("0x{:08X}", hr as u32),
+            op,
+            "Win32 DWM call failed while enabling Mica"
+        );
+        if reset_margins_on_err {
+            let _ = extend_dwm_frame(hwnd, 0);
+        }
+        DWM_REJECTED.store(true, Ordering::Relaxed);
+        window.set_background_appearance(gpui_kit::WindowBackgroundAppearance::Opaque);
+        return Err(format!("{op} failed (HRESULT 0x{:08X})", hr as u32));
+    }
+    Ok(())
+}
+
 /// Applies the requested window backdrop (`Opaque`, `Mica`, or `MicaAlt`) and
 /// immersive dark-mode polarity to a GPUI window.
-#[allow(dead_code)]
 pub(crate) fn apply_window_backdrop(
     window: &gpui_kit::Window,
-    backdrop: DwmBackdrop,
-    is_dark: bool,
+    backdrop: ThemeBackdrop,
+    tone: PaletteTone,
 ) -> Result<(), String> {
     window.set_background_appearance(backdrop.to_window_background());
 
@@ -282,61 +320,39 @@ pub(crate) fn apply_window_backdrop(
         let Some(hwnd) = win32_hwnd(window) else {
             return Ok(());
         };
+        let is_dark = tone == PaletteTone::Dark;
 
         match backdrop {
-            DwmBackdrop::Mica | DwmBackdrop::MicaAlt => {
+            ThemeBackdrop::Mica | ThemeBackdrop::MicaAlt => {
                 let backdrop_value = match backdrop {
-                    DwmBackdrop::Mica => DWMSBT_MAINWINDOW,
-                    DwmBackdrop::MicaAlt => DWMSBT_TABBEDWINDOW,
-                    DwmBackdrop::Opaque => unreachable!(),
+                    ThemeBackdrop::Mica => DWMSBT_MAINWINDOW,
+                    ThemeBackdrop::MicaAlt => DWMSBT_TABBEDWINDOW,
+                    ThemeBackdrop::Opaque => unreachable!(),
                 };
 
-                let hr_dark = set_dwm_dark_mode(hwnd, is_dark);
-                if hr_dark < 0 {
-                    tracing::warn!(
-                        hr = format_args!("0x{:08X}", hr_dark as u32),
-                        is_dark,
-                        "DWMWA_USE_IMMERSIVE_DARK_MODE failed while enabling Mica"
-                    );
-                    DWM_REJECTED.store(true, Ordering::Relaxed);
-                    window.set_background_appearance(gpui_kit::WindowBackgroundAppearance::Opaque);
-                    return Err(format!(
-                        "DWMWA_USE_IMMERSIVE_DARK_MODE failed (HRESULT 0x{:08X})",
-                        hr_dark as u32
-                    ));
-                }
-
-                let hr_margins = extend_dwm_frame(hwnd, -1);
-                if hr_margins < 0 {
-                    tracing::warn!(
-                        hr = format_args!("0x{:08X}", hr_margins as u32),
-                        "DwmExtendFrameIntoClientArea(-1) failed while enabling Mica"
-                    );
-                    DWM_REJECTED.store(true, Ordering::Relaxed);
-                    window.set_background_appearance(gpui_kit::WindowBackgroundAppearance::Opaque);
-                    return Err(format!(
-                        "DwmExtendFrameIntoClientArea failed (HRESULT 0x{:08X})",
-                        hr_margins as u32
-                    ));
-                }
-
-                let hr_backdrop = set_dwm_backdrop_type(hwnd, backdrop_value);
-                if hr_backdrop < 0 {
-                    tracing::warn!(
-                        hr = format_args!("0x{:08X}", hr_backdrop as u32),
-                        ?backdrop,
-                        "DWMWA_SYSTEMBACKDROP_TYPE failed while enabling Mica"
-                    );
-                    let _ = extend_dwm_frame(hwnd, 0);
-                    DWM_REJECTED.store(true, Ordering::Relaxed);
-                    window.set_background_appearance(gpui_kit::WindowBackgroundAppearance::Opaque);
-                    return Err(format!(
-                        "DWMWA_SYSTEMBACKDROP_TYPE failed (HRESULT 0x{:08X})",
-                        hr_backdrop as u32
-                    ));
-                }
+                check_dwm_hr(
+                    set_dwm_dark_mode(hwnd, is_dark),
+                    "DWMWA_USE_IMMERSIVE_DARK_MODE",
+                    window,
+                    hwnd,
+                    false,
+                )?;
+                check_dwm_hr(
+                    extend_dwm_frame(hwnd, -1),
+                    "DwmExtendFrameIntoClientArea",
+                    window,
+                    hwnd,
+                    false,
+                )?;
+                check_dwm_hr(
+                    set_dwm_backdrop_type(hwnd, backdrop_value),
+                    "DWMWA_SYSTEMBACKDROP_TYPE",
+                    window,
+                    hwnd,
+                    true,
+                )?;
             }
-            DwmBackdrop::Opaque => {
+            ThemeBackdrop::Opaque => {
                 if windows_build_number().is_some_and(|build| build >= MIN_MICA_WINDOWS_BUILD) {
                     let hr_backdrop = set_dwm_backdrop_type(hwnd, DWMSBT_NONE);
                     if hr_backdrop < 0 {
@@ -365,14 +381,14 @@ pub(crate) fn apply_window_backdrop(
         }
 
         if let Ok(mut map) = last_window_backdrops().lock() {
-            map.insert(hwnd as isize, (backdrop, is_dark));
+            map.insert(hwnd as isize, (backdrop, tone));
         }
         Ok(())
     }
 
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = is_dark;
+        let _ = tone;
         Ok(())
     }
 }
@@ -493,15 +509,11 @@ where
                     )
                 };
 
-                let subkey: Vec<u16> =
-                    "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize\0"
-                        .encode_utf16()
-                        .collect();
                 let mut hkey: HKEY = std::ptr::null_mut();
                 let reg_opened = unsafe {
                     RegOpenKeyExW(
                         HKEY_CURRENT_USER,
-                        subkey.as_ptr(),
+                        PERSONALIZE_SUBKEY_UTF16.as_ptr(),
                         0,
                         KEY_NOTIFY,
                         &mut hkey,
@@ -665,8 +677,8 @@ pub(crate) fn show_window_from_tray(window: &gpui_kit::Window) {
     };
     window.activate_window();
     #[cfg(target_os = "windows")]
-    if let Some((backdrop, is_dark)) = saved_backdrop {
-        let _ = apply_window_backdrop(window, backdrop, is_dark);
+    if let Some((backdrop, tone)) = saved_backdrop {
+        let _ = apply_window_backdrop(window, backdrop, tone);
     }
 }
 
@@ -917,8 +929,8 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        DwmBackdrop, MicaFallbackReason, MicaProbeInputs, evaluate_mica_availability,
-        format_startup_command, is_direct_composition_disabled_value,
+        MicaFallbackReason, MicaProbeInputs, evaluate_mica_availability, format_startup_command,
+        initial_os_appearance, is_direct_composition_disabled_value, parse_apps_use_light_theme,
     };
 
     #[test]
@@ -1033,19 +1045,32 @@ mod tests {
     }
 
     #[test]
-    fn dwm_backdrop_maps_to_gpui_window_background() {
+    fn apps_use_light_theme_maps_dword_to_window_appearance() {
         assert_eq!(
-            DwmBackdrop::Opaque.to_window_background(),
-            gpui_kit::WindowBackgroundAppearance::Opaque
+            parse_apps_use_light_theme(Some(0)),
+            gpui_kit::WindowAppearance::Dark
         );
         assert_eq!(
-            DwmBackdrop::Mica.to_window_background(),
-            gpui_kit::WindowBackgroundAppearance::MicaBackdrop
+            parse_apps_use_light_theme(Some(1)),
+            gpui_kit::WindowAppearance::Light
         );
         assert_eq!(
-            DwmBackdrop::MicaAlt.to_window_background(),
-            gpui_kit::WindowBackgroundAppearance::MicaAltBackdrop
+            parse_apps_use_light_theme(Some(42)),
+            gpui_kit::WindowAppearance::Light
         );
+        assert_eq!(
+            parse_apps_use_light_theme(None),
+            gpui_kit::WindowAppearance::Dark
+        );
+    }
+
+    #[test]
+    fn initial_os_appearance_smoke_check_returns_dark_or_light() {
+        let appearance = initial_os_appearance();
+        assert!(matches!(
+            appearance,
+            gpui_kit::WindowAppearance::Dark | gpui_kit::WindowAppearance::Light
+        ));
     }
 
     #[test]

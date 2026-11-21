@@ -223,7 +223,19 @@ pub(crate) fn grid_kv_row(
     value: impl IntoElement,
     tone: GridTone,
 ) -> AnyElement {
-    let (border_col, label_bg, label_fg, value_bg) = match tone {
+    grid_kv_row_with_bg(label, label_width, value, tone, None)
+}
+
+/// Two-column `LABEL | VALUE` grid row with an optional value-cell background override
+/// (for example `input_bg()` on recessed modal form fields).
+pub(crate) fn grid_kv_row_with_bg(
+    label: &'static str,
+    label_width: f32,
+    value: impl IntoElement,
+    tone: GridTone,
+    value_bg_override: Option<Hsla>,
+) -> AnyElement {
+    let (border_col, label_bg, label_fg, default_value_bg) = match tone {
         GridTone::Paper | GridTone::PaperSubtle => {
             (paper_border(), table_header_bg(), carbon_muted(), paper_bg())
         }
@@ -234,6 +246,7 @@ pub(crate) fn grid_kv_row(
             Hsla::transparent_black(),
         ),
     };
+    let value_bg = value_bg_override.unwrap_or(default_value_bg);
     div()
         .min_h(px(32.0))
         .w_full()

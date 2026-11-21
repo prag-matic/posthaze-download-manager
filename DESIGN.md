@@ -162,10 +162,10 @@ Single-window desktop shell (`1020×640` default & minimum size, expandable):
 
 ## Elevation & Depth
 
-Flat tonal layering separated by `1px` hairline borders (`#2C2A27` on dark graphite, `#DFDBD2` on warm paper). No drop shadows or blur-based elevation are used at rest; modal overlays isolate focus via a translucent carbon scrim (`#141413AA`) behind a `1px`-bordered `#181715` plate.
+Flat tonal layering separated by `1px` hairline borders (`#2C2A27` on dark graphite, `#DFDBD2` on warm paper). Structural panes at rest use zero drop shadows or blur-based elevation. Floating overlays isolate focus above the shell: standard modals (`Settings`, `File-Op`) and context menus pair a `1px` `graphite_border()` with a subtle elevation shadow (`shadow_lg()` / `shadow_md()`) so frosted plates stay crisp over translucent Mica glass, while destructive `Confirm` modals retain their `1px` `errata_vermilion()` border behind a translucent scrim (`modal_scrim()`).
 
 ### Named Rules
-**The Hairline Partition Rule.** Depth comes from ground contrast (`#181715` vs `#F2EFE9`) and `1px` structural rules—never soft shadows or glowing halos.
+**The Hairline Partition Rule.** Structural depth across resting panes comes from ground contrast (`#181715` vs `#F2EFE9`) and `1px` structural rules—never soft shadows or glowing halos on non-floating chrome.
 
 ## Shapes
 
@@ -251,7 +251,7 @@ When `palette.backdrop != ThemeBackdrop::Opaque`, `apply_theme_with_accent` MUST
 Every translucent surface is painted as a **single layer**—never stack duplicate `.bg(...)` fills on nested containers, which compounds alpha and muddies Mica glass:
 - **Main `PosthazeApp` shell**: Transparent outer root over `Root` / DWM Mica; `TitleBar` at `0%` (`titlebar_bg()`); left filter rail and bottom inspector at `graphite_bg()` (`14%` dark / `18%` light); top toolbar and `Downloads` table at `paper_bg()` (`46%`/`54%`) with `table_header_bg()` (`40%`/`45%`) and `1px` `paper_border()` / `graphite_border()` flush hairline rules.
 - **Standalone `PreflightWindow`**: Transparent outer root so `TitleBar` shows pure `0%` DWM Mica, single-layer `paper_bg()` probe/form card body, and single-layer `graphite_bg()` footer bar.
-- **In-window modals (`Settings`, `Confirm`, `File-Op`)**: `modal_scrim()` backdrop (`42%`/`22%`) behind a single-layer `modal_bg()` card (`82%`/`85%`) with `1px` `graphite_border()` and `shadow_lg()`, without redundant `.bg(graphite_bg())` on nested columns such as the Settings navigation rail.
+- **In-window modals (`Settings`, `File-Op`, `Confirm`)**: `modal_scrim()` backdrop (`42%`/`22%`) behind a single-layer `modal_bg()` card (`82%`/`85%`) with `shadow_lg()`, without redundant `.bg(graphite_bg())` on nested columns such as the Settings navigation rail; `Settings` and `File-Op` use a `1px` `graphite_border()`, while destructive `Confirm` modals retain their `1px` `errata_vermilion()` border.
 - **Context menu**: `context_menu_bg()` (`86%`/`90%`) with `1px` `graphite_border()` and `shadow_md()`, using `paper_hover()` for non-danger menu-item hover states so hover contrast stays crisp in both `Mica Light` and `Mica Dark`.
 
 ### Dual-Ground Truth & Contrast Preservation

@@ -66,19 +66,11 @@ use crate::view_model::{
     resolve_inspector_drag, resolve_keyboard_action, resolve_sidebar_drag,
 };
 
-/// Maps a [`ThemeBackdrop`] to the Win32/GPUI [`platform_hooks::DwmBackdrop`] material.
-pub(crate) const fn dwm_backdrop_for(backdrop: ThemeBackdrop) -> platform_hooks::DwmBackdrop {
-    match backdrop {
-        ThemeBackdrop::Opaque => platform_hooks::DwmBackdrop::Opaque,
-        ThemeBackdrop::Mica => platform_hooks::DwmBackdrop::Mica,
-        ThemeBackdrop::MicaAlt => platform_hooks::DwmBackdrop::MicaAlt,
-    }
-}
-
 /// Returns `true` when `theme_id` forces a specific Mica dark/light polarity
 /// (`"mica-dark"` or `"mica-light"`) rather than following the OS appearance.
 pub(crate) fn is_forced_mica_polarity(theme_id: &str) -> bool {
-    matches!(theme_id, "mica-dark" | "mica-light")
+    let preset = find_theme_preset(theme_id);
+    preset.is_mica && preset.badge != ThemeBadge::Auto
 }
 
 /// Resolves the active `(theme_id, accent_override)` pair, preferring an open
@@ -100,12 +92,10 @@ fn apply_palette_to_all_windows(
     current_window: &mut Option<&mut Window>,
     cx: &mut App,
 ) -> bool {
-    let dwm_backdrop = dwm_backdrop_for(palette.backdrop);
-    let is_dark = palette.tone == PaletteTone::Dark;
     let mut any_failed = false;
 
     let current_handle = if let Some(win) = current_window.as_deref_mut() {
-        if platform_hooks::apply_window_backdrop(win, dwm_backdrop, is_dark).is_err() {
+        if platform_hooks::apply_window_backdrop(win, palette.backdrop, palette.tone).is_err() {
             any_failed = true;
         }
         win.refresh();
@@ -119,7 +109,7 @@ fn apply_palette_to_all_windows(
             continue;
         }
         let _ = handle.update(cx, |_, win, _| {
-            if platform_hooks::apply_window_backdrop(win, dwm_backdrop, is_dark).is_err() {
+            if platform_hooks::apply_window_backdrop(win, palette.backdrop, palette.tone).is_err() {
                 any_failed = true;
             }
             win.refresh();
@@ -141,7 +131,7 @@ fn sync_theme_and_backdrops_inner(
         cx.windows()
             .into_iter()
             .find_map(|handle| handle.update(cx, |_, win, _| win.appearance()).ok())
-            .unwrap_or(WindowAppearance::Dark)
+            .unwrap_or_else(platform_hooks::initial_os_appearance)
     };
 
     let mica_available = platform_hooks::mica_availability().is_ok();
@@ -214,7 +204,7 @@ fn main() {
                     size(px(1020.0), px(640.0)),
                     cx,
                 ))),
-                window_background: dwm_backdrop_for(initial_palette.backdrop).to_window_background(),
+                window_background: initial_palette.backdrop.to_window_background(),
                 show: !start_minimized,
                 focus: !start_minimized,
                 window_min_size: Some(size(px(1020.0), px(640.0))),
@@ -406,7 +396,7 @@ impl PosthazeApp {
         app
     }
 
-    fn active_theme_selection(&self) -> (String, Option<String>) {
+    pub(crate) fn active_theme_selection(&self) -> (String, Option<String>) {
         let draft = self.settings_modal.as_ref().map(|modal| {
             (
                 modal.draft.ui_theme.as_str(),
@@ -2292,19 +2282,7 @@ impl PosthazeApp {
 
 #[cfg(test)]
 mod tests {
-    use super::{dwm_backdrop_for, is_forced_mica_polarity, resolve_active_theme_selection};
-    use crate::platform_hooks::DwmBackdrop;
-    use crate::theme::ThemeBackdrop;
-
-    #[test]
-    fn dwm_backdrop_for_maps_all_theme_backdrops() {
-        assert_eq!(dwm_backdrop_for(ThemeBackdrop::Opaque), DwmBackdrop::Opaque);
-        assert_eq!(dwm_backdrop_for(ThemeBackdrop::Mica), DwmBackdrop::Mica);
-        assert_eq!(
-            dwm_backdrop_for(ThemeBackdrop::MicaAlt),
-            DwmBackdrop::MicaAlt
-        );
-    }
+    use super::{is_forced_mica_polarity, resolve_active_theme_selection};
 
     #[test]
     fn is_forced_mica_polarity_identifies_forced_presets_only() {
@@ -2313,6 +2291,7 @@ mod tests {
         assert!(!is_forced_mica_polarity("mica-system"));
         assert!(!is_forced_mica_polarity("chronophotographic"));
         assert!(!is_forced_mica_polarity("archival"));
+        assert!(!is_forced_mica_polarity("unknown-preset"));
     }
 
     #[test]

@@ -3,7 +3,7 @@
 use std::sync::RwLock;
 
 use gpui_kit::component::{Theme, ThemeMode};
-use gpui_kit::{App, Hsla, Pixels, WindowAppearance, px};
+use gpui_kit::{App, Hsla, Pixels, WindowAppearance, WindowBackgroundAppearance, px};
 
 /// Authoritative tabular monospaced font for byte offsets, speeds, ETAs, and HTTP validators.
 pub const MONO_FONT: &str = "Consolas";
@@ -55,6 +55,17 @@ pub enum ThemeBackdrop {
     Mica,
     /// Windows 11 Mica Alt material (`DWMSBT_TABBEDWINDOW`).
     MicaAlt,
+}
+
+impl ThemeBackdrop {
+    /// Converts this backdrop material into GPUI's [`WindowBackgroundAppearance`].
+    pub const fn to_window_background(self) -> WindowBackgroundAppearance {
+        match self {
+            Self::Opaque => WindowBackgroundAppearance::Opaque,
+            Self::Mica => WindowBackgroundAppearance::MicaBackdrop,
+            Self::MicaAlt => WindowBackgroundAppearance::MicaAltBackdrop,
+        }
+    }
 }
 
 /// Polarity badge displayed on theme preset cards in Settings > Interface.
@@ -1019,5 +1030,21 @@ mod tests {
         let palette = resolve_palette("nonexistent", None, WindowAppearance::Light, true);
         assert_eq!(palette, CHRONOPHOTOGRAPHIC);
         assert_eq!(palette.backdrop, ThemeBackdrop::Opaque);
+    }
+
+    #[test]
+    fn theme_backdrop_maps_to_gpui_window_background() {
+        assert_eq!(
+            ThemeBackdrop::Opaque.to_window_background(),
+            WindowBackgroundAppearance::Opaque
+        );
+        assert_eq!(
+            ThemeBackdrop::Mica.to_window_background(),
+            WindowBackgroundAppearance::MicaBackdrop
+        );
+        assert_eq!(
+            ThemeBackdrop::MicaAlt.to_window_background(),
+            WindowBackgroundAppearance::MicaAltBackdrop
+        );
     }
 }
