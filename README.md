@@ -5,8 +5,9 @@ A Windows-native, multi-connection HTTP/HTTPS download manager built with a deco
 ## Documentation
 
 - [Documentation Index](docs/README.md) — Milestone docs, benchmarks, ADRs, and API doc instructions
-- [Comprehensive Settings, Custom Headers & Context Menu](docs/settings-and-context-menu.md) — 7-tab Settings, proxy/throttling, Paste as cURL, notifications/hooks, and row context menu
-- [Table-Grid Cell UI System & Interface Customization](docs/table-grid-ui-and-customization.md) — `grid_cells.rs` primitives, scrubber minimap, multi-select, density/columns, and accent overrides
+- [Auto Updater (Signed GitHub Releases)](docs/auto-updater.md) — Ed25519 + SHA-256 verified silent upgrades, `posthaze-keytool`, and portable-mode notifications
+- [Comprehensive Settings, Custom Headers & Context Menu](docs/settings-and-context-menu.md) — 9-tab Settings, proxy/throttling, Paste as cURL, notifications/hooks, and row context menu
+- [Table-Grid Cell UI System & Interface Customization](docs/table-grid-ui-and-customization.md) — `grid_cells.rs` primitives, dynamic top toolbar, scrubber minimap, multi-select, density/columns, and accent overrides
 - [Independent Pre-Flight Window, Folder Picker & Extension Lock](docs/preflight-window-and-pickers.md) — Standalone `PreflightWindow`, `ADD DOWNLOAD` / `OPTIONS` titlebar tabs, native folder picker, and extension lock
 - [Release Packaging & Portable Mode](docs/release-packaging-and-portable-mode.md) — Release profile, console-free Windows GUI subsystem, and `posthaze.portable` data routing
 - [Creating Themes for Posthaze](docs/creating-themes.md) — 5 built-in themes, `ThemePalette` token reference, and guide to adding new themes

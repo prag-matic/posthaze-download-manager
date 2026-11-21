@@ -26,7 +26,7 @@ The workspace `Cargo.toml` defines `[profile.release]` with `lto = true`, `codeg
 
 - **Windows System Tray (`tray.rs`):** `posthaze-ui` creates a persistent System Tray icon with **Show / Hide Posthaze**, **Pause All Downloads**, and **Quit Posthaze** menu actions (plus left-click toggle).
 - **Close to System Tray (`ui_close_to_tray`, default `true`):** Closing the main window minimizes to the tray so `Active` `Download`s and **Browser Capture** stay alive; **Tray → Quit** or `Ctrl+Q` exits the process cleanly.
-- **Launch on Windows Startup (`launch_on_startup`, default `false`):** Saving **Settings → General → Launch on Windows Startup** writes or removes `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Posthaze` with `"<exe>" --minimized`.
+- **Launch on Windows Startup (`launch_on_startup`, default `false`):** Saving **Settings → General → Launch on Windows Startup** writes or removes `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Posthaze` with `"<exe>" --minimized` using the Win32 Registry API (`RegCreateKeyW` / `RegSetValueExW` / `RegDeleteValueW`).
 
 ## Built-In Browser Native Messaging Registration (`Settings → Integration`)
 
@@ -34,5 +34,5 @@ The workspace `Cargo.toml` defines `[profile.release]` with `lto = true`, `codeg
 
 ## Windows Installer, Portable ZIP & Release Pipeline
 
-- **Inno Setup (`packaging/windows/posthaze.iss`):** Per-user Windows installer (`PrivilegesRequired=lowest`) installing `posthaze-ui.exe`, `posthaze-cli.exe`, and `extensions/chrome/` into `%LOCALAPPDATA%\Programs\Posthaze`, with Start Menu shortcuts and optional Desktop / Windows Startup (`--minimized`) tasks.
-- **GitHub Actions (`.github/workflows/release.yml`):** Tag-triggered (`v*`) workflow that verifies `cargo doc`, `cargo clippy -- -D warnings`, and `cargo test --workspace`, builds release binaries, packages `posthaze-<version>-windows-x64-portable.zip` (with `posthaze.portable`) and `posthaze-<version>-windows-x64-setup.exe`, generates `SHA256SUMS.txt`, and publishes the GitHub Release with unsigned SmartScreen verification guidance.
+- **Inno Setup (`packaging/windows/posthaze.iss`):** Per-user Windows installer (`PrivilegesRequired=lowest`) installing `posthaze-ui.exe`, `posthaze-cli.exe`, and `extensions/chrome/` into `%LOCALAPPDATA%\Programs\Posthaze`, with Start Menu shortcuts, optional Desktop / Windows Startup (`--minimized`) tasks, and `CloseApplications=yes` / `RestartApplications=yes` plus a silent-relaunch `[Run]` entry for in-app auto-updates.
+- **GitHub Actions (`.github/workflows/release.yml`):** Tag-triggered (`v*`) workflow that runs `scripts/check-repo.ps1`, verifies the tag matches `Cargo.toml`, checks `cargo doc`, `cargo clippy -- -D warnings`, and `cargo test --workspace`, builds release binaries, packages `posthaze-<version>-windows-x64-portable.zip` (with `posthaze.portable`) and `posthaze-<version>-windows-x64-setup.exe`, signs the installer with `posthaze-keytool` (`UPDATER_SIGNING_KEY` secret) to produce `<setup>.exe.sig`, generates `SHA256SUMS.txt`, and publishes the GitHub Release. See [Auto Updater](auto-updater.md) for verification and key-rotation details.

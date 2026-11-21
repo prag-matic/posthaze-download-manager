@@ -4,14 +4,17 @@ This document summarizes the configurable `Settings`, custom HTTP header / cURL 
 
 ## Comprehensive Settings (`SettingsModalState`)
 
-The Settings modal uses a 6-tab left-navigation layout (`General`, `Downloads`, `Network`, `Automation`, `Interface`, `Reset`) backed by SQLite (`0004_extended_settings.sql`):
+The Settings modal uses a 9-tab left-navigation layout (`General`, `Interface`, `Downloads`, `Network`, `Notifications`, `Automation`, `Integration`, `Updates`, `Reset`) backed by SQLite (`0004_extended_settings.sql` through `0009_auto_check_updates.sql`):
 
-- **General:** Default download folder and optional file-type subfolder auto-categorization (`Archives`, `Video`, `Audio`, `Documents`, `Programs` via `categorize_subfolder`).
+- **General:** Default download folder, optional file-type subfolder auto-categorization (`Archives`, `Video`, `Audio`, `Documents`, `Programs` via `categorize_subfolder`), close-to-tray (`ui_close_to_tray`), and launch on Windows startup (`launch_on_startup`).
+- **Interface:** Theme and accent override, row height density, visible columns, toolbar labels, scrollbar minimap, titlebar telemetry, `ui_click_row_opens_inspector`, `ui_show_add_paused`, `ui_lock_file_extension`, and `ui_zoom_percent` (`90%`, `100%`, `110%`, `125%`).
 - **Downloads:** File-exists collision policy (`CollisionPolicy::{Rename, Overwrite, Ask}`), row delete button default (`DeleteDefaultAction::{Ask, Remove, DeleteFile}`), and automatic retry count for transient failures (`auto_retry_count`).
 - **Network:** Proxy routing (`ProxyMode::{System, None, Manual}`), global download speed limit (`BandwidthLimiter` with `Low` / `Medium` / `High` / `Unlimited` presets or custom KiB/s), `max_workers` (`1..32`), `max_concurrent_downloads`, and `sync_on_complete`.
-- **Automation:** Windows Toast notifications (`notify_on_added`, `notify_on_completed`, `notify_on_failed`, `notify_only_inactive`) and a post-completion external command hook (`%path%` substitution) with a 1-click Windows Defender (`MpCmdRun.exe`) preset.
-- **Interface:** `ui_click_row_opens_inspector`, `ui_show_add_paused`, and `ui_zoom_percent` (`90%`, `100%`, `110%`, `125%`).
-- **Reset:** One-click `Reset All Settings to Defaults` restoring `Settings::default()`.
+- **Notifications:** Windows Toast notifications (`notify_on_added`, `notify_on_completed`, `notify_on_failed`, `notify_only_inactive`).
+- **Automation:** Post-completion external command hook (`%path%` substitution) with a 1-click Windows Defender (`MpCmdRun.exe`) preset.
+- **Integration:** One-click Browser Capture Native Messaging Host registration (`com.posthaze.host`) for Chrome, Edge, and Brave.
+- **Updates:** Current version and install mode (`INSTALLED` / `PORTABLE`), automatic update check toggle (`auto_check_updates`, startup + 24h), **Check Now**, signed silent install (`INSTALL v{x}` on installed builds), and GitHub release notes link.
+- **Reset:** Copy Config JSON, Open Logs Folder, and one-click `Reset All Settings to Defaults` restoring `Settings::default()`.
 
 ## Custom Headers & Paste as cURL
 
