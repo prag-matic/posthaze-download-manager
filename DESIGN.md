@@ -241,7 +241,7 @@ When native Mica translucency is unavailable—Windows 10 or builds `< 22621`, `
 | `input_bg` | `#05050573` (45%) | `#FFFFFFA6` (65%) | `#181818FF` | `#FFFFFFFF` |
 | `byte_track_bg` | `#04040499` (60%) | `#0000001C` (11%) | `#121212FF` | `#E4E4E4FF` |
 | `modal_scrim` | `#00000073` (45%) | `#00000038` (22%) | `#00000080` | `#00000040` |
-| `modal_bg` | `#121212DB` (86%) | `#FAFAFAD9` (85%) | `#242424FF` | `#FAFAFAFF` |
+| `modal_bg` | `#141414FF` (100%) | `#FAFAFAFF` (100%) | `#242424FF` | `#FAFAFAFF` |
 | `context_menu_bg` | `#141414E6` (90%) | `#FFFFFFE6` (90%) | `#282828FF` | `#FFFFFFFF` |
 
 ### `Root` & `TitleBar` Compositing Rule
@@ -251,7 +251,7 @@ When `palette.backdrop != ThemeBackdrop::Opaque`, `apply_theme_with_accent` MUST
 Every translucent surface is painted as a **single layer**—never stack duplicate `.bg(...)` fills on nested containers, which compounds alpha and muddies Mica glass:
 - **Main `PosthazeApp` shell**: Transparent outer root over `Root` / DWM Mica; `TitleBar` at `0%` (`titlebar_bg()`); left filter rail and bottom inspector at `graphite_bg()` (`16%` obsidian dark / `18%` light); top toolbar and `Downloads` table at `paper_bg()` (`32%` obsidian dark / `54%` light) with `table_header_bg()` (`36%`/`45%`) and `1px` `paper_border()` / `graphite_border()` flush hairline rules.
 - **Standalone `PreflightWindow`**: Transparent outer root so `TitleBar` shows pure `0%` DWM Mica, single-layer `paper_bg()` probe/form card body, and single-layer `graphite_bg()` footer bar.
-- **In-window modals (`Settings`, `File-Op`, `Confirm`)**: `modal_scrim()` backdrop (`45%`/`22%`) behind a single-layer `modal_bg()` card (`86%`/`85%`) with `shadow_lg()`, without redundant `.bg(graphite_bg())` on nested columns such as the Settings navigation rail; `Settings` and `File-Op` use a `1px` `graphite_border()`, while destructive `Confirm` modals retain their `1px` `errata_vermilion()` border.
+- **In-window modals (`Settings`, `File-Op`, `Confirm`)**: `modal_scrim()` backdrop (`45%`/`22%`) behind an opaque `modal_bg()` card (`100%` `#141414` dark / `#FAFAFA` light) with `shadow_lg()`, preventing dense table rows underneath from bleeding through modal controls; `Settings` and `File-Op` use a `1px` `graphite_border()`, while destructive `Confirm` modals retain their `1px` `errata_vermilion()` border.
 - **Context menu**: `context_menu_bg()` (`90%`/`90%`) with `1px` `graphite_border()` and `shadow_md()`, using `paper_hover()` for non-danger menu-item hover states so hover contrast stays crisp in both `Mica Light` and `Mica Dark`.
 
 ### Dual-Ground Truth & Contrast Preservation
