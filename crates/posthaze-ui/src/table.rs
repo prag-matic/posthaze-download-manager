@@ -85,7 +85,7 @@ impl PosthazeApp {
                             .bg(table_header_bg())
                             .hover(|s| {
                                 s.bg(selenium_amber())
-                                    .text_color(rgb(active_theme().accent_foreground))
+                                    .text_color(active_theme().accent_foreground.hsla())
                             })
                             .cursor_pointer()
                             .flex()

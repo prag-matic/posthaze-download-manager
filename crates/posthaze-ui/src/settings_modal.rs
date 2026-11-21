@@ -434,18 +434,21 @@ impl SettingsModalState {
                 crate::theme::apply_theme_with_accent(
                     &self.draft.ui_theme,
                     self.draft.ui_accent_override.as_deref(),
-                    Some(window),
+                    window.appearance(),
+                    false,
                     cx,
                 );
             }
             SettingsAction::SetTheme(theme_id) => {
-                let palette = crate::theme::apply_theme_with_accent(
-                    &theme_id,
+                let preset = crate::theme::find_theme_preset(&theme_id);
+                crate::theme::apply_theme_with_accent(
+                    preset.id,
                     self.draft.ui_accent_override.as_deref(),
-                    Some(window),
+                    window.appearance(),
+                    false,
                     cx,
                 );
-                self.draft.ui_theme = palette.id.to_string();
+                self.draft.ui_theme = preset.id.to_string();
             }
             SettingsAction::CopyConfigJson => {
                 if let Ok(settings) = self.apply_to_settings(cx) {
@@ -491,7 +494,8 @@ impl SettingsModalState {
                 crate::theme::apply_theme_with_accent(
                     &self.draft.ui_theme,
                     self.draft.ui_accent_override.as_deref(),
-                    Some(window),
+                    window.appearance(),
+                    false,
                     cx,
                 );
             }
@@ -1338,18 +1342,17 @@ where
                         .flex()
                         .flex_wrap()
                         .gap_2()
-                        .children(BUILTIN_THEMES.iter().map(|palette| {
-                            let is_selected = state.draft.ui_theme == palette.id
-                                || (find_theme(&state.draft.ui_theme).id == palette.id
-                                    && state.draft.ui_theme.is_empty());
-                            let theme_id = palette.id.to_string();
+                        .children(BUILTIN_THEME_PRESETS.iter().map(|preset| {
+                            let is_selected = find_theme_preset(&state.draft.ui_theme).id == preset.id;
+                            let theme_id = preset.id.to_string();
                             let act = on_action.clone();
-                            let tone_label = match palette.tone {
-                                PaletteTone::Dark => "DARK",
-                                PaletteTone::Light => "LIGHT",
+                            let tone_label = match preset.badge {
+                                ThemeBadge::Dark => "DARK",
+                                ThemeBadge::Light => "LIGHT",
+                                ThemeBadge::Auto => "AUTO",
                             };
                             div()
-                                .id(SharedString::from(format!("theme-{}", palette.id)))
+                                .id(SharedString::from(format!("theme-{}", preset.id)))
                                 .w(px(236.0))
                                 .px_3()
                                 .py_2()
@@ -1383,16 +1386,16 @@ where
                                                 .text_size(TYPE_BODY)
                                                 .font_weight(FontWeight::SEMIBOLD)
                                                 .text_color(silver_text())
-                                                .child(palette.name),
+                                                .child(preset.name),
                                         )
                                         .child(
                                             div()
                                                 .flex()
                                                 .items_center()
                                                 .gap_1()
-                                                .child(swatch_dot(palette.graphite_bg))
-                                                .child(swatch_dot(palette.paper_bg))
-                                                .child(swatch_dot(palette.accent))
+                                                .child(swatch_dot(preset.swatches[0]))
+                                                .child(swatch_dot(preset.swatches[1]))
+                                                .child(swatch_dot(preset.swatches[2]))
                                                 .child(
                                                     div()
                                                         .ml_1()
@@ -1408,7 +1411,7 @@ where
                                         .text_size(TYPE_MICRO)
                                         .text_color(silver_muted())
                                         .truncate()
-                                        .child(palette.description),
+                                        .child(preset.description),
                                 )
                         })),
                 ),
