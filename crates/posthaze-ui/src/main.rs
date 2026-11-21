@@ -1966,25 +1966,29 @@ impl Render for PosthazeApp {
                                     format!("{:.0} px", self.sidebar_width)
                                 };
                                 el.child(
-                                    div()
-                                        .absolute()
-                                        .left(px(10.0))
-                                        .top(px(14.0))
-                                        .px_2()
-                                        .py_0p5()
-                                        .rounded(px(3.0))
-                                        .bg(context_menu_bg())
-                                        .border_1()
-                                        .border_color(if is_snapped {
-                                            cyanotype_blue()
-                                        } else {
-                                            selenium_amber()
-                                        })
-                                        .font_family(MONO_FONT)
-                                        .text_size(TYPE_HEADER)
-                                        .text_color(silver_text())
-                                        .whitespace_nowrap()
-                                        .child(label),
+                                    deferred(
+                                        div()
+                                            .absolute()
+                                            .left(px(10.0))
+                                            .top(px(14.0))
+                                            .px_2()
+                                            .py_0p5()
+                                            .rounded(px(3.0))
+                                            .bg(context_menu_bg())
+                                            .border_1()
+                                            .border_color(if is_snapped {
+                                                cyanotype_blue()
+                                            } else {
+                                                selenium_amber()
+                                            })
+                                            .shadow_md()
+                                            .font_family(MONO_FONT)
+                                            .text_size(TYPE_HEADER)
+                                            .text_color(silver_text())
+                                            .whitespace_nowrap()
+                                            .child(label),
+                                    )
+                                    .with_priority(10),
                                 )
                             }),
                     )
@@ -2131,25 +2135,29 @@ impl Render for PosthazeApp {
                                             format!("{:.0} px", self.inspector_height)
                                         };
                                         el.child(
-                                            div()
-                                                .absolute()
-                                                .right(px(16.0))
-                                                .top(px(-24.0))
-                                                .px_2()
-                                                .py_0p5()
-                                                .rounded(px(3.0))
-                                                .bg(context_menu_bg())
-                                                .border_1()
-                                                .border_color(if is_snapped {
-                                                    cyanotype_blue()
-                                                } else {
-                                                    selenium_amber()
-                                                })
-                                                .font_family(MONO_FONT)
-                                                .text_size(TYPE_HEADER)
-                                                .text_color(silver_text())
-                                                .whitespace_nowrap()
-                                                .child(label),
+                                            deferred(
+                                                div()
+                                                    .absolute()
+                                                    .right(px(16.0))
+                                                    .top(px(-24.0))
+                                                    .px_2()
+                                                    .py_0p5()
+                                                    .rounded(px(3.0))
+                                                    .bg(context_menu_bg())
+                                                    .border_1()
+                                                    .border_color(if is_snapped {
+                                                        cyanotype_blue()
+                                                    } else {
+                                                        selenium_amber()
+                                                    })
+                                                    .shadow_md()
+                                                    .font_family(MONO_FONT)
+                                                    .text_size(TYPE_HEADER)
+                                                    .text_color(silver_text())
+                                                    .whitespace_nowrap()
+                                                    .child(label),
+                                            )
+                                            .with_priority(10),
                                         )
                                     }),
                             )
