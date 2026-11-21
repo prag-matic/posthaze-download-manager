@@ -478,7 +478,7 @@ impl PreflightWindow {
         let e_opts = cx.entity().clone();
 
         TitleBar::new()
-            .bg(graphite_bg())
+            .bg(titlebar_bg())
             .border_color(graphite_border())
             .child(
                 div()
@@ -540,7 +540,7 @@ impl PreflightWindow {
                                 })
                                 .when(tab != PreflightTab::General, |el| {
                                     el.text_color(silver_muted())
-                                        .hover(|s| s.bg(graphite_elevated()).text_color(silver_text()))
+                                        .hover(|s| s.bg(paper_hover()).text_color(silver_text()))
                                 })
                                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                                 .on_click(move |_, window, cx| {
@@ -579,7 +579,7 @@ impl PreflightWindow {
                                 })
                                 .when(tab != PreflightTab::Options, |el| {
                                     el.text_color(silver_muted())
-                                        .hover(|s| s.bg(graphite_elevated()).text_color(silver_text()))
+                                        .hover(|s| s.bg(paper_hover()).text_color(silver_text()))
                                 })
                                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                                 .on_click(move |_, window, cx| {
@@ -703,7 +703,6 @@ impl Render for PreflightWindow {
             .flex()
             .flex_col()
             .size_full()
-            .bg(graphite_bg())
             .text_color(silver_text())
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|win, event: &KeyDownEvent, window, cx| {

@@ -231,7 +231,7 @@ pub(crate) fn grid_kv_row(
             graphite_border(),
             graphite_elevated(),
             silver_muted(),
-            graphite_bg(),
+            Hsla::transparent_black(),
         ),
     };
     div()

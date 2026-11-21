@@ -1705,7 +1705,6 @@ impl Render for PosthazeApp {
             .flex()
             .flex_col()
             .size_full()
-            .bg(paper_bg())
             .text_color(carbon_text())
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(move |app, event: &KeyDownEvent, window, cx| {
@@ -1916,7 +1915,7 @@ impl Render for PosthazeApp {
                             .flex()
                             .justify_center()
                             .cursor_col_resize()
-                            .hover(|s| s.bg(rgba(0x2A282555)))
+                            .hover(|s| s.bg(paper_hover()))
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|app, ev: &MouseDownEvent, _, cx| {
@@ -1984,7 +1983,7 @@ impl Render for PosthazeApp {
                                         .px_2()
                                         .py_0p5()
                                         .rounded(px(3.0))
-                                        .bg(graphite_bg())
+                                        .bg(context_menu_bg())
                                         .border_1()
                                         .border_color(if is_snapped {
                                             cyanotype_blue()
@@ -2074,7 +2073,7 @@ impl Render for PosthazeApp {
                                     .flex()
                                     .items_center()
                                     .cursor_row_resize()
-                                    .hover(|s| s.bg(rgba(0x2A282555)))
+                                    .hover(|s| s.bg(paper_hover()))
                                     .on_mouse_down(
                                         MouseButton::Left,
                                         cx.listener(|app, ev: &MouseDownEvent, _, cx| {
@@ -2149,7 +2148,7 @@ impl Render for PosthazeApp {
                                                 .px_2()
                                                 .py_0p5()
                                                 .rounded(px(3.0))
-                                                .bg(graphite_bg())
+                                                .bg(context_menu_bg())
                                                 .border_1()
                                                 .border_color(if is_snapped {
                                                     cyanotype_blue()
@@ -2208,7 +2207,7 @@ impl PosthazeApp {
         });
 
         TitleBar::new()
-            .bg(graphite_bg())
+            .bg(titlebar_bg())
             .border_color(graphite_border())
             .child(
                 div()
