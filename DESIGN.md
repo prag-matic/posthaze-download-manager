@@ -230,29 +230,29 @@ When native Mica translucency is unavailable—Windows 10 or builds `< 22621`, `
 | Token | `MICA_DARK` (`Mica`) | `MICA_LIGHT` (`MicaAlt`) | `MICA_DARK_FALLBACK` (`Opaque`) | `MICA_LIGHT_FALLBACK` (`Opaque`) |
 |---|---|---|---|---|
 | `titlebar_bg` | `#00000000` (0%) | `#00000000` (0%) | `#202020FF` | `#F3F3F3FF` |
-| `graphite_bg` | `#14141424` (14%) | `#FFFFFF2E` (18%) | `#202020FF` | `#F3F3F3FF` |
-| `graphite_elevated` | `#FFFFFF14` (8%) | `#FFFFFF66` (40%) | `#2B2B2BFF` | `#FFFFFFFF` |
-| `graphite_border` | `#FFFFFF1A` (10%) | `#0000001A` (10%) | `#363636FF` | `#DCDCDCFF` |
-| `paper_bg` | `#1A1A1A75` (46%) | `#FFFFFF8A` (54%) | `#272727FF` | `#FAFAFAFF` |
-| `table_header_bg` | `#12121266` (40%) | `#F4F4F473` (45%) | `#1C1C1CFF` | `#EFEFEFFF` |
-| `paper_hover` | `#FFFFFF12` (7%) | `#0000000F` (6%) | `#323232FF` | `#EAEAEAFF` |
-| `paper_selected` | `#FFFFFF22` (13.3%) | `#0000001A` (10%) | `#3A3A3AFF` | `#E0E0E0FF` |
-| `paper_border` | `#FFFFFF16` (8.6%) | `#00000018` (9.4%) | `#343434FF` | `#E2E2E2FF` |
-| `input_bg` | `#0E0E0E80` (50%) | `#FFFFFFA6` (65%) | `#181818FF` | `#FFFFFFFF` |
-| `byte_track_bg` | `#090909A6` (65%) | `#0000001C` (11%) | `#121212FF` | `#E4E4E4FF` |
-| `modal_scrim` | `#0000006B` (42%) | `#00000038` (22%) | `#00000080` | `#00000040` |
-| `modal_bg` | `#202020D1` (82%) | `#FAFAFAD9` (85%) | `#242424FF` | `#FAFAFAFF` |
-| `context_menu_bg` | `#242424DB` (86%) | `#FFFFFFE6` (90%) | `#282828FF` | `#FFFFFFFF` |
+| `graphite_bg` | `#08080828` (16%) | `#FFFFFF2E` (18%) | `#202020FF` | `#F3F3F3FF` |
+| `graphite_elevated` | `#FFFFFF09` (3.5%) | `#FFFFFF66` (40%) | `#2B2B2BFF` | `#FFFFFFFF` |
+| `graphite_border` | `#FFFFFF14` (8%) | `#0000001A` (10%) | `#363636FF` | `#DCDCDCFF` |
+| `paper_bg` | `#0A0A0A52` (32%) | `#FFFFFF8A` (54%) | `#272727FF` | `#FAFAFAFF` |
+| `table_header_bg` | `#0606065C` (36%) | `#F4F4F473` (45%) | `#1C1C1CFF` | `#EFEFEFFF` |
+| `paper_hover` | `#FFFFFF0A` (4%) | `#0000000F` (6%) | `#323232FF` | `#EAEAEAFF` |
+| `paper_selected` | `#FFFFFF0D` (5%) | `#0000001A` (10%) | `#3A3A3AFF` | `#E0E0E0FF` |
+| `paper_border` | `#FFFFFF11` (6.7%) | `#00000018` (9.4%) | `#343434FF` | `#E2E2E2FF` |
+| `input_bg` | `#05050573` (45%) | `#FFFFFFA6` (65%) | `#181818FF` | `#FFFFFFFF` |
+| `byte_track_bg` | `#04040499` (60%) | `#0000001C` (11%) | `#121212FF` | `#E4E4E4FF` |
+| `modal_scrim` | `#00000073` (45%) | `#00000038` (22%) | `#00000080` | `#00000040` |
+| `modal_bg` | `#121212DB` (86%) | `#FAFAFAD9` (85%) | `#242424FF` | `#FAFAFAFF` |
+| `context_menu_bg` | `#141414E6` (90%) | `#FFFFFFE6` (90%) | `#282828FF` | `#FFFFFFFF` |
 
 ### `Root` & `TitleBar` Compositing Rule
 When `palette.backdrop != ThemeBackdrop::Opaque`, `apply_theme_with_accent` MUST set **both** `theme.background = Hsla::transparent_black()` and `theme.tokens.background = Hsla::transparent_black().into()` on `gpui_kit::component::Theme`. Omitting either causes `gpui-component`'s `RootPlugin::style` to paint an opaque sheet that occludes DWM Mica, and causes `TitleBar` to blend `theme.background` into `theme.title_bar`. In `Opaque` mode, both fields revert to `palette.graphite_bg.hsla()`.
 
 ### Single-Layer Variant C Surface Hierarchy
 Every translucent surface is painted as a **single layer**—never stack duplicate `.bg(...)` fills on nested containers, which compounds alpha and muddies Mica glass:
-- **Main `PosthazeApp` shell**: Transparent outer root over `Root` / DWM Mica; `TitleBar` at `0%` (`titlebar_bg()`); left filter rail and bottom inspector at `graphite_bg()` (`14%` dark / `18%` light); top toolbar and `Downloads` table at `paper_bg()` (`46%`/`54%`) with `table_header_bg()` (`40%`/`45%`) and `1px` `paper_border()` / `graphite_border()` flush hairline rules.
+- **Main `PosthazeApp` shell**: Transparent outer root over `Root` / DWM Mica; `TitleBar` at `0%` (`titlebar_bg()`); left filter rail and bottom inspector at `graphite_bg()` (`16%` obsidian dark / `18%` light); top toolbar and `Downloads` table at `paper_bg()` (`32%` obsidian dark / `54%` light) with `table_header_bg()` (`36%`/`45%`) and `1px` `paper_border()` / `graphite_border()` flush hairline rules.
 - **Standalone `PreflightWindow`**: Transparent outer root so `TitleBar` shows pure `0%` DWM Mica, single-layer `paper_bg()` probe/form card body, and single-layer `graphite_bg()` footer bar.
-- **In-window modals (`Settings`, `File-Op`, `Confirm`)**: `modal_scrim()` backdrop (`42%`/`22%`) behind a single-layer `modal_bg()` card (`82%`/`85%`) with `shadow_lg()`, without redundant `.bg(graphite_bg())` on nested columns such as the Settings navigation rail; `Settings` and `File-Op` use a `1px` `graphite_border()`, while destructive `Confirm` modals retain their `1px` `errata_vermilion()` border.
-- **Context menu**: `context_menu_bg()` (`86%`/`90%`) with `1px` `graphite_border()` and `shadow_md()`, using `paper_hover()` for non-danger menu-item hover states so hover contrast stays crisp in both `Mica Light` and `Mica Dark`.
+- **In-window modals (`Settings`, `File-Op`, `Confirm`)**: `modal_scrim()` backdrop (`45%`/`22%`) behind a single-layer `modal_bg()` card (`86%`/`85%`) with `shadow_lg()`, without redundant `.bg(graphite_bg())` on nested columns such as the Settings navigation rail; `Settings` and `File-Op` use a `1px` `graphite_border()`, while destructive `Confirm` modals retain their `1px` `errata_vermilion()` border.
+- **Context menu**: `context_menu_bg()` (`90%`/`90%`) with `1px` `graphite_border()` and `shadow_md()`, using `paper_hover()` for non-danger menu-item hover states so hover contrast stays crisp in both `Mica Light` and `Mica Dark`.
 
 ### Dual-Ground Truth & Contrast Preservation
 Mica themes preserve the **Dual-Ground Truth Rule**: calibrated Selenium Amber (`#E58A35` dark / `#C2590A` light) denotes in-flight `Chunk`s and primary CTAs, strictly separated from Cyanotype Blue (`#3B82F6` dark / `#2563EB` light) writer-acknowledged disk `Checkpoint`s, Halide Emerald (`#22C55E` / `#15803D`) `Completed` state, and Errata Vermilion (`#EF4444` / `#DC2626`) `Failed` / `ResourceChanged` state. `Settings.ui_accent_override` layers over Mica presets without altering `ThemeBackdrop` or surface translucency.
