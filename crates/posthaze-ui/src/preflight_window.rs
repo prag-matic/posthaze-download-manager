@@ -51,8 +51,15 @@ impl PreflightWindow {
         bounds.origin.x += px(cascade);
         bounds.origin.y += px(cascade);
 
+        let active_palette = active_theme();
+        let dwm_backdrop = crate::dwm_backdrop_for(active_palette.backdrop);
+        let is_dark = active_palette.tone == PaletteTone::Dark;
+        let fallback_theme = settings.ui_theme.clone();
+        let fallback_accent = settings.ui_accent_override.clone();
+
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
+            window_background: dwm_backdrop.to_window_background(),
             focus: true,
             show: true,
             kind: WindowKind::Normal,
@@ -76,9 +83,24 @@ impl PreflightWindow {
             window.activate_window();
             entity
         }) {
-            let _ = handle.update(cx, |_, window, _| {
-                window.activate_window();
-            });
+            let backdrop_failed = handle
+                .update(cx, |_, window, _| {
+                    let res = crate::platform_hooks::apply_window_backdrop(
+                        window,
+                        dwm_backdrop,
+                        is_dark,
+                    );
+                    window.activate_window();
+                    res.is_err()
+                })
+                .unwrap_or(false);
+            if backdrop_failed && active_palette.backdrop != ThemeBackdrop::Opaque {
+                crate::sync_theme_and_backdrops(
+                    &fallback_theme,
+                    fallback_accent.as_deref(),
+                    cx,
+                );
+            }
         }
     }
 
