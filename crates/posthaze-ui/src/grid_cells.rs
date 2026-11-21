@@ -58,7 +58,7 @@ impl GridTone {
         match self {
             Self::Paper | Self::PaperSubtle => carbon_text(),
             Self::Graphite => silver_text(),
-            Self::Primary => rgb(active_theme().accent_foreground).into(),
+            Self::Primary => active_theme().accent_foreground.hsla(),
             Self::Danger => errata_vermilion(),
         }
     }
@@ -66,7 +66,7 @@ impl GridTone {
     pub(crate) fn hover_bg(self) -> Hsla {
         match self {
             Self::Paper | Self::PaperSubtle | Self::Graphite => selenium_amber(),
-            Self::Primary => rgb(active_theme().accent_hover).into(),
+            Self::Primary => active_theme().accent_hover.hsla(),
             Self::Danger => errata_vermilion(),
         }
     }
@@ -74,7 +74,7 @@ impl GridTone {
     pub(crate) fn hover_fg(self) -> Hsla {
         match self {
             Self::Paper | Self::PaperSubtle | Self::Graphite | Self::Primary => {
-                rgb(active_theme().accent_foreground).into()
+                active_theme().accent_foreground.hsla()
             }
             Self::Danger => rgb(0xFFFFFF).into(),
         }

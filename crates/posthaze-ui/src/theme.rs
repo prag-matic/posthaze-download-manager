@@ -3,7 +3,7 @@
 use std::sync::RwLock;
 
 use gpui_kit::component::{Theme, ThemeMode};
-use gpui_kit::{App, Hsla, Pixels, Window, px, rgb};
+use gpui_kit::{App, Hsla, Pixels, WindowAppearance, px};
 
 /// Authoritative tabular monospaced font for byte offsets, speeds, ETAs, and HTTP validators.
 pub const MONO_FONT: &str = "Consolas";
@@ -16,6 +16,27 @@ pub const TYPE_BODY: Pixels = px(12.0);
 pub const TYPE_MICRO: Pixels = px(11.0);
 pub const TYPE_HEADER: Pixels = px(10.5);
 
+/// 32-bit packed RGBA color (`0xRRGGBBAA`) supporting opaque and translucent surfaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RgbaHex(pub u32);
+
+impl RgbaHex {
+    /// Constructs an opaque color from a 24-bit `0xRRGGBB` hex literal.
+    pub const fn rgb(hex: u32) -> Self {
+        Self((hex << 8) | 0xFF)
+    }
+
+    /// Constructs a color from a 32-bit `0xRRGGBBAA` hex literal.
+    pub const fn rgba(hex: u32) -> Self {
+        Self(hex)
+    }
+
+    /// Converts this packed RGBA hex value into a GPUI [`Hsla`] color.
+    pub fn hsla(self) -> Hsla {
+        gpui_kit::rgba(self.0).into()
+    }
+}
+
 /// Light/dark polarity for a [`ThemePalette`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaletteTone {
@@ -23,6 +44,45 @@ pub enum PaletteTone {
     Dark,
     /// Light surface palette.
     Light,
+}
+
+/// Window backdrop material requested for a [`ThemePalette`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThemeBackdrop {
+    /// Standard opaque surface (`DWMSBT_NONE`).
+    Opaque,
+    /// Windows 11 Mica material (`DWMSBT_MAINWINDOW`).
+    Mica,
+    /// Windows 11 Mica Alt material (`DWMSBT_TABBEDWINDOW`).
+    MicaAlt,
+}
+
+/// Polarity badge displayed on theme preset cards in Settings > Interface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThemeBadge {
+    /// Forced dark theme.
+    Dark,
+    /// Forced light theme.
+    Light,
+    /// Follows Windows Dark/Light appearance.
+    Auto,
+}
+
+/// User-facing theme preset metadata shown in Settings > Interface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ThemePreset {
+    /// Stable persisted identifier (stored in `Settings.ui_theme`).
+    pub id: &'static str,
+    /// Human-readable display name shown in Settings > Interface.
+    pub name: &'static str,
+    /// Short description shown under the theme name.
+    pub description: &'static str,
+    /// Polarity badge (`DARK`, `LIGHT`, or `AUTO`).
+    pub badge: ThemeBadge,
+    /// Three opaque `0xRRGGBB` preview swatches.
+    pub swatches: [u32; 3],
+    /// Whether this preset requests a Windows 11 Mica backdrop.
+    pub is_mica: bool,
 }
 
 /// Complete semantic color palette for Posthaze UI.
@@ -34,50 +94,62 @@ pub struct ThemePalette {
     pub name: &'static str,
     /// Short description shown under the theme name.
     pub description: &'static str,
+    /// Window backdrop material (`Opaque`, `Mica`, or `MicaAlt`).
+    pub backdrop: ThemeBackdrop,
     /// Light/dark mode passed to `gpui_kit::component::Theme`.
     pub tone: PaletteTone,
-    /// Left rail, titlebar, and bottom inspector background.
-    pub graphite_bg: u32,
+    /// Custom titlebar fill (`0%` transparent in Mica mode; `graphite_bg` in Opaque mode).
+    pub titlebar_bg: RgbaHex,
+    /// Left rail and bottom inspector background.
+    pub graphite_bg: RgbaHex,
     /// Raised surface for cards, badges, and secondary buttons.
-    pub graphite_elevated: u32,
+    pub graphite_elevated: RgbaHex,
     /// Hairline rule inside rail/inspector/modal surfaces.
-    pub graphite_border: u32,
+    pub graphite_border: RgbaHex,
     /// Primary text on rail, titlebar, inspector, and modals.
-    pub silver_text: u32,
+    pub silver_text: RgbaHex,
     /// Secondary/muted metadata text on rail and inspector.
-    pub silver_muted: u32,
+    pub silver_muted: RgbaHex,
     /// Main download table & toolbar work surface.
-    pub paper_bg: u32,
+    pub paper_bg: RgbaHex,
     /// Recessed modular table header background.
-    pub table_header_bg: u32,
+    pub table_header_bg: RgbaHex,
     /// Selected table row background.
-    pub paper_selected: u32,
+    pub paper_selected: RgbaHex,
     /// Hovered table row / button background.
-    pub paper_hover: u32,
+    pub paper_hover: RgbaHex,
     /// Construction-grid row and column rule on the table surface.
-    pub paper_border: u32,
+    pub paper_border: RgbaHex,
     /// Primary ink on the table work surface.
-    pub carbon_text: u32,
+    pub carbon_text: RgbaHex,
     /// Secondary ink on the table work surface.
-    pub carbon_muted: u32,
+    pub carbon_muted: RgbaHex,
+    /// Text input field surface background.
+    pub input_bg: RgbaHex,
     /// Deep recessed byte-map ruler track.
-    pub byte_track_bg: u32,
+    pub byte_track_bg: RgbaHex,
+    /// Backdrop scrim painted behind in-window modal dialogs.
+    pub modal_scrim: RgbaHex,
+    /// Surface background for in-window modal cards.
+    pub modal_bg: RgbaHex,
+    /// Surface background for context menus and popovers.
+    pub context_menu_bg: RgbaHex,
     /// Primary accent (in-flight segments, active selection, primary CTAs).
-    pub accent: u32,
+    pub accent: RgbaHex,
     /// Primary CTA hover tint.
-    pub accent_hover: u32,
+    pub accent_hover: RgbaHex,
     /// Primary CTA active/pressed tint.
-    pub accent_active: u32,
+    pub accent_active: RgbaHex,
     /// Foreground text/icon color on primary accent buttons.
-    pub accent_foreground: u32,
+    pub accent_foreground: RgbaHex,
     /// Writer-acknowledged disk checkpoint progress color.
-    pub checkpoint_blue: u32,
+    pub checkpoint_blue: RgbaHex,
     /// Completed state indicator color.
-    pub completed_emerald: u32,
+    pub completed_emerald: RgbaHex,
     /// Failed / resource-changed state indicator color.
-    pub failed_vermilion: u32,
+    pub failed_vermilion: RgbaHex,
     /// Focus ring outline color.
-    pub focus_ring: u32,
+    pub focus_ring: RgbaHex,
 }
 
 /// Default warm graphite and selenium-amber palette.
@@ -85,28 +157,34 @@ pub const CHRONOPHOTOGRAPHIC: ThemePalette = ThemePalette {
     id: "chronophotographic",
     name: "Chronophotographic",
     description: "Warm graphite emulsion & selenium amber",
+    backdrop: ThemeBackdrop::Opaque,
     tone: PaletteTone::Dark,
-    graphite_bg: 0x141311,
-    graphite_elevated: 0x1B1A17,
-    graphite_border: 0x2A2825,
-    silver_text: 0xEAE6DF,
-    silver_muted: 0x9B968D,
-    paper_bg: 0x1E1D1A,
-    table_header_bg: 0x181714,
-    paper_selected: 0x2D2B26,
-    paper_hover: 0x262420,
-    paper_border: 0x2C2A27,
-    carbon_text: 0xEAE6DF,
-    carbon_muted: 0x9B968D,
-    byte_track_bg: 0x0D0C0B,
-    accent: 0xE58A35,
-    accent_hover: 0xD97724,
-    accent_active: 0xC2661B,
-    accent_foreground: 0x141311,
-    checkpoint_blue: 0x3B82F6,
-    completed_emerald: 0x22C55E,
-    failed_vermilion: 0xEF4444,
-    focus_ring: 0x524E48,
+    titlebar_bg: RgbaHex::rgb(0x141311),
+    graphite_bg: RgbaHex::rgb(0x141311),
+    graphite_elevated: RgbaHex::rgb(0x1B1A17),
+    graphite_border: RgbaHex::rgb(0x2A2825),
+    silver_text: RgbaHex::rgb(0xEAE6DF),
+    silver_muted: RgbaHex::rgb(0x9B968D),
+    paper_bg: RgbaHex::rgb(0x1E1D1A),
+    table_header_bg: RgbaHex::rgb(0x181714),
+    paper_selected: RgbaHex::rgb(0x2D2B26),
+    paper_hover: RgbaHex::rgb(0x262420),
+    paper_border: RgbaHex::rgb(0x2C2A27),
+    carbon_text: RgbaHex::rgb(0xEAE6DF),
+    carbon_muted: RgbaHex::rgb(0x9B968D),
+    input_bg: RgbaHex::rgb(0x141311),
+    byte_track_bg: RgbaHex::rgb(0x0D0C0B),
+    modal_scrim: RgbaHex::rgba(0x141413AA),
+    modal_bg: RgbaHex::rgb(0x141311),
+    context_menu_bg: RgbaHex::rgb(0x141311),
+    accent: RgbaHex::rgb(0xE58A35),
+    accent_hover: RgbaHex::rgb(0xD97724),
+    accent_active: RgbaHex::rgb(0xC2661B),
+    accent_foreground: RgbaHex::rgb(0x141311),
+    checkpoint_blue: RgbaHex::rgb(0x3B82F6),
+    completed_emerald: RgbaHex::rgb(0x22C55E),
+    failed_vermilion: RgbaHex::rgb(0xEF4444),
+    focus_ring: RgbaHex::rgb(0x524E48),
 };
 
 /// Deep Prussian midnight slate with electric cyanotype sky accent.
@@ -114,28 +192,34 @@ pub const BLUEPRINT_CYANOTYPE: ThemePalette = ThemePalette {
     id: "cyanotype",
     name: "Blueprint Cyanotype",
     description: "Prussian midnight slate & electric sky",
+    backdrop: ThemeBackdrop::Opaque,
     tone: PaletteTone::Dark,
-    graphite_bg: 0x0D131D,
-    graphite_elevated: 0x151E2E,
-    graphite_border: 0x233148,
-    silver_text: 0xE6EEF8,
-    silver_muted: 0x8BA0BD,
-    paper_bg: 0x121A28,
-    table_header_bg: 0x0F1622,
-    paper_selected: 0x1E2B42,
-    paper_hover: 0x192437,
-    paper_border: 0x212E45,
-    carbon_text: 0xE6EEF8,
-    carbon_muted: 0x8BA0BD,
-    byte_track_bg: 0x090D14,
-    accent: 0x38BDF8,
-    accent_hover: 0x22AEEB,
-    accent_active: 0x0E96D4,
-    accent_foreground: 0x090D14,
-    checkpoint_blue: 0x60A5FA,
-    completed_emerald: 0x34D399,
-    failed_vermilion: 0xF87171,
-    focus_ring: 0x3A5175,
+    titlebar_bg: RgbaHex::rgb(0x0D131D),
+    graphite_bg: RgbaHex::rgb(0x0D131D),
+    graphite_elevated: RgbaHex::rgb(0x151E2E),
+    graphite_border: RgbaHex::rgb(0x233148),
+    silver_text: RgbaHex::rgb(0xE6EEF8),
+    silver_muted: RgbaHex::rgb(0x8BA0BD),
+    paper_bg: RgbaHex::rgb(0x121A28),
+    table_header_bg: RgbaHex::rgb(0x0F1622),
+    paper_selected: RgbaHex::rgb(0x1E2B42),
+    paper_hover: RgbaHex::rgb(0x192437),
+    paper_border: RgbaHex::rgb(0x212E45),
+    carbon_text: RgbaHex::rgb(0xE6EEF8),
+    carbon_muted: RgbaHex::rgb(0x8BA0BD),
+    input_bg: RgbaHex::rgb(0x0D131D),
+    byte_track_bg: RgbaHex::rgb(0x090D14),
+    modal_scrim: RgbaHex::rgba(0x141413AA),
+    modal_bg: RgbaHex::rgb(0x0D131D),
+    context_menu_bg: RgbaHex::rgb(0x0D131D),
+    accent: RgbaHex::rgb(0x38BDF8),
+    accent_hover: RgbaHex::rgb(0x22AEEB),
+    accent_active: RgbaHex::rgb(0x0E96D4),
+    accent_foreground: RgbaHex::rgb(0x090D14),
+    checkpoint_blue: RgbaHex::rgb(0x60A5FA),
+    completed_emerald: RgbaHex::rgb(0x34D399),
+    failed_vermilion: RgbaHex::rgb(0xF87171),
+    focus_ring: RgbaHex::rgb(0x3A5175),
 };
 
 /// High-contrast OLED CRT noir with phosphor amber accent.
@@ -143,28 +227,34 @@ pub const PHOSPHOR_AMBER: ThemePalette = ThemePalette {
     id: "phosphor",
     name: "Phosphor Amber",
     description: "High-contrast OLED noir & CRT amber",
+    backdrop: ThemeBackdrop::Opaque,
     tone: PaletteTone::Dark,
-    graphite_bg: 0x0A0B0A,
-    graphite_elevated: 0x131613,
-    graphite_border: 0x222822,
-    silver_text: 0xECEFE9,
-    silver_muted: 0x8E998D,
-    paper_bg: 0x101210,
-    table_header_bg: 0x0C0E0C,
-    paper_selected: 0x1E231D,
-    paper_hover: 0x181C17,
-    paper_border: 0x202620,
-    carbon_text: 0xECEFE9,
-    carbon_muted: 0x8E998D,
-    byte_track_bg: 0x050605,
-    accent: 0xF59E0B,
-    accent_hover: 0xD98A06,
-    accent_active: 0xB87305,
-    accent_foreground: 0x0A0B0A,
-    checkpoint_blue: 0x38BDF8,
-    completed_emerald: 0x10B981,
-    failed_vermilion: 0xEF4444,
-    focus_ring: 0x455245,
+    titlebar_bg: RgbaHex::rgb(0x0A0B0A),
+    graphite_bg: RgbaHex::rgb(0x0A0B0A),
+    graphite_elevated: RgbaHex::rgb(0x131613),
+    graphite_border: RgbaHex::rgb(0x222822),
+    silver_text: RgbaHex::rgb(0xECEFE9),
+    silver_muted: RgbaHex::rgb(0x8E998D),
+    paper_bg: RgbaHex::rgb(0x101210),
+    table_header_bg: RgbaHex::rgb(0x0C0E0C),
+    paper_selected: RgbaHex::rgb(0x1E231D),
+    paper_hover: RgbaHex::rgb(0x181C17),
+    paper_border: RgbaHex::rgb(0x202620),
+    carbon_text: RgbaHex::rgb(0xECEFE9),
+    carbon_muted: RgbaHex::rgb(0x8E998D),
+    input_bg: RgbaHex::rgb(0x0A0B0A),
+    byte_track_bg: RgbaHex::rgb(0x050605),
+    modal_scrim: RgbaHex::rgba(0x141413AA),
+    modal_bg: RgbaHex::rgb(0x0A0B0A),
+    context_menu_bg: RgbaHex::rgb(0x0A0B0A),
+    accent: RgbaHex::rgb(0xF59E0B),
+    accent_hover: RgbaHex::rgb(0xD98A06),
+    accent_active: RgbaHex::rgb(0xB87305),
+    accent_foreground: RgbaHex::rgb(0x0A0B0A),
+    checkpoint_blue: RgbaHex::rgb(0x38BDF8),
+    completed_emerald: RgbaHex::rgb(0x10B981),
+    failed_vermilion: RgbaHex::rgb(0xEF4444),
+    focus_ring: RgbaHex::rgb(0x455245),
 };
 
 /// Cool arctic charcoal with glacial teal accent.
@@ -172,28 +262,34 @@ pub const NORDIC_FROST: ThemePalette = ThemePalette {
     id: "nordic",
     name: "Nordic Frost",
     description: "Arctic charcoal & glacial teal",
+    backdrop: ThemeBackdrop::Opaque,
     tone: PaletteTone::Dark,
-    graphite_bg: 0x151920,
-    graphite_elevated: 0x1E242E,
-    graphite_border: 0x2D3542,
-    silver_text: 0xE7ECF2,
-    silver_muted: 0x94A0B2,
-    paper_bg: 0x1B2028,
-    table_header_bg: 0x171B22,
-    paper_selected: 0x27303D,
-    paper_hover: 0x222934,
-    paper_border: 0x2B3340,
-    carbon_text: 0xE7ECF2,
-    carbon_muted: 0x94A0B2,
-    byte_track_bg: 0x0E1116,
-    accent: 0x2DD4BF,
-    accent_hover: 0x1EC2AE,
-    accent_active: 0x14A694,
-    accent_foreground: 0x0E1116,
-    checkpoint_blue: 0x60A5FA,
-    completed_emerald: 0x4ADE80,
-    failed_vermilion: 0xFB7185,
-    focus_ring: 0x455266,
+    titlebar_bg: RgbaHex::rgb(0x151920),
+    graphite_bg: RgbaHex::rgb(0x151920),
+    graphite_elevated: RgbaHex::rgb(0x1E242E),
+    graphite_border: RgbaHex::rgb(0x2D3542),
+    silver_text: RgbaHex::rgb(0xE7ECF2),
+    silver_muted: RgbaHex::rgb(0x94A0B2),
+    paper_bg: RgbaHex::rgb(0x1B2028),
+    table_header_bg: RgbaHex::rgb(0x171B22),
+    paper_selected: RgbaHex::rgb(0x27303D),
+    paper_hover: RgbaHex::rgb(0x222934),
+    paper_border: RgbaHex::rgb(0x2B3340),
+    carbon_text: RgbaHex::rgb(0xE7ECF2),
+    carbon_muted: RgbaHex::rgb(0x94A0B2),
+    input_bg: RgbaHex::rgb(0x151920),
+    byte_track_bg: RgbaHex::rgb(0x0E1116),
+    modal_scrim: RgbaHex::rgba(0x141413AA),
+    modal_bg: RgbaHex::rgb(0x151920),
+    context_menu_bg: RgbaHex::rgb(0x151920),
+    accent: RgbaHex::rgb(0x2DD4BF),
+    accent_hover: RgbaHex::rgb(0x1EC2AE),
+    accent_active: RgbaHex::rgb(0x14A694),
+    accent_foreground: RgbaHex::rgb(0x0E1116),
+    checkpoint_blue: RgbaHex::rgb(0x60A5FA),
+    completed_emerald: RgbaHex::rgb(0x4ADE80),
+    failed_vermilion: RgbaHex::rgb(0xFB7185),
+    focus_ring: RgbaHex::rgb(0x455266),
 };
 
 /// Warm daylight archival paper with burnt sienna accent.
@@ -201,37 +297,251 @@ pub const ARCHIVAL_PAPER: ThemePalette = ThemePalette {
     id: "archival",
     name: "Archival Paper",
     description: "Warm daylight paper & burnt sienna",
+    backdrop: ThemeBackdrop::Opaque,
     tone: PaletteTone::Light,
-    graphite_bg: 0xECE8DF,
-    graphite_elevated: 0xE2DDD2,
-    graphite_border: 0xCEC7B8,
-    silver_text: 0x1E1C19,
-    silver_muted: 0x666056,
-    paper_bg: 0xF7F5F0,
-    table_header_bg: 0xEFECE4,
-    paper_selected: 0xE5DFD2,
-    paper_hover: 0xEDE9DF,
-    paper_border: 0xD8D1C3,
-    carbon_text: 0x1E1C19,
-    carbon_muted: 0x666056,
-    byte_track_bg: 0xDED8CA,
-    accent: 0xC2590A,
-    accent_hover: 0xAA4D08,
-    accent_active: 0x8F3F06,
-    accent_foreground: 0xFFFFFF,
-    checkpoint_blue: 0x2563EB,
-    completed_emerald: 0x16A34A,
-    failed_vermilion: 0xDC2626,
-    focus_ring: 0x9E9585,
+    titlebar_bg: RgbaHex::rgb(0xECE8DF),
+    graphite_bg: RgbaHex::rgb(0xECE8DF),
+    graphite_elevated: RgbaHex::rgb(0xE2DDD2),
+    graphite_border: RgbaHex::rgb(0xCEC7B8),
+    silver_text: RgbaHex::rgb(0x1E1C19),
+    silver_muted: RgbaHex::rgb(0x666056),
+    paper_bg: RgbaHex::rgb(0xF7F5F0),
+    table_header_bg: RgbaHex::rgb(0xEFECE4),
+    paper_selected: RgbaHex::rgb(0xE5DFD2),
+    paper_hover: RgbaHex::rgb(0xEDE9DF),
+    paper_border: RgbaHex::rgb(0xD8D1C3),
+    carbon_text: RgbaHex::rgb(0x1E1C19),
+    carbon_muted: RgbaHex::rgb(0x666056),
+    input_bg: RgbaHex::rgb(0xECE8DF),
+    byte_track_bg: RgbaHex::rgb(0xDED8CA),
+    modal_scrim: RgbaHex::rgba(0x141413AA),
+    modal_bg: RgbaHex::rgb(0xECE8DF),
+    context_menu_bg: RgbaHex::rgb(0xECE8DF),
+    accent: RgbaHex::rgb(0xC2590A),
+    accent_hover: RgbaHex::rgb(0xAA4D08),
+    accent_active: RgbaHex::rgb(0x8F3F06),
+    accent_foreground: RgbaHex::rgb(0xFFFFFF),
+    checkpoint_blue: RgbaHex::rgb(0x2563EB),
+    completed_emerald: RgbaHex::rgb(0x16A34A),
+    failed_vermilion: RgbaHex::rgb(0xDC2626),
+    focus_ring: RgbaHex::rgb(0x9E9585),
 };
 
-/// Ordered list of all built-in application themes.
-pub const BUILTIN_THEMES: [ThemePalette; 5] = [
+/// Windows 11 Mica dark glass palette (Variant C: Unified Translucent Plate).
+pub const MICA_DARK: ThemePalette = ThemePalette {
+    id: "mica-dark",
+    name: "Mica Dark",
+    description: "Windows 11 Mica dark glass & selenium amber",
+    backdrop: ThemeBackdrop::Mica,
+    tone: PaletteTone::Dark,
+    titlebar_bg: RgbaHex::rgba(0x00000000),
+    graphite_bg: RgbaHex::rgba(0x14141424),
+    graphite_elevated: RgbaHex::rgba(0xFFFFFF14),
+    graphite_border: RgbaHex::rgba(0xFFFFFF1A),
+    silver_text: RgbaHex::rgba(0xF7F5F2FF),
+    silver_muted: RgbaHex::rgba(0xB3AFA8FF),
+    paper_bg: RgbaHex::rgba(0x1A1A1A75),
+    table_header_bg: RgbaHex::rgba(0x12121266),
+    paper_selected: RgbaHex::rgba(0xFFFFFF22),
+    paper_hover: RgbaHex::rgba(0xFFFFFF12),
+    paper_border: RgbaHex::rgba(0xFFFFFF16),
+    carbon_text: RgbaHex::rgba(0xF7F5F2FF),
+    carbon_muted: RgbaHex::rgba(0xB3AFA8FF),
+    input_bg: RgbaHex::rgba(0x0E0E0E80),
+    byte_track_bg: RgbaHex::rgba(0x090909A6),
+    modal_scrim: RgbaHex::rgba(0x0000006B),
+    modal_bg: RgbaHex::rgba(0x202020D1),
+    context_menu_bg: RgbaHex::rgba(0x242424DB),
+    accent: RgbaHex::rgba(0xE58A35FF),
+    accent_hover: RgbaHex::rgba(0xD97724FF),
+    accent_active: RgbaHex::rgba(0xC2661BFF),
+    accent_foreground: RgbaHex::rgba(0x141311FF),
+    checkpoint_blue: RgbaHex::rgba(0x3B82F6FF),
+    completed_emerald: RgbaHex::rgba(0x22C55EFF),
+    failed_vermilion: RgbaHex::rgba(0xEF4444FF),
+    focus_ring: RgbaHex::rgba(0xE58A35FF),
+};
+
+/// Windows 11 Mica Alt light glass palette (Variant C: Unified Translucent Plate).
+pub const MICA_LIGHT: ThemePalette = ThemePalette {
+    id: "mica-light",
+    name: "Mica Light",
+    description: "Windows 11 Mica Alt light glass & burnt sienna",
+    backdrop: ThemeBackdrop::MicaAlt,
+    tone: PaletteTone::Light,
+    titlebar_bg: RgbaHex::rgba(0x00000000),
+    graphite_bg: RgbaHex::rgba(0xFFFFFF2E),
+    graphite_elevated: RgbaHex::rgba(0xFFFFFF66),
+    graphite_border: RgbaHex::rgba(0x0000001A),
+    silver_text: RgbaHex::rgba(0x111113FF),
+    silver_muted: RgbaHex::rgba(0x44444BFF),
+    paper_bg: RgbaHex::rgba(0xFFFFFF8A),
+    table_header_bg: RgbaHex::rgba(0xF4F4F473),
+    paper_selected: RgbaHex::rgba(0x0000001A),
+    paper_hover: RgbaHex::rgba(0x0000000F),
+    paper_border: RgbaHex::rgba(0x00000018),
+    carbon_text: RgbaHex::rgba(0x111113FF),
+    carbon_muted: RgbaHex::rgba(0x44444BFF),
+    input_bg: RgbaHex::rgba(0xFFFFFFA6),
+    byte_track_bg: RgbaHex::rgba(0x0000001C),
+    modal_scrim: RgbaHex::rgba(0x00000038),
+    modal_bg: RgbaHex::rgba(0xFAFAFAD9),
+    context_menu_bg: RgbaHex::rgba(0xFFFFFFE6),
+    accent: RgbaHex::rgba(0xC2590AFF),
+    accent_hover: RgbaHex::rgba(0xAA4D08FF),
+    accent_active: RgbaHex::rgba(0x8F3F06FF),
+    accent_foreground: RgbaHex::rgba(0xFFFFFFFF),
+    checkpoint_blue: RgbaHex::rgba(0x2563EBFF),
+    completed_emerald: RgbaHex::rgba(0x15803DFF),
+    failed_vermilion: RgbaHex::rgba(0xDC2626FF),
+    focus_ring: RgbaHex::rgba(0xC2590AFF),
+};
+
+/// Calibrated neutral opaque fallback palette when dark Mica translucency is unavailable.
+pub const MICA_DARK_FALLBACK: ThemePalette = ThemePalette {
+    id: "mica-dark",
+    name: "Mica Dark",
+    description: "Windows 11 Mica dark glass & selenium amber",
+    backdrop: ThemeBackdrop::Opaque,
+    tone: PaletteTone::Dark,
+    titlebar_bg: RgbaHex::rgba(0x202020FF),
+    graphite_bg: RgbaHex::rgba(0x202020FF),
+    graphite_elevated: RgbaHex::rgba(0x2B2B2BFF),
+    graphite_border: RgbaHex::rgba(0x363636FF),
+    silver_text: RgbaHex::rgba(0xF7F5F2FF),
+    silver_muted: RgbaHex::rgba(0xB3AFA8FF),
+    paper_bg: RgbaHex::rgba(0x272727FF),
+    table_header_bg: RgbaHex::rgba(0x1C1C1CFF),
+    paper_selected: RgbaHex::rgba(0x3A3A3AFF),
+    paper_hover: RgbaHex::rgba(0x323232FF),
+    paper_border: RgbaHex::rgba(0x343434FF),
+    carbon_text: RgbaHex::rgba(0xF7F5F2FF),
+    carbon_muted: RgbaHex::rgba(0xB3AFA8FF),
+    input_bg: RgbaHex::rgba(0x181818FF),
+    byte_track_bg: RgbaHex::rgba(0x121212FF),
+    modal_scrim: RgbaHex::rgba(0x00000080),
+    modal_bg: RgbaHex::rgba(0x242424FF),
+    context_menu_bg: RgbaHex::rgba(0x282828FF),
+    accent: RgbaHex::rgba(0xE58A35FF),
+    accent_hover: RgbaHex::rgba(0xD97724FF),
+    accent_active: RgbaHex::rgba(0xC2661BFF),
+    accent_foreground: RgbaHex::rgba(0x141311FF),
+    checkpoint_blue: RgbaHex::rgba(0x3B82F6FF),
+    completed_emerald: RgbaHex::rgba(0x22C55EFF),
+    failed_vermilion: RgbaHex::rgba(0xEF4444FF),
+    focus_ring: RgbaHex::rgba(0xE58A35FF),
+};
+
+/// Calibrated neutral opaque fallback palette when light Mica translucency is unavailable.
+pub const MICA_LIGHT_FALLBACK: ThemePalette = ThemePalette {
+    id: "mica-light",
+    name: "Mica Light",
+    description: "Windows 11 Mica Alt light glass & burnt sienna",
+    backdrop: ThemeBackdrop::Opaque,
+    tone: PaletteTone::Light,
+    titlebar_bg: RgbaHex::rgba(0xF3F3F3FF),
+    graphite_bg: RgbaHex::rgba(0xF3F3F3FF),
+    graphite_elevated: RgbaHex::rgba(0xFFFFFFFF),
+    graphite_border: RgbaHex::rgba(0xDCDCDCFF),
+    silver_text: RgbaHex::rgba(0x111113FF),
+    silver_muted: RgbaHex::rgba(0x44444BFF),
+    paper_bg: RgbaHex::rgba(0xFAFAFAFF),
+    table_header_bg: RgbaHex::rgba(0xEFEFEFFF),
+    paper_selected: RgbaHex::rgba(0xE0E0E0FF),
+    paper_hover: RgbaHex::rgba(0xEAEAEAFF),
+    paper_border: RgbaHex::rgba(0xE2E2E2FF),
+    carbon_text: RgbaHex::rgba(0x111113FF),
+    carbon_muted: RgbaHex::rgba(0x44444BFF),
+    input_bg: RgbaHex::rgba(0xFFFFFFFF),
+    byte_track_bg: RgbaHex::rgba(0xE4E4E4FF),
+    modal_scrim: RgbaHex::rgba(0x00000040),
+    modal_bg: RgbaHex::rgba(0xFAFAFAFF),
+    context_menu_bg: RgbaHex::rgba(0xFFFFFFFF),
+    accent: RgbaHex::rgba(0xC2590AFF),
+    accent_hover: RgbaHex::rgba(0xAA4D08FF),
+    accent_active: RgbaHex::rgba(0x8F3F06FF),
+    accent_foreground: RgbaHex::rgba(0xFFFFFFFF),
+    checkpoint_blue: RgbaHex::rgba(0x2563EBFF),
+    completed_emerald: RgbaHex::rgba(0x15803DFF),
+    failed_vermilion: RgbaHex::rgba(0xDC2626FF),
+    focus_ring: RgbaHex::rgba(0xC2590AFF),
+};
+
+/// Ordered list of the 5 built-in opaque theme palettes.
+const BUILTIN_OPAQUE_THEMES: [ThemePalette; 5] = [
     CHRONOPHOTOGRAPHIC,
     BLUEPRINT_CYANOTYPE,
     PHOSPHOR_AMBER,
     NORDIC_FROST,
     ARCHIVAL_PAPER,
+];
+
+/// Ordered catalog of all 8 built-in theme presets shown in Settings > Interface.
+pub const BUILTIN_THEME_PRESETS: [ThemePreset; 8] = [
+    ThemePreset {
+        id: CHRONOPHOTOGRAPHIC.id,
+        name: CHRONOPHOTOGRAPHIC.name,
+        description: CHRONOPHOTOGRAPHIC.description,
+        badge: ThemeBadge::Dark,
+        swatches: [0x141311, 0x1E1D1A, 0xE58A35],
+        is_mica: false,
+    },
+    ThemePreset {
+        id: BLUEPRINT_CYANOTYPE.id,
+        name: BLUEPRINT_CYANOTYPE.name,
+        description: BLUEPRINT_CYANOTYPE.description,
+        badge: ThemeBadge::Dark,
+        swatches: [0x0D131D, 0x121A28, 0x38BDF8],
+        is_mica: false,
+    },
+    ThemePreset {
+        id: PHOSPHOR_AMBER.id,
+        name: PHOSPHOR_AMBER.name,
+        description: PHOSPHOR_AMBER.description,
+        badge: ThemeBadge::Dark,
+        swatches: [0x0A0B0A, 0x101210, 0xF59E0B],
+        is_mica: false,
+    },
+    ThemePreset {
+        id: NORDIC_FROST.id,
+        name: NORDIC_FROST.name,
+        description: NORDIC_FROST.description,
+        badge: ThemeBadge::Dark,
+        swatches: [0x151920, 0x1B2028, 0x2DD4BF],
+        is_mica: false,
+    },
+    ThemePreset {
+        id: ARCHIVAL_PAPER.id,
+        name: ARCHIVAL_PAPER.name,
+        description: ARCHIVAL_PAPER.description,
+        badge: ThemeBadge::Light,
+        swatches: [0xECE8DF, 0xF7F5F0, 0xC2590A],
+        is_mica: false,
+    },
+    ThemePreset {
+        id: "mica-system",
+        name: "Mica (System)",
+        description: "Follows Windows 11 Dark/Light Mica",
+        badge: ThemeBadge::Auto,
+        swatches: [0x202020, 0xF3F3F3, 0xE58A35],
+        is_mica: true,
+    },
+    ThemePreset {
+        id: MICA_DARK.id,
+        name: MICA_DARK.name,
+        description: MICA_DARK.description,
+        badge: ThemeBadge::Dark,
+        swatches: [0x202020, 0x2C2C2C, 0xE58A35],
+        is_mica: true,
+    },
+    ThemePreset {
+        id: MICA_LIGHT.id,
+        name: MICA_LIGHT.name,
+        description: MICA_LIGHT.description,
+        badge: ThemeBadge::Light,
+        swatches: [0xEAEAEA, 0xF7F7F7, 0xC2590A],
+        is_mica: true,
+    },
 ];
 
 /// Optional accent override preset layered over a [`ThemePalette`].
@@ -302,15 +612,66 @@ pub fn find_accent_preset(id: &str) -> Option<&'static AccentPreset> {
     ACCENT_PRESETS.iter().find(|p| p.id == id)
 }
 
-static ACTIVE_THEME: RwLock<ThemePalette> = RwLock::new(CHRONOPHOTOGRAPHIC);
-
-/// Looks up a built-in [`ThemePalette`] by `id`, falling back to [`CHRONOPHOTOGRAPHIC`].
-pub fn find_theme(id: &str) -> &'static ThemePalette {
-    BUILTIN_THEMES
+/// Looks up a built-in [`ThemePreset`] by `id`, falling back to `chronophotographic`.
+pub fn find_theme_preset(id: &str) -> &'static ThemePreset {
+    BUILTIN_THEME_PRESETS
         .iter()
-        .find(|t| t.id == id)
-        .unwrap_or(&CHRONOPHOTOGRAPHIC)
+        .find(|p| p.id == id)
+        .unwrap_or(&BUILTIN_THEME_PRESETS[0])
 }
+
+/// Resolves a theme preset `id`, optional accent override, OS appearance, and Mica capability
+/// into a concrete [`ThemePalette`] without any platform side effects.
+pub fn resolve_palette(
+    id: &str,
+    accent_override: Option<&str>,
+    os_appearance: WindowAppearance,
+    mica_available: bool,
+) -> ThemePalette {
+    let os_is_light = matches!(
+        os_appearance,
+        WindowAppearance::Light | WindowAppearance::VibrantLight
+    );
+    let mut palette = match id {
+        "mica-system" => match (os_is_light, mica_available) {
+            (false, true) => MICA_DARK,
+            (true, true) => MICA_LIGHT,
+            (false, false) => MICA_DARK_FALLBACK,
+            (true, false) => MICA_LIGHT_FALLBACK,
+        },
+        "mica-dark" => {
+            if mica_available {
+                MICA_DARK
+            } else {
+                MICA_DARK_FALLBACK
+            }
+        }
+        "mica-light" => {
+            if mica_available {
+                MICA_LIGHT
+            } else {
+                MICA_LIGHT_FALLBACK
+            }
+        }
+        _ => BUILTIN_OPAQUE_THEMES
+            .iter()
+            .copied()
+            .find(|t| t.id == id)
+            .unwrap_or(CHRONOPHOTOGRAPHIC),
+    };
+
+    if let Some(preset) = accent_override.and_then(find_accent_preset) {
+        palette.accent = RgbaHex::rgb(preset.accent);
+        palette.accent_hover = RgbaHex::rgb(preset.accent_hover);
+        palette.accent_active = RgbaHex::rgb(preset.accent_active);
+        palette.accent_foreground = RgbaHex::rgb(preset.accent_foreground);
+        palette.focus_ring = RgbaHex::rgb(preset.focus_ring);
+    }
+
+    palette
+}
+
+static ACTIVE_THEME: RwLock<ThemePalette> = RwLock::new(CHRONOPHOTOGRAPHIC);
 
 /// Returns a copy of the currently active [`ThemePalette`].
 pub fn active_theme() -> ThemePalette {
@@ -319,16 +680,14 @@ pub fn active_theme() -> ThemePalette {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Sets the active palette with an optional accent preset override and returns the resolved copy.
-pub fn set_active_theme_with_accent(id: &str, accent_override: Option<&str>) -> ThemePalette {
-    let mut palette = *find_theme(id);
-    if let Some(preset) = accent_override.and_then(find_accent_preset) {
-        palette.accent = preset.accent;
-        palette.accent_hover = preset.accent_hover;
-        palette.accent_active = preset.accent_active;
-        palette.accent_foreground = preset.accent_foreground;
-        palette.focus_ring = preset.focus_ring;
-    }
+/// Resolves and stores the active [`ThemePalette`] and returns the resolved copy.
+pub fn set_active_theme_with_accent(
+    id: &str,
+    accent_override: Option<&str>,
+    os_appearance: WindowAppearance,
+    mica_available: bool,
+) -> ThemePalette {
+    let palette = resolve_palette(id, accent_override, os_appearance, mica_available);
     *ACTIVE_THEME
         .write()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = palette;
@@ -339,152 +698,197 @@ pub fn set_active_theme_with_accent(id: &str, accent_override: Option<&str>) -> 
 pub fn apply_theme_with_accent(
     id: &str,
     accent_override: Option<&str>,
-    window: Option<&mut Window>,
+    os_appearance: WindowAppearance,
+    mica_available: bool,
     cx: &mut App,
 ) -> ThemePalette {
-    let palette = set_active_theme_with_accent(id, accent_override);
+    let palette = set_active_theme_with_accent(id, accent_override, os_appearance, mica_available);
     let mode = match palette.tone {
         PaletteTone::Dark => ThemeMode::Dark,
         PaletteTone::Light => ThemeMode::Light,
     };
-    Theme::change(mode, window, cx);
+    Theme::change(mode, None, cx);
 
     let theme = Theme::global_mut(cx);
     theme.radius = px(4.0);
     theme.radius_lg = px(6.0);
-    theme.background = rgb(palette.graphite_bg).into();
-    theme.foreground = rgb(palette.silver_text).into();
-    theme.border = rgb(palette.paper_border).into();
-    theme.input = rgb(palette.graphite_bg).into();
-    theme.muted = rgb(palette.graphite_elevated).into();
-    theme.muted_foreground = rgb(palette.silver_muted).into();
-    theme.secondary = rgb(palette.graphite_elevated).into();
-    theme.secondary_hover = rgb(palette.paper_hover).into();
-    theme.secondary_active = rgb(palette.paper_selected).into();
-    theme.secondary_foreground = rgb(palette.silver_text).into();
-    theme.primary = rgb(palette.accent).into();
-    theme.primary_hover = rgb(palette.accent_hover).into();
-    theme.primary_active = rgb(palette.accent_active).into();
-    theme.primary_foreground = rgb(palette.accent_foreground).into();
-    theme.button_primary = rgb(palette.accent).into();
-    theme.button_primary_hover = rgb(palette.accent_hover).into();
-    theme.button_primary_active = rgb(palette.accent_active).into();
-    theme.button_primary_foreground = rgb(palette.accent_foreground).into();
-    theme.button_secondary = rgb(palette.graphite_elevated).into();
-    theme.button_secondary_hover = rgb(palette.paper_hover).into();
-    theme.button_secondary_active = rgb(palette.paper_selected).into();
-    theme.button_secondary_foreground = rgb(palette.silver_text).into();
-    theme.button_hover = rgb(palette.paper_hover).into();
-    theme.button_active = rgb(palette.paper_selected).into();
-    theme.button_foreground = rgb(palette.silver_text).into();
-    theme.ring = rgb(palette.focus_ring).into();
-    theme.title_bar = rgb(palette.graphite_bg).into();
-    theme.title_bar_border = rgb(palette.graphite_border).into();
-    theme.tokens.primary.background = rgb(palette.accent).into();
-    theme.tokens.primary_hover.background = rgb(palette.accent_hover).into();
-    theme.tokens.primary_active.background = rgb(palette.accent_active).into();
-    theme.tokens.button_primary.background = rgb(palette.accent).into();
-    theme.tokens.button_primary_hover.background = rgb(palette.accent_hover).into();
-    theme.tokens.button_primary_active.background = rgb(palette.accent_active).into();
-    theme.tokens.button_secondary.background = rgb(palette.graphite_elevated).into();
-    theme.tokens.button_secondary_hover.background = rgb(palette.paper_hover).into();
-    theme.tokens.button_secondary_active.background = rgb(palette.paper_selected).into();
-    theme.tokens.button.background = rgb(palette.graphite_elevated).into();
-    theme.tokens.button_hover.background = rgb(palette.paper_hover).into();
-    theme.tokens.button_active.background = rgb(palette.paper_selected).into();
+    if palette.backdrop != ThemeBackdrop::Opaque {
+        theme.background = Hsla::transparent_black();
+        theme.tokens.background = Hsla::transparent_black().into();
+    } else {
+        let bg = palette.graphite_bg.hsla();
+        theme.background = bg;
+        theme.tokens.background = bg.into();
+    }
+    theme.foreground = palette.silver_text.hsla();
+    theme.border = palette.paper_border.hsla();
+    theme.input = palette.input_bg.hsla();
+    theme.popover = palette.context_menu_bg.hsla();
+    theme.popover_foreground = palette.silver_text.hsla();
+    theme.muted = palette.graphite_elevated.hsla();
+    theme.muted_foreground = palette.silver_muted.hsla();
+    theme.secondary = palette.graphite_elevated.hsla();
+    theme.secondary_hover = palette.paper_hover.hsla();
+    theme.secondary_active = palette.paper_selected.hsla();
+    theme.secondary_foreground = palette.silver_text.hsla();
+    theme.primary = palette.accent.hsla();
+    theme.primary_hover = palette.accent_hover.hsla();
+    theme.primary_active = palette.accent_active.hsla();
+    theme.primary_foreground = palette.accent_foreground.hsla();
+    theme.button_primary = palette.accent.hsla();
+    theme.button_primary_hover = palette.accent_hover.hsla();
+    theme.button_primary_active = palette.accent_active.hsla();
+    theme.button_primary_foreground = palette.accent_foreground.hsla();
+    theme.button_secondary = palette.graphite_elevated.hsla();
+    theme.button_secondary_hover = palette.paper_hover.hsla();
+    theme.button_secondary_active = palette.paper_selected.hsla();
+    theme.button_secondary_foreground = palette.silver_text.hsla();
+    theme.button_hover = palette.paper_hover.hsla();
+    theme.button_active = palette.paper_selected.hsla();
+    theme.button_foreground = palette.silver_text.hsla();
+    theme.ring = palette.focus_ring.hsla();
+    theme.title_bar = palette.titlebar_bg.hsla();
+    theme.title_bar_border = palette.graphite_border.hsla();
+    theme.tokens.primary.background = palette.accent.hsla().into();
+    theme.tokens.primary_hover.background = palette.accent_hover.hsla().into();
+    theme.tokens.primary_active.background = palette.accent_active.hsla().into();
+    theme.tokens.button_primary.background = palette.accent.hsla().into();
+    theme.tokens.button_primary_hover.background = palette.accent_hover.hsla().into();
+    theme.tokens.button_primary_active.background = palette.accent_active.hsla().into();
+    theme.tokens.button_secondary.background = palette.graphite_elevated.hsla().into();
+    theme.tokens.button_secondary_hover.background = palette.paper_hover.hsla().into();
+    theme.tokens.button_secondary_active.background = palette.paper_selected.hsla().into();
+    theme.tokens.button.background = palette.graphite_elevated.hsla().into();
+    theme.tokens.button_hover.background = palette.paper_hover.hsla().into();
+    theme.tokens.button_active.background = palette.paper_selected.hsla().into();
 
     palette
 }
 
 /// Activates `id` without an accent override.
 #[allow(dead_code)]
-pub fn apply_theme(id: &str, window: Option<&mut Window>, cx: &mut App) -> ThemePalette {
-    apply_theme_with_accent(id, None, window, cx)
+pub fn apply_theme(
+    id: &str,
+    os_appearance: WindowAppearance,
+    mica_available: bool,
+    cx: &mut App,
+) -> ThemePalette {
+    apply_theme_with_accent(id, None, os_appearance, mica_available, cx)
+}
+
+/// Custom titlebar surface background.
+#[allow(dead_code)]
+pub fn titlebar_bg() -> Hsla {
+    active_theme().titlebar_bg.hsla()
 }
 
 /// Rail & bottom inspector background.
 pub fn graphite_bg() -> Hsla {
-    rgb(active_theme().graphite_bg).into()
+    active_theme().graphite_bg.hsla()
 }
 
 /// Slightly raised surface for cards, badges, and secondary controls.
 pub fn graphite_elevated() -> Hsla {
-    rgb(active_theme().graphite_elevated).into()
+    active_theme().graphite_elevated.hsla()
 }
 
 /// Hairline rule inside rail, inspector, and modal surfaces.
 pub fn graphite_border() -> Hsla {
-    rgb(active_theme().graphite_border).into()
+    active_theme().graphite_border.hsla()
 }
 
 /// Primary text on rail, inspector, and modal surfaces.
 pub fn silver_text() -> Hsla {
-    rgb(active_theme().silver_text).into()
+    active_theme().silver_text.hsla()
 }
 
 /// Muted metadata text on rail and inspector surfaces.
 pub fn silver_muted() -> Hsla {
-    rgb(active_theme().silver_muted).into()
+    active_theme().silver_muted.hsla()
 }
 
 /// Main download table & toolbar work surface.
 pub fn paper_bg() -> Hsla {
-    rgb(active_theme().paper_bg).into()
+    active_theme().paper_bg.hsla()
 }
 
 /// Recessed modular table header background.
 pub fn table_header_bg() -> Hsla {
-    rgb(active_theme().table_header_bg).into()
+    active_theme().table_header_bg.hsla()
 }
 
 /// Selected row tint on the table work surface.
 pub fn paper_selected() -> Hsla {
-    rgb(active_theme().paper_selected).into()
+    active_theme().paper_selected.hsla()
 }
 
 /// Hover row tint on the table work surface.
 pub fn paper_hover() -> Hsla {
-    rgb(active_theme().paper_hover).into()
+    active_theme().paper_hover.hsla()
 }
 
 /// Construction-grid row & column rule on the table work surface.
 pub fn paper_border() -> Hsla {
-    rgb(active_theme().paper_border).into()
+    active_theme().paper_border.hsla()
 }
 
 /// Primary ink on the table work surface.
 pub fn carbon_text() -> Hsla {
-    rgb(active_theme().carbon_text).into()
+    active_theme().carbon_text.hsla()
 }
 
 /// Secondary ink on the table work surface.
 pub fn carbon_muted() -> Hsla {
-    rgb(active_theme().carbon_muted).into()
+    active_theme().carbon_muted.hsla()
+}
+
+/// Text input field surface background.
+#[allow(dead_code)]
+pub fn input_bg() -> Hsla {
+    active_theme().input_bg.hsla()
 }
 
 /// Deep recessed byte-map ruler track.
 pub fn byte_track_bg() -> Hsla {
-    rgb(active_theme().byte_track_bg).into()
+    active_theme().byte_track_bg.hsla()
+}
+
+/// Backdrop scrim painted behind in-window modal dialogs.
+#[allow(dead_code)]
+pub fn modal_scrim() -> Hsla {
+    active_theme().modal_scrim.hsla()
+}
+
+/// Surface background for in-window modal cards.
+#[allow(dead_code)]
+pub fn modal_bg() -> Hsla {
+    active_theme().modal_bg.hsla()
+}
+
+/// Surface background for context menus and popovers.
+#[allow(dead_code)]
+pub fn context_menu_bg() -> Hsla {
+    active_theme().context_menu_bg.hsla()
 }
 
 /// Primary accent for active in-flight segments & primary CTAs.
 pub fn selenium_amber() -> Hsla {
-    rgb(active_theme().accent).into()
+    active_theme().accent.hsla()
 }
 
 /// Writer-acknowledged disk `Checkpoint` bytes color.
 pub fn cyanotype_blue() -> Hsla {
-    rgb(active_theme().checkpoint_blue).into()
+    active_theme().checkpoint_blue.hsla()
 }
 
 /// `Completed` state indicator color.
 pub fn halide_emerald() -> Hsla {
-    rgb(active_theme().completed_emerald).into()
+    active_theme().completed_emerald.hsla()
 }
 
 /// `Failed` / `ResourceChanged` state indicator color.
 pub fn errata_vermilion() -> Hsla {
-    rgb(active_theme().failed_vermilion).into()
+    active_theme().failed_vermilion.hsla()
 }
 
 /// Translucent vermilion tint for errata & validation banners.
@@ -495,17 +899,125 @@ pub fn errata_surface_bg() -> Hsla {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui_kit::WindowAppearance;
 
     #[test]
-    fn builtin_themes_have_unique_ids_and_fallback() {
-        let ids: Vec<&str> = BUILTIN_THEMES.iter().map(|t| t.id).collect();
-        assert_eq!(ids.len(), 5);
+    fn rgba_hex_encodes_rgb_and_rgba_channels() {
+        let opaque = RgbaHex::rgb(0x141311);
+        assert_eq!(opaque.0, 0x141311FF);
+        assert!((opaque.hsla().a - 1.0).abs() < 1e-3);
+
+        let translucent = RgbaHex::rgba(0x14141424);
+        assert_eq!(translucent.0, 0x14141424);
+        assert!((translucent.hsla().a - (0x24 as f32 / 255.0)).abs() < 1e-2);
+
+        let clear = RgbaHex::rgba(0x00000000);
+        assert_eq!(clear.hsla().a, 0.0);
+    }
+
+    #[test]
+    fn builtin_theme_presets_have_eight_unique_ids_and_fallback() {
+        let ids: Vec<&str> = BUILTIN_THEME_PRESETS.iter().map(|p| p.id).collect();
+        assert_eq!(
+            ids,
+            vec![
+                "chronophotographic",
+                "cyanotype",
+                "phosphor",
+                "nordic",
+                "archival",
+                "mica-system",
+                "mica-dark",
+                "mica-light",
+            ]
+        );
         for (i, id) in ids.iter().enumerate() {
             assert!(!ids[i + 1..].contains(id), "duplicate theme id: {id}");
         }
 
-        assert_eq!(find_theme("cyanotype").name, "Blueprint Cyanotype");
-        assert_eq!(find_theme("archival").tone, PaletteTone::Light);
-        assert_eq!(find_theme("nonexistent").id, CHRONOPHOTOGRAPHIC.id);
+        assert_eq!(find_theme_preset("cyanotype").name, "Blueprint Cyanotype");
+        assert_eq!(find_theme_preset("archival").badge, ThemeBadge::Light);
+        assert_eq!(find_theme_preset("mica-system").badge, ThemeBadge::Auto);
+        assert!(find_theme_preset("mica-system").is_mica);
+        assert!(find_theme_preset("mica-dark").is_mica);
+        assert!(find_theme_preset("mica-light").is_mica);
+        assert!(!find_theme_preset("chronophotographic").is_mica);
+        assert_eq!(find_theme_preset("nonexistent").id, CHRONOPHOTOGRAPHIC.id);
+    }
+
+    #[test]
+    fn resolve_palette_handles_mica_system_polarity() {
+        let dark = resolve_palette("mica-system", None, WindowAppearance::Dark, true);
+        assert_eq!(dark, MICA_DARK);
+        assert_eq!(dark.backdrop, ThemeBackdrop::Mica);
+        assert_eq!(dark.titlebar_bg, RgbaHex::rgba(0x00000000));
+
+        let vibrant_dark = resolve_palette("mica-system", None, WindowAppearance::VibrantDark, true);
+        assert_eq!(vibrant_dark, MICA_DARK);
+
+        let light = resolve_palette("mica-system", None, WindowAppearance::Light, true);
+        assert_eq!(light, MICA_LIGHT);
+        assert_eq!(light.backdrop, ThemeBackdrop::MicaAlt);
+        assert_eq!(light.titlebar_bg, RgbaHex::rgba(0x00000000));
+
+        let vibrant_light =
+            resolve_palette("mica-system", None, WindowAppearance::VibrantLight, true);
+        assert_eq!(vibrant_light, MICA_LIGHT);
+    }
+
+    #[test]
+    fn resolve_palette_enforces_forced_mica_polarity() {
+        let forced_dark = resolve_palette("mica-dark", None, WindowAppearance::Light, true);
+        assert_eq!(forced_dark, MICA_DARK);
+        assert_eq!(forced_dark.backdrop, ThemeBackdrop::Mica);
+
+        let forced_light = resolve_palette("mica-light", None, WindowAppearance::Dark, true);
+        assert_eq!(forced_light, MICA_LIGHT);
+        assert_eq!(forced_light.backdrop, ThemeBackdrop::MicaAlt);
+    }
+
+    #[test]
+    fn resolve_palette_falls_back_to_opaque_when_mica_unavailable() {
+        let dark = resolve_palette("mica-dark", None, WindowAppearance::Light, false);
+        assert_eq!(dark, MICA_DARK_FALLBACK);
+        assert_eq!(dark.backdrop, ThemeBackdrop::Opaque);
+        assert_eq!(dark.titlebar_bg, RgbaHex::rgba(0x202020FF));
+
+        let light = resolve_palette("mica-light", None, WindowAppearance::Dark, false);
+        assert_eq!(light, MICA_LIGHT_FALLBACK);
+        assert_eq!(light.backdrop, ThemeBackdrop::Opaque);
+        assert_eq!(light.titlebar_bg, RgbaHex::rgba(0xF3F3F3FF));
+
+        let sys_dark = resolve_palette("mica-system", None, WindowAppearance::Dark, false);
+        assert_eq!(sys_dark, MICA_DARK_FALLBACK);
+        assert_eq!(sys_dark.backdrop, ThemeBackdrop::Opaque);
+
+        let sys_light = resolve_palette("mica-system", None, WindowAppearance::Light, false);
+        assert_eq!(sys_light, MICA_LIGHT_FALLBACK);
+        assert_eq!(sys_light.backdrop, ThemeBackdrop::Opaque);
+    }
+
+    #[test]
+    fn resolve_palette_applies_accent_override_preserving_mica_surfaces() {
+        let blue = find_accent_preset("blue").expect("blue preset exists");
+        let palette = resolve_palette("mica-dark", Some("blue"), WindowAppearance::Light, true);
+        assert_eq!(palette.backdrop, ThemeBackdrop::Mica);
+        assert_eq!(palette.graphite_bg, MICA_DARK.graphite_bg);
+        assert_eq!(palette.paper_bg, MICA_DARK.paper_bg);
+        assert_eq!(palette.accent, RgbaHex::rgb(blue.accent));
+        assert_eq!(palette.accent_hover, RgbaHex::rgb(blue.accent_hover));
+        assert_eq!(palette.accent_active, RgbaHex::rgb(blue.accent_active));
+        assert_eq!(
+            palette.accent_foreground,
+            RgbaHex::rgb(blue.accent_foreground)
+        );
+        assert_eq!(palette.focus_ring, RgbaHex::rgb(blue.focus_ring));
+    }
+
+    #[test]
+    fn resolve_palette_falls_back_to_chronophotographic_for_unknown_id() {
+        let palette = resolve_palette("nonexistent", None, WindowAppearance::Light, true);
+        assert_eq!(palette, CHRONOPHOTOGRAPHIC);
+        assert_eq!(palette.backdrop, ThemeBackdrop::Opaque);
     }
 }

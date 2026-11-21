@@ -78,7 +78,7 @@ fn main() {
         .with_assets(PosthazeAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
-            theme::apply_theme("chronophotographic", None, cx);
+            theme::apply_theme("chronophotographic", WindowAppearance::Dark, false, cx);
 
             let window_options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
@@ -243,7 +243,8 @@ impl PosthazeApp {
         theme::apply_theme_with_accent(
             &self.queue.settings.ui_theme,
             self.queue.settings.ui_accent_override.as_deref(),
-            None,
+            WindowAppearance::Dark,
+            false,
             cx,
         );
         if let Some(effect) = effect {
@@ -1398,7 +1399,8 @@ impl Render for PosthazeApp {
                         theme::apply_theme_with_accent(
                             &app.queue.settings.ui_theme,
                             app.queue.settings.ui_accent_override.as_deref(),
-                            Some(window),
+                            window.appearance(),
+                            false,
                             cx,
                         );
                         cx.notify();
@@ -1537,7 +1539,8 @@ impl Render for PosthazeApp {
                             theme::apply_theme_with_accent(
                                 &app.queue.settings.ui_theme,
                                 app.queue.settings.ui_accent_override.as_deref(),
-                                Some(window),
+                                window.appearance(),
+                                false,
                                 cx,
                             );
                             changed = true;
@@ -1974,7 +1977,7 @@ impl PosthazeApp {
                 .border_r_1()
                 .border_color(graphite_border())
                 .bg(selenium_amber())
-                .hover(|s| s.bg(rgb(active_theme().accent_hover)))
+                .hover(|s| s.bg(active_theme().accent_hover.hsla()))
                 .cursor_pointer()
                 .flex()
                 .items_center()
@@ -1982,7 +1985,7 @@ impl PosthazeApp {
                 .font_family(MONO_FONT)
                 .text_size(TYPE_MICRO)
                 .font_weight(FontWeight::SEMIBOLD)
-                .text_color(rgb(active_theme().accent_foreground))
+                .text_color(active_theme().accent_foreground.hsla())
                 .on_click(cx.listener(|app, _, window, cx| {
                     app.open_settings_modal_on_tab(SettingsTab::Updates, window, cx);
                 }))

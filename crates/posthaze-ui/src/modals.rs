@@ -486,7 +486,7 @@ where
                                 .cursor_pointer()
                                 .when(ext_is_locked && ext_has_value, |el| {
                                     el.bg(selenium_amber())
-                                        .text_color(rgb(active_theme().accent_foreground))
+                                        .text_color(active_theme().accent_foreground.hsla())
                                         .hover(|s| s.opacity(0.9))
                                 })
                                 .when(!(ext_is_locked && ext_has_value), |el| {
@@ -494,7 +494,7 @@ where
                                         .text_color(silver_muted())
                                         .hover(|s| {
                                             s.bg(selenium_amber())
-                                                .text_color(rgb(active_theme().accent_foreground))
+                                                .text_color(active_theme().accent_foreground.hsla())
                                         })
                                 })
                                 .tooltip(move |window, cx| {
