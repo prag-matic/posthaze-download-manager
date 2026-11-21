@@ -94,6 +94,14 @@ impl EngineBridge {
         &self.runtime
     }
 
+    /// Reads persisted [`Settings`] synchronously on the engine Tokio runtime.
+    ///
+    /// Used before opening the first GPUI window so frame 1 starts with the saved
+    /// theme and `WindowBackgroundAppearance` without an opaque flash.
+    pub fn load_settings_sync(&self) -> Result<Settings, EngineError> {
+        self.runtime.block_on(self.engine.get_settings())
+    }
+
     /// Loads a consistent [`EngineSnapshot`] of records, settings, and persisted `Segment`s.
     pub fn load_snapshot(&self) -> oneshot::Receiver<Result<EngineSnapshot, EngineError>> {
         self.spawn_task(|engine| async move { read_snapshot(&engine).await })
@@ -259,6 +267,36 @@ mod tests {
         assert_eq!(outcome.snapshot.settings.max_concurrent_downloads, 5);
 
         drop(bridge);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn load_settings_sync_reads_persisted_theme_and_accent_on_reopen() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("posthaze_bridge_sync_test_{}", DownloadId::new()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let db_path = temp_dir.join("state.db");
+
+        {
+            let bridge = EngineBridge::open(db_path.clone()).expect("bridge should open");
+            let mut settings = bridge.load_settings_sync().expect("initial settings ok");
+            settings.ui_theme = "mica-system".to_string();
+            settings.ui_accent_override = Some("blue".to_string());
+            bridge
+                .execute(EngineCommand::UpdateSettings(settings))
+                .blocking_recv()
+                .expect("channel ok")
+                .expect("update settings ok");
+        }
+
+        let reopened = EngineBridge::open(db_path).expect("bridge should reopen");
+        let loaded = reopened
+            .load_settings_sync()
+            .expect("persisted settings should load synchronously");
+        assert_eq!(loaded.ui_theme, "mica-system");
+        assert_eq!(loaded.ui_accent_override.as_deref(), Some("blue"));
+
+        drop(reopened);
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

@@ -66,6 +66,129 @@ use crate::view_model::{
     resolve_inspector_drag, resolve_keyboard_action, resolve_sidebar_drag,
 };
 
+/// Maps a [`ThemeBackdrop`] to the Win32/GPUI [`platform_hooks::DwmBackdrop`] material.
+pub(crate) const fn dwm_backdrop_for(backdrop: ThemeBackdrop) -> platform_hooks::DwmBackdrop {
+    match backdrop {
+        ThemeBackdrop::Opaque => platform_hooks::DwmBackdrop::Opaque,
+        ThemeBackdrop::Mica => platform_hooks::DwmBackdrop::Mica,
+        ThemeBackdrop::MicaAlt => platform_hooks::DwmBackdrop::MicaAlt,
+    }
+}
+
+/// Returns `true` when `theme_id` forces a specific Mica dark/light polarity
+/// (`"mica-dark"` or `"mica-light"`) rather than following the OS appearance.
+pub(crate) fn is_forced_mica_polarity(theme_id: &str) -> bool {
+    matches!(theme_id, "mica-dark" | "mica-light")
+}
+
+/// Resolves the active `(theme_id, accent_override)` pair, preferring an open
+/// Settings live-preview draft over persisted `Settings`.
+fn resolve_active_theme_selection(
+    draft: Option<(&str, Option<&str>)>,
+    saved_theme: &str,
+    saved_accent: Option<&str>,
+) -> (String, Option<String>) {
+    if let Some((draft_theme, draft_accent)) = draft {
+        (draft_theme.to_string(), draft_accent.map(str::to_string))
+    } else {
+        (saved_theme.to_string(), saved_accent.map(str::to_string))
+    }
+}
+
+fn apply_palette_to_all_windows(
+    palette: ThemePalette,
+    current_window: &mut Option<&mut Window>,
+    cx: &mut App,
+) -> bool {
+    let dwm_backdrop = dwm_backdrop_for(palette.backdrop);
+    let is_dark = palette.tone == PaletteTone::Dark;
+    let mut any_failed = false;
+
+    let current_handle = if let Some(win) = current_window.as_deref_mut() {
+        if platform_hooks::apply_window_backdrop(win, dwm_backdrop, is_dark).is_err() {
+            any_failed = true;
+        }
+        win.refresh();
+        Some(win.window_handle())
+    } else {
+        None
+    };
+
+    for handle in cx.windows() {
+        if current_handle == Some(handle) {
+            continue;
+        }
+        let _ = handle.update(cx, |_, win, _| {
+            if platform_hooks::apply_window_backdrop(win, dwm_backdrop, is_dark).is_err() {
+                any_failed = true;
+            }
+            win.refresh();
+        });
+    }
+
+    any_failed
+}
+
+fn sync_theme_and_backdrops_inner(
+    theme_id: &str,
+    accent_override: Option<&str>,
+    mut current_window: Option<&mut Window>,
+    cx: &mut App,
+) -> ThemePalette {
+    let os_appearance = if let Some(win) = current_window.as_deref() {
+        win.appearance()
+    } else {
+        cx.windows()
+            .into_iter()
+            .find_map(|handle| handle.update(cx, |_, win, _| win.appearance()).ok())
+            .unwrap_or(WindowAppearance::Dark)
+    };
+
+    let mica_available = platform_hooks::mica_availability().is_ok();
+    let mut palette = theme::apply_theme_with_accent(
+        theme_id,
+        accent_override,
+        os_appearance,
+        mica_available,
+        cx,
+    );
+
+    let any_failed = apply_palette_to_all_windows(palette, &mut current_window, cx);
+    if any_failed && palette.backdrop != ThemeBackdrop::Opaque {
+        palette = theme::apply_theme_with_accent(
+            theme_id,
+            accent_override,
+            os_appearance,
+            false,
+            cx,
+        );
+        let _ = apply_palette_to_all_windows(palette, &mut current_window, cx);
+    }
+
+    palette
+}
+
+/// Synchronizes the active [`ThemePalette`], GPUI Kit tokens, and Win32 DWM
+/// backdrops across every open window (`PosthazeApp` and all `PreflightWindow`s).
+pub(crate) fn sync_theme_and_backdrops(
+    theme_id: &str,
+    accent_override: Option<&str>,
+    cx: &mut App,
+) -> ThemePalette {
+    sync_theme_and_backdrops_inner(theme_id, accent_override, None, cx)
+}
+
+/// Synchronizes the active [`ThemePalette`] and Win32 DWM backdrops across the
+/// currently borrowed `window` and all other open windows.
+pub(crate) fn sync_theme_and_backdrops_in_window(
+    theme_id: &str,
+    accent_override: Option<&str>,
+    window: &mut Window,
+    cx: &mut App,
+) -> ThemePalette {
+    sync_theme_and_backdrops_inner(theme_id, accent_override, Some(window), cx)
+}
+
 fn main() {
     diagnostics::init_diagnostics(default_logs_dir());
     let start_minimized = std::env::args().any(|arg| arg == "--minimized");
@@ -73,12 +196,17 @@ fn main() {
         return;
     }
     let bridge = EngineBridge::open(default_db_path()).expect("failed to initialize engine");
+    let initial_settings = bridge.load_settings_sync().unwrap_or_default();
 
     gpui_kit::application()
         .with_assets(PosthazeAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
-            theme::apply_theme("chronophotographic", WindowAppearance::Dark, false, cx);
+            let initial_palette = sync_theme_and_backdrops(
+                &initial_settings.ui_theme,
+                initial_settings.ui_accent_override.as_deref(),
+                cx,
+            );
 
             let window_options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
@@ -86,17 +214,27 @@ fn main() {
                     size(px(1020.0), px(640.0)),
                     cx,
                 ))),
+                window_background: dwm_backdrop_for(initial_palette.backdrop).to_window_background(),
                 show: !start_minimized,
                 focus: !start_minimized,
                 window_min_size: Some(size(px(1020.0), px(640.0))),
                 ..TitleBar::window_options()
             };
 
-            let bridge = bridge.clone();
+            let bridge_for_win = bridge.clone();
+            let startup_settings = initial_settings.clone();
             gpui_kit::open_window(window_options, cx, move |window, cx| {
-                cx.new(|cx| PosthazeApp::new(bridge, window, cx))
+                cx.new(|cx| PosthazeApp::new(bridge_for_win, startup_settings, window, cx))
             })
             .expect("failed to open Posthaze window");
+
+            // Now that the main window exists, apply Win32 DWM attributes and
+            // reconcile against the real OS WindowAppearance before frame 1 paints.
+            sync_theme_and_backdrops(
+                &initial_settings.ui_theme,
+                initial_settings.ui_accent_override.as_deref(),
+                cx,
+            );
         });
 }
 
@@ -136,13 +274,19 @@ pub(crate) struct PosthazeApp {
     last_progress_notify: Instant,
     quitting: bool,
     _tray_handle: Option<tray::TrayHandle>,
+    _appearance_subscription: Subscription,
     update_state: UpdateState,
     is_portable: bool,
     update_timer_started: bool,
 }
 
 impl PosthazeApp {
-    fn new(bridge: EngineBridge, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    fn new(
+        bridge: EngineBridge,
+        initial_settings: posthaze_engine::Settings,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let url_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder("Paste or enter HTTP/HTTPS URL to probe...")
         });
@@ -167,13 +311,48 @@ impl PosthazeApp {
         })
         .detach();
 
+        let appearance_entity = cx.entity().downgrade();
+        let _appearance_subscription = window.observe_window_appearance(move |window, cx| {
+            let Ok((theme_id, accent_override)) =
+                appearance_entity.update(cx, |app, _| app.active_theme_selection())
+            else {
+                return;
+            };
+            let palette = sync_theme_and_backdrops_in_window(
+                &theme_id,
+                accent_override.as_deref(),
+                window,
+                cx,
+            );
+            if is_forced_mica_polarity(&theme_id) {
+                let is_dark = palette.tone == PaletteTone::Dark;
+                window.defer(cx, move |window, cx| {
+                    platform_hooks::assert_window_dark_mode(window, is_dark);
+                    let current_handle = window.window_handle();
+                    for handle in cx.windows() {
+                        if handle == current_handle {
+                            continue;
+                        }
+                        let _ = handle.update(cx, |_, win, _| {
+                            platform_hooks::assert_window_dark_mode(win, is_dark);
+                        });
+                    }
+                });
+            }
+        });
+
+        let queue = QueueController {
+            settings: initial_settings,
+            ..Default::default()
+        };
+
         let mut app = Self {
             bridge,
             window_handle: window.window_handle(),
             focus_handle: cx.focus_handle(),
             url_input,
             search_input,
-            queue: QueueController::default(),
+            queue,
             filter: FilterTab::All,
             sort_col: SortColumn::CreatedAt,
             sort_dir: SortDirection::Descending,
@@ -197,6 +376,7 @@ impl PosthazeApp {
             last_progress_notify: Instant::now(),
             quitting: false,
             _tray_handle: None,
+            _appearance_subscription,
             update_state: UpdateState::Idle,
             is_portable: updater::is_current_install_portable(),
             update_timer_started: false,
@@ -222,7 +402,40 @@ impl PosthazeApp {
         app.refresh_from_engine(cx);
         app.start_event_listener(cx);
         app.start_ipc_listener(cx);
+        app.start_mica_preference_listener(cx);
         app
+    }
+
+    fn active_theme_selection(&self) -> (String, Option<String>) {
+        let draft = self.settings_modal.as_ref().map(|modal| {
+            (
+                modal.draft.ui_theme.as_str(),
+                modal.draft.ui_accent_override.as_deref(),
+            )
+        });
+        resolve_active_theme_selection(
+            draft,
+            &self.queue.settings.ui_theme,
+            self.queue.settings.ui_accent_override.as_deref(),
+        )
+    }
+
+    fn start_mica_preference_listener(&self, cx: &mut Context<Self>) {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        platform_hooks::spawn_mica_preference_listener(move || {
+            let _ = tx.send(());
+        });
+        cx.spawn(async move |this, cx| {
+            while rx.recv().await.is_some() {
+                while rx.try_recv().is_ok() {}
+                let _ = this.update(cx, |app, cx| {
+                    let (theme_id, accent_override) = app.active_theme_selection();
+                    sync_theme_and_backdrops(&theme_id, accent_override.as_deref(), cx);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
     }
 
     fn apply_snapshot(&mut self, snapshot: EngineSnapshot, cx: &mut Context<Self>) {
@@ -240,13 +453,8 @@ impl PosthazeApp {
                 self.start_update_timer(cx);
             }
         }
-        theme::apply_theme_with_accent(
-            &self.queue.settings.ui_theme,
-            self.queue.settings.ui_accent_override.as_deref(),
-            WindowAppearance::Dark,
-            false,
-            cx,
-        );
+        let (theme_id, accent_override) = self.active_theme_selection();
+        sync_theme_and_backdrops(&theme_id, accent_override.as_deref(), cx);
         if let Some(effect) = effect {
             self.execute_ui_effects(vec![effect], cx);
         }
@@ -776,14 +984,22 @@ impl PosthazeApp {
         .detach();
     }
 
-    fn save_settings_modal(&mut self, cx: &mut Context<Self>) {
+    fn save_settings_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(modal) = &mut self.settings_modal else {
             return;
         };
         match modal.apply_to_settings(cx) {
             Ok(new_settings) => {
                 let startup_enabled = new_settings.launch_on_startup;
+                let saved_theme = new_settings.ui_theme.clone();
+                let saved_accent = new_settings.ui_accent_override.clone();
                 self.settings_modal = None;
+                sync_theme_and_backdrops_in_window(
+                    &saved_theme,
+                    saved_accent.as_deref(),
+                    window,
+                    cx,
+                );
                 if let Err(err) = sync_windows_startup_registry(startup_enabled) {
                     self.status_banner = Some(err);
                 }
@@ -1396,18 +1612,17 @@ impl Render for PosthazeApp {
                 move |window, cx| {
                     e_cancel.update(cx, |app, cx| {
                         app.settings_modal = None;
-                        theme::apply_theme_with_accent(
+                        sync_theme_and_backdrops_in_window(
                             &app.queue.settings.ui_theme,
                             app.queue.settings.ui_accent_override.as_deref(),
-                            window.appearance(),
-                            false,
+                            window,
                             cx,
                         );
                         cx.notify();
                     });
                 },
-                move |_, cx| {
-                    e_save.update(cx, |app, cx| app.save_settings_modal(cx));
+                move |window, cx| {
+                    e_save.update(cx, |app, cx| app.save_settings_modal(window, cx));
                 },
             )
         });
@@ -1536,11 +1751,10 @@ impl Render for PosthazeApp {
                             changed = true;
                         }
                         if app.settings_modal.take().is_some() {
-                            theme::apply_theme_with_accent(
+                            sync_theme_and_backdrops_in_window(
                                 &app.queue.settings.ui_theme,
                                 app.queue.settings.ui_accent_override.as_deref(),
-                                window.appearance(),
-                                false,
+                                window,
                                 cx,
                             );
                             changed = true;
@@ -1559,7 +1773,7 @@ impl Render for PosthazeApp {
                         if app.confirm_modal.is_some() {
                             app.execute_confirmed_action(cx);
                         } else if app.settings_modal.is_some() {
-                            app.save_settings_modal(cx);
+                            app.save_settings_modal(window, cx);
                         } else if app.file_op_modal.is_some() {
                             app.execute_file_op_confirm(cx);
                         }
@@ -2074,5 +2288,44 @@ impl PosthazeApp {
                         )
                     }),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{dwm_backdrop_for, is_forced_mica_polarity, resolve_active_theme_selection};
+    use crate::platform_hooks::DwmBackdrop;
+    use crate::theme::ThemeBackdrop;
+
+    #[test]
+    fn dwm_backdrop_for_maps_all_theme_backdrops() {
+        assert_eq!(dwm_backdrop_for(ThemeBackdrop::Opaque), DwmBackdrop::Opaque);
+        assert_eq!(dwm_backdrop_for(ThemeBackdrop::Mica), DwmBackdrop::Mica);
+        assert_eq!(
+            dwm_backdrop_for(ThemeBackdrop::MicaAlt),
+            DwmBackdrop::MicaAlt
+        );
+    }
+
+    #[test]
+    fn is_forced_mica_polarity_identifies_forced_presets_only() {
+        assert!(is_forced_mica_polarity("mica-dark"));
+        assert!(is_forced_mica_polarity("mica-light"));
+        assert!(!is_forced_mica_polarity("mica-system"));
+        assert!(!is_forced_mica_polarity("chronophotographic"));
+        assert!(!is_forced_mica_polarity("archival"));
+    }
+
+    #[test]
+    fn resolve_active_theme_selection_prefers_settings_live_preview_draft() {
+        let preview = resolve_active_theme_selection(
+            Some(("mica-light", Some("emerald"))),
+            "chronophotographic",
+            None,
+        );
+        assert_eq!(preview, ("mica-light".to_string(), Some("emerald".to_string())));
+
+        let saved = resolve_active_theme_selection(None, "mica-system", Some("blue"));
+        assert_eq!(saved, ("mica-system".to_string(), Some("blue".to_string())));
     }
 }

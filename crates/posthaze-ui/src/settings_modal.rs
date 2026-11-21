@@ -431,24 +431,22 @@ impl SettingsModalState {
             SettingsAction::BrowseSaveFolder => {}
             SettingsAction::SetAccentOverride(accent) => {
                 self.draft.ui_accent_override = accent;
-                crate::theme::apply_theme_with_accent(
+                crate::sync_theme_and_backdrops_in_window(
                     &self.draft.ui_theme,
                     self.draft.ui_accent_override.as_deref(),
-                    window.appearance(),
-                    false,
+                    window,
                     cx,
                 );
             }
             SettingsAction::SetTheme(theme_id) => {
                 let preset = crate::theme::find_theme_preset(&theme_id);
-                crate::theme::apply_theme_with_accent(
-                    preset.id,
+                self.draft.ui_theme = preset.id.to_string();
+                crate::sync_theme_and_backdrops_in_window(
+                    &self.draft.ui_theme,
                     self.draft.ui_accent_override.as_deref(),
-                    window.appearance(),
-                    false,
+                    window,
                     cx,
                 );
-                self.draft.ui_theme = preset.id.to_string();
             }
             SettingsAction::CopyConfigJson => {
                 if let Ok(settings) = self.apply_to_settings(cx) {
@@ -491,11 +489,10 @@ impl SettingsModalState {
             SettingsAction::ResetToDefaults => {
                 *self = Self::from_settings(&Settings::default(), window, cx);
                 self.active_tab = SettingsTab::Reset;
-                crate::theme::apply_theme_with_accent(
+                crate::sync_theme_and_backdrops_in_window(
                     &self.draft.ui_theme,
                     self.draft.ui_accent_override.as_deref(),
-                    window.appearance(),
-                    false,
+                    window,
                     cx,
                 );
             }
@@ -1414,6 +1411,23 @@ where
                                         .child(preset.description),
                                 )
                         })),
+                )
+                .when_some(
+                    mica_fallback_status_note(
+                        &state.draft.ui_theme,
+                        crate::platform_hooks::mica_availability(),
+                    ),
+                    |el, note| {
+                        el.child(
+                            div()
+                                .id("mica-fallback-status-note")
+                                .pt_1()
+                                .text_size(TYPE_MICRO)
+                                .line_height(px(16.0))
+                                .text_color(silver_muted())
+                                .child(note),
+                        )
+                    },
                 ),
         )
         .child(section_heading("Accent Override"))
@@ -2045,10 +2059,55 @@ where
         .into_any_element()
 }
 
+fn mica_fallback_status_note(
+    theme_id: &str,
+    availability: Result<(), crate::platform_hooks::MicaFallbackReason>,
+) -> Option<&'static str> {
+    if !find_theme_preset(theme_id).is_mica {
+        return None;
+    }
+    availability
+        .err()
+        .map(crate::platform_hooks::MicaFallbackReason::status_note)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::SettingsDraft;
+    use super::{SettingsDraft, mica_fallback_status_note};
+    use crate::platform_hooks::MicaFallbackReason;
     use posthaze_engine::{ProxyMode, Settings};
+
+    #[test]
+    fn mica_fallback_status_note_only_shows_for_mica_presets_when_unavailable() {
+        assert_eq!(
+            mica_fallback_status_note("chronophotographic", Err(MicaFallbackReason::UnsupportedOs)),
+            None
+        );
+        assert_eq!(
+            mica_fallback_status_note("archival", Err(MicaFallbackReason::TransparencyDisabled)),
+            None
+        );
+        assert_eq!(mica_fallback_status_note("mica-system", Ok(())), None);
+        assert_eq!(mica_fallback_status_note("mica-dark", Ok(())), None);
+        assert_eq!(mica_fallback_status_note("mica-light", Ok(())), None);
+
+        let all_reasons = [
+            MicaFallbackReason::UnsupportedOs,
+            MicaFallbackReason::DirectCompositionDisabled,
+            MicaFallbackReason::HighContrastActive,
+            MicaFallbackReason::TransparencyDisabled,
+            MicaFallbackReason::DwmRejected,
+        ];
+        for reason in all_reasons {
+            for mica_id in ["mica-system", "mica-dark", "mica-light"] {
+                assert_eq!(
+                    mica_fallback_status_note(mica_id, Err(reason)),
+                    Some(reason.status_note()),
+                    "expected status note for {mica_id} with {reason:?}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn settings_draft_round_trips_and_delegates_validation() {
