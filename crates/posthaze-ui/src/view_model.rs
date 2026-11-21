@@ -984,6 +984,71 @@ impl QueueController {
             .map(|r| r.id.clone())
             .collect()
     }
+
+    /// Returns the selection-scoped actions shown in the dynamic top toolbar, or `None` when
+    /// nothing is selected.
+    pub fn selection_toolbar(&self) -> Option<SelectionToolbar> {
+        let selected: Vec<&DownloadRecord> = self
+            .records
+            .iter()
+            .filter(|r| self.is_selected(&r.id))
+            .collect();
+        if selected.is_empty() {
+            return None;
+        }
+        let state_of = |r: &DownloadRecord| self.live_map.get(&r.id).map_or(r.state, |s| s.state);
+        let pause_ids: Vec<DownloadId> = selected
+            .iter()
+            .filter(|r| {
+                matches!(
+                    state_of(r),
+                    DownloadState::Active | DownloadState::Queued | DownloadState::Probing
+                )
+            })
+            .map(|r| r.id.clone())
+            .collect();
+        let resume_ids = selected
+            .iter()
+            .filter(|r| {
+                matches!(
+                    self.primary_action_for(&r.id),
+                    Some(PrimaryDownloadAction::Resume(_))
+                )
+            })
+            .map(|r| r.id.clone())
+            .collect();
+        let restart_ids = selected
+            .iter()
+            .filter(|r| matches!(state_of(r), DownloadState::Paused | DownloadState::Failed))
+            .map(|r| r.id.clone())
+            .collect();
+        Some(SelectionToolbar {
+            count: selected.len(),
+            cancel_ids: pause_ids.clone(),
+            pause_ids,
+            resume_ids,
+            restart_ids,
+            single: (selected.len() == 1).then(|| selected[0].clone()),
+        })
+    }
+}
+
+/// Selection-scoped actions for the dynamic top toolbar (`Pause`, `Resume`, `Restart Fresh`,
+/// `Cancel`), each limited to the selected `Download`s it applies to.
+#[derive(Debug, Clone)]
+pub struct SelectionToolbar {
+    /// Number of selected `Download`s.
+    pub count: usize,
+    /// Selected `Download`s that can be paused (`Active`, `Queued`, `Probing`).
+    pub pause_ids: Vec<DownloadId>,
+    /// Selected `Download`s whose primary action is `Resume`.
+    pub resume_ids: Vec<DownloadId>,
+    /// Selected `Download`s that can be restarted fresh (`Paused`, `Failed`).
+    pub restart_ids: Vec<DownloadId>,
+    /// Selected `Download`s that can be cancelled (same set as `pause_ids`).
+    pub cancel_ids: Vec<DownloadId>,
+    /// The selected record when exactly one `Download` is selected.
+    pub single: Option<DownloadRecord>,
 }
 
 #[cfg(test)]
@@ -1011,6 +1076,35 @@ mod tests {
             created_at,
             updated_at: created_at,
         }
+    }
+
+    #[test]
+    fn selection_toolbar_scopes_actions_to_selected_states() {
+        let mut ctrl = QueueController::default();
+        assert!(ctrl.selection_toolbar().is_none());
+        ctrl.records = vec![
+            make_record("1", "https://example.com/a.bin", DownloadState::Active, 10),
+            make_record("2", "https://example.com/b.bin", DownloadState::Paused, 20),
+            make_record("3", "https://example.com/c.bin", DownloadState::Completed, 30),
+        ];
+        let id1 = DownloadId::from("1".to_string());
+        let id2 = DownloadId::from("2".to_string());
+        let id3 = DownloadId::from("3".to_string());
+
+        ctrl.select_single(id1.clone());
+        let single = ctrl.selection_toolbar().unwrap();
+        assert_eq!(single.pause_ids, vec![id1.clone()]);
+        assert!(single.resume_ids.is_empty());
+        assert_eq!(single.single.as_ref().map(|r| r.id.clone()), Some(id1.clone()));
+
+        ctrl.toggle_select(id2.clone());
+        ctrl.toggle_select(id3);
+        let mixed = ctrl.selection_toolbar().unwrap();
+        assert_eq!(mixed.count, 3);
+        assert_eq!(mixed.pause_ids, vec![id1]);
+        assert_eq!(mixed.resume_ids, vec![id2.clone()]);
+        assert_eq!(mixed.restart_ids, vec![id2]);
+        assert!(mixed.single.is_none());
     }
 
     #[test]

@@ -93,6 +93,30 @@ pub(crate) fn grid_cell_button(
     compact: bool,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
+    grid_cell_button_dyn(
+        id,
+        icon,
+        label.map(SharedString::from),
+        tooltip_text,
+        tone,
+        border,
+        compact,
+        on_click,
+    )
+}
+
+/// Same as [`grid_cell_button`] but accepts a runtime-built label (for example `PAUSE (3)`).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn grid_cell_button_dyn(
+    id: impl Into<ElementId>,
+    icon: Option<IconName>,
+    label: Option<SharedString>,
+    tooltip_text: Option<&'static str>,
+    tone: GridTone,
+    border: CellBorder,
+    compact: bool,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> AnyElement {
     let border_col = tone.border_color();
     let has_left = matches!(border, CellBorder::Left | CellBorder::Both);
     let has_right = matches!(border, CellBorder::Right | CellBorder::Both);

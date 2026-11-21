@@ -15,13 +15,15 @@ use posthaze_engine::{DownloadId, DownloadState};
 use crate::PosthazeApp;
 use crate::assets::BRAND_LOGO_SVG;
 use crate::context_menu::ContextMenuState;
-use crate::grid_cells::{CellBorder, GridTone, grid_boxed_button, grid_cell_button};
+use crate::grid_cells::{
+    CellBorder, GridTone, grid_boxed_button, grid_cell_button, grid_cell_button_dyn,
+};
 use crate::motion::RowMotionSample;
 use crate::theme::*;
 use crate::view_model::{
-    COLLAPSED_INSPECTOR_HEIGHT, DownloadRowView, FilterTab, LayoutProfile, PrimaryDownloadAction,
-    SortColumn, SortDirection, derive_display_filename, format_bytes, format_eta, format_speed,
-    state_icon,
+    COLLAPSED_INSPECTOR_HEIGHT, DownloadRowView, FilterTab, LayoutProfile,
+    SelectionToolbar, SortColumn, SortDirection, derive_display_filename, format_bytes, format_eta,
+    format_speed, state_icon,
 };
 
 const COL_STATE: f32 = 104.0;
@@ -32,6 +34,8 @@ const COL_ACTIONS: f32 = 148.0;
 
 impl PosthazeApp {
     pub(crate) fn render_toolbar(&self, profile: LayoutProfile, cx: &mut Context<Self>) -> impl IntoElement {
+        let selection = self.queue.selection_toolbar();
+        let url_hidden = selection.is_some();
         div()
             .w_full()
             .flex()
@@ -45,9 +49,10 @@ impl PosthazeApp {
                     .bg(paper_bg())
                     .border_b_1()
                     .border_color(paper_border())
-                    // URL intake cell
-                    .child(
-                        div()
+                    // Intake cell: URL field, or the selection summary while downloads are selected
+                    .child(match &selection {
+                        Some(sel) => self.render_selection_summary(sel),
+                        None => div()
                             .flex_1()
                             .min_w(px(180.0))
                             .h_full()
@@ -65,8 +70,9 @@ impl PosthazeApp {
                                     .font_family(MONO_FONT)
                                     .text_size(TYPE_BODY)
                                     .child(Input::new(&self.url_input).appearance(false)),
-                            ),
-                    )
+                            )
+                            .into_any_element(),
+                    })
                     // ADD URL button cell (right after the URL field, full cell width & height)
                     .child(
                         div()
@@ -94,13 +100,14 @@ impl PosthazeApp {
                                 Tooltip::new("Probe entered URL, or Paste & Probe from clipboard")
                                     .build(window, cx)
                             })
-                            .on_click(cx.listener(|app, _, window, cx| {
-                                let has_text = !app
-                                    .url_input
-                                    .read(cx)
-                                    .value()
-                                    .trim()
-                                    .is_empty();
+                            .on_click(cx.listener(move |app, _, window, cx| {
+                                let has_text = !url_hidden
+                                    && !app
+                                        .url_input
+                                        .read(cx)
+                                        .value()
+                                        .trim()
+                                        .is_empty();
                                 if has_text {
                                     app.submit_url_from_input(window, cx);
                                 } else {
@@ -111,10 +118,10 @@ impl PosthazeApp {
                             .child("ADD URL"),
                     )
                     // Extensible top-header tools slot
-                    .child(self.render_toolbar_tools(profile, cx)),
+                    .child(self.render_toolbar_tools(profile, selection.as_ref(), cx)),
             )
-            // Contextual second row for selected download(s) (fixed 34px height prevents table shift)
-            .child(self.render_selection_toolbar_row(cx))
+            // Filter row (fixed 34px height prevents table shift)
+            .child(self.render_filter_row(cx))
             // Merged full-width separator row between toolbar and download list
             .child(
                 div()
@@ -126,16 +133,10 @@ impl PosthazeApp {
             )
     }
 
-    fn render_selection_toolbar_row(&self, cx: &mut Context<Self>) -> AnyElement {
-        let selected: Vec<_> = self
-            .queue
-            .records
-            .iter()
-            .filter(|r| self.queue.is_selected(&r.id))
-            .collect();
-        if selected.is_empty() {
-            let has_query = !self.search_input.read(cx).value().is_empty();
-            return div()
+    /// Always-on filter row; selection actions live in the top toolbar row.
+    fn render_filter_row(&self, cx: &mut Context<Self>) -> AnyElement {
+        let has_query = !self.search_input.read(cx).value().is_empty();
+        div()
                 .h(px(34.0))
                 .w_full()
                 .flex()
@@ -196,238 +197,228 @@ impl PosthazeApp {
                         }),
                     ))
                 })
-                .into_any_element();
-        }
-
-        let count = selected.len();
-        let is_single = count == 1;
-        let single_rec = is_single.then(|| selected[0]);
-
-        let pause_ids: Vec<DownloadId> = selected
-            .iter()
-            .filter(|r| {
-                matches!(
-                    r.state,
-                    DownloadState::Active | DownloadState::Queued | DownloadState::Probing
-                )
-            })
-            .map(|r| r.id.clone())
-            .collect();
-
-        let resume_ids: Vec<DownloadId> = selected
-            .iter()
-            .filter(|r| {
-                matches!(
-                    self.queue.primary_action_for(&r.id),
-                    Some(PrimaryDownloadAction::Resume(_))
-                )
-            })
-            .map(|r| r.id.clone())
-            .collect();
-
-        let restart_ids: Vec<DownloadId> = selected
-            .iter()
-            .filter(|r| matches!(r.state, DownloadState::Paused | DownloadState::Failed))
-            .map(|r| r.id.clone())
-            .collect();
-
-        let cancel_ids = pause_ids.clone();
-
-        let badge_label = if is_single {
-            "1 SELECTED".to_string()
-        } else {
-            format!("{count} SELECTED")
-        };
-
-        let summary_text = if let Some(rec) = single_rec {
-            derive_display_filename(rec)
-        } else {
-            format!("{count} downloads selected")
-        };
-
-        div()
-            .h(px(34.0))
-                .w_full()
-                .flex()
-                .items_center()
-                .bg(paper_bg())
-                .border_b_1()
-                .border_color(paper_border())
-                // Selection count badge cell
-                .child(
-                    div()
-                        .w(px(16.0 + COL_STATE))
-                        .flex_shrink_0()
-                        .h_full()
-                        .px_3()
-                        .border_r_1()
-                        .border_color(paper_border())
-                        .bg(paper_selected())
-                        .flex()
-                        .items_center()
-                        .gap_1p5()
-                        .font_family(MONO_FONT)
-                        .text_size(TYPE_MICRO)
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(selenium_amber())
-                        .child(badge_label),
-                )
-                // Selected filename / summary cell
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(120.0))
-                        .h_full()
-                        .px_3()
-                        .border_r_1()
-                        .border_color(paper_border())
-                        .flex()
-                        .items_center()
-                        .overflow_hidden()
-                        .font_family(MONO_FONT)
-                        .text_size(TYPE_BODY)
-                        .text_color(carbon_text())
-                        .child(div().truncate().child(summary_text)),
-                )
-                // Contextual action cells
-                .child(
-                    div()
-                        .h_full()
-                        .flex_shrink_0()
-                        .flex()
-                        .items_center()
-                        .when(!pause_ids.is_empty(), |el| {
-                            let ids = pause_ids.clone();
-                            el.child(self.toolbar_cell_button(
-                                "sel-pause",
-                                IconName::Pause,
-                                None,
-                                "Pause Selected",
-                                true,
-                                cx.listener(move |app, _, _, cx| {
-                                    for id in &ids {
-                                        app.pause_download(id.clone(), cx);
-                                    }
-                                }),
-                            ))
-                        })
-                        .when(!resume_ids.is_empty(), |el| {
-                            let ids = resume_ids.clone();
-                            el.child(self.toolbar_cell_button(
-                                "sel-resume",
-                                IconName::Play,
-                                None,
-                                "Resume Selected",
-                                true,
-                                cx.listener(move |app, _, _, cx| {
-                                    for id in &ids {
-                                        app.resume_download(id.clone(), cx);
-                                    }
-                                }),
-                            ))
-                        })
-                        .when(!restart_ids.is_empty(), |el| {
-                            let ids = restart_ids.clone();
-                            el.child(self.toolbar_cell_button(
-                                "sel-restart",
-                                IconName::RotateCcw,
-                                None,
-                                "Restart Fresh",
-                                true,
-                                cx.listener(move |app, _, _, cx| {
-                                    for id in &ids {
-                                        app.restart_fresh_download(id.clone(), cx);
-                                    }
-                                }),
-                            ))
-                        })
-                        .when(!cancel_ids.is_empty(), |el| {
-                            let ids = cancel_ids.clone();
-                            el.child(self.toolbar_cell_button(
-                                "sel-cancel",
-                                IconName::X,
-                                None,
-                                "Cancel Selected",
-                                true,
-                                cx.listener(move |app, _, _, cx| {
-                                    for id in &ids {
-                                        app.cancel_download(id.clone(), cx);
-                                    }
-                                }),
-                            ))
-                        })
-                        .when_some(
-                            single_rec.filter(|r| r.state == DownloadState::Completed),
-                            |el, rec| {
-                                let open_path = rec.output_path.clone();
-                                let folder_path = rec.output_path.clone();
-                                el.child(self.toolbar_cell_button(
-                                    "sel-open-file",
-                                    IconName::File,
-                                    None,
-                                    "Open File",
-                                    true,
-                                    cx.listener(move |app, _, _, cx| {
-                                        app.open_downloaded_file(open_path.clone(), cx);
-                                    }),
-                                ))
-                                .child(self.toolbar_cell_button(
-                                    "sel-open-dir",
-                                    IconName::FolderOpen,
-                                    None,
-                                    "Open Folder",
-                                    true,
-                                    cx.listener(move |app, _, _, cx| {
-                                        app.open_download_folder(folder_path.clone(), cx);
-                                    }),
-                                ))
-                            },
-                        )
-                        .when_some(single_rec, |el, rec| {
-                            let url = rec.url.clone();
-                            el.child(self.toolbar_cell_button(
-                                "sel-copy-url",
-                                IconName::Copy,
-                                None,
-                                "Copy URL",
-                                true,
-                                cx.listener(move |_, _, _, cx| {
-                                    cx.write_to_clipboard(ClipboardItem::new_string(url.clone()));
-                                }),
-                            ))
-                        })
-                        .child(self.toolbar_cell_button(
-                            "sel-delete",
-                            IconName::Trash,
-                            None,
-                            "Delete Selected",
-                            true,
-                            cx.listener(|app, _, _, cx| {
-                                app.request_delete_selected(cx);
-                            }),
-                        ))
-                        .child(self.toolbar_cell_button(
-                            "sel-clear",
-                            IconName::X,
-                            None,
-                            "Clear Selection",
-                            false,
-                            cx.listener(|app, _, _, cx| {
-                                app.queue.clear_selection();
-                                app.collapse_inspector_if_open(cx);
-                                cx.notify();
-                            }),
-                        )),
-                )
                 .into_any_element()
+    }
+
+    /// `N SELECTED` badge plus filename (single) or count summary, shown in place of the URL field.
+    fn render_selection_summary(&self, sel: &SelectionToolbar) -> AnyElement {
+        let badge = format!("{} SELECTED", sel.count);
+        let summary = match &sel.single {
+            Some(rec) => derive_display_filename(rec),
+            None => format!("{} downloads selected", sel.count),
+        };
+        div()
+            .flex_1()
+            .min_w(px(180.0))
+            .h_full()
+            .border_r_1()
+            .border_color(paper_border())
+            .flex()
+            .items_center()
+            .overflow_hidden()
+            .child(
+                div()
+                    .h_full()
+                    .flex_shrink_0()
+                    .px_3()
+                    .border_r_1()
+                    .border_color(paper_border())
+                    .bg(paper_selected())
+                    .flex()
+                    .items_center()
+                    .font_family(MONO_FONT)
+                    .text_size(TYPE_MICRO)
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(selenium_amber())
+                    .child(badge),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .px_3()
+                    .font_family(MONO_FONT)
+                    .text_size(TYPE_BODY)
+                    .text_color(carbon_text())
+                    .child(div().truncate().child(summary)),
+            )
+            .into_any_element()
+    }
+
+    /// Labelled selection actions for the top toolbar (icon-only in the compact profile).
+    fn render_selection_tools(
+        &self,
+        profile: LayoutProfile,
+        sel: &SelectionToolbar,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let compact = profile.compact_toolbar;
+        let label = |text: &str, n: Option<usize>| -> Option<SharedString> {
+            (!compact).then(|| match n {
+                Some(n) if sel.count > 1 => SharedString::from(format!("{text} ({n})")),
+                _ => SharedString::from(text.to_string()),
+            })
+        };
+        type ClickHandler = Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
+        let button = |id: &'static str,
+                      icon: IconName,
+                      text: Option<SharedString>,
+                      tip: &'static str,
+                      tone: GridTone,
+                      border: CellBorder,
+                      on_click: ClickHandler| {
+            grid_cell_button_dyn(id, Some(icon), text, Some(tip), tone, border, false, on_click)
+        };
+
+        let mut tools = div().h_full().flex_shrink_0().flex().items_center();
+
+        if !sel.pause_ids.is_empty() {
+            let ids = sel.pause_ids.clone();
+            tools = tools.child(button(
+                "sel-pause",
+                IconName::Pause,
+                label("PAUSE", Some(ids.len())),
+                "Pause Selected",
+                GridTone::Primary,
+                CellBorder::Right,
+                Box::new(cx.listener(move |app, _, _, cx| {
+                    for id in &ids {
+                        app.pause_download(id.clone(), cx);
+                    }
+                })),
+            ));
+        }
+        if !sel.resume_ids.is_empty() {
+            let ids = sel.resume_ids.clone();
+            tools = tools.child(button(
+                "sel-resume",
+                IconName::Play,
+                label("RESUME", Some(ids.len())),
+                "Resume Selected",
+                GridTone::Primary,
+                CellBorder::Right,
+                Box::new(cx.listener(move |app, _, _, cx| {
+                    for id in &ids {
+                        app.resume_download(id.clone(), cx);
+                    }
+                })),
+            ));
+        }
+        if !sel.restart_ids.is_empty() {
+            let ids = sel.restart_ids.clone();
+            tools = tools.child(button(
+                "sel-restart",
+                IconName::RotateCcw,
+                label("RESTART", Some(ids.len())),
+                "Restart Fresh",
+                GridTone::Paper,
+                CellBorder::Right,
+                Box::new(cx.listener(move |app, _, _, cx| {
+                    for id in &ids {
+                        app.restart_fresh_download(id.clone(), cx);
+                    }
+                })),
+            ));
+        }
+        if !sel.cancel_ids.is_empty() {
+            let ids = sel.cancel_ids.clone();
+            tools = tools.child(button(
+                "sel-cancel",
+                IconName::X,
+                label("CANCEL", Some(ids.len())),
+                "Cancel Selected",
+                GridTone::Paper,
+                CellBorder::Right,
+                Box::new(cx.listener(move |app, _, _, cx| {
+                    for id in &ids {
+                        app.cancel_download(id.clone(), cx);
+                    }
+                })),
+            ));
+        }
+        if let Some(rec) = sel
+            .single
+            .as_ref()
+            .filter(|r| r.state == DownloadState::Completed)
+        {
+            let open_path = rec.output_path.clone();
+            let folder_path = rec.output_path.clone();
+            tools = tools
+                .child(button(
+                    "sel-open-file",
+                    IconName::File,
+                    label("OPEN", None),
+                    "Open File",
+                    GridTone::Paper,
+                    CellBorder::Right,
+                    Box::new(cx.listener(move |app, _, _, cx| {
+                        app.open_downloaded_file(open_path.clone(), cx);
+                    })),
+                ))
+                .child(button(
+                    "sel-open-dir",
+                    IconName::FolderOpen,
+                    label("FOLDER", None),
+                    "Open Folder",
+                    GridTone::Paper,
+                    CellBorder::Right,
+                    Box::new(cx.listener(move |app, _, _, cx| {
+                        app.open_download_folder(folder_path.clone(), cx);
+                    })),
+                ));
+        }
+        if let Some(rec) = &sel.single {
+            let url = rec.url.clone();
+            tools = tools.child(button(
+                "sel-copy-url",
+                IconName::Copy,
+                None,
+                "Copy URL",
+                GridTone::Paper,
+                CellBorder::Right,
+                Box::new(move |_, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(url.clone()));
+                }),
+            ));
+        }
+        tools
+            .child(button(
+                "sel-delete",
+                IconName::Trash,
+                label("DELETE", None),
+                "Delete Selected",
+                GridTone::Danger,
+                CellBorder::Right,
+                Box::new(cx.listener(|app, _, _, cx| {
+                    app.request_delete_selected(cx);
+                })),
+            ))
+            .child(button(
+                "sel-clear",
+                IconName::X,
+                None,
+                "Clear Selection",
+                GridTone::Paper,
+                CellBorder::None,
+                Box::new(cx.listener(|app, _, _, cx| {
+                    app.queue.clear_selection();
+                    app.collapse_inspector_if_open(cx);
+                    cx.notify();
+                })),
+            ))
+            .into_any_element()
     }
 
     /// Modular tool strip on the right of the top intake row; add future header tools here.
     fn render_toolbar_tools(
         &self,
         profile: LayoutProfile,
+        selection: Option<&SelectionToolbar>,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    ) -> AnyElement {
+        if let Some(sel) = selection {
+            return self.render_selection_tools(profile, sel, cx);
+        }
         div()
             .h_full()
             .flex_shrink_0()
@@ -463,6 +454,7 @@ impl PosthazeApp {
                     app.request_clear_completed(cx);
                 }),
             ))
+            .into_any_element()
     }
 
     #[allow(clippy::too_many_arguments)]
