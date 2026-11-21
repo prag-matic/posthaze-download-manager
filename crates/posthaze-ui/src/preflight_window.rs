@@ -30,6 +30,7 @@ pub(crate) struct PreflightWindow {
     focus_handle: FocusHandle,
     main_window: AnyWindowHandle,
     main_app: WeakEntity<PosthazeApp>,
+    _appearance_subscription: Subscription,
     probe_generation: u64,
 }
 
@@ -52,14 +53,13 @@ impl PreflightWindow {
         bounds.origin.y += px(cascade);
 
         let active_palette = active_theme();
-        let dwm_backdrop = crate::dwm_backdrop_for(active_palette.backdrop);
-        let is_dark = active_palette.tone == PaletteTone::Dark;
+        let main_app_for_fallback = main_app.clone();
         let fallback_theme = settings.ui_theme.clone();
         let fallback_accent = settings.ui_accent_override.clone();
 
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
-            window_background: dwm_backdrop.to_window_background(),
+            window_background: active_palette.backdrop.to_window_background(),
             focus: true,
             show: true,
             kind: WindowKind::Normal,
@@ -87,17 +87,20 @@ impl PreflightWindow {
                 .update(cx, |_, window, _| {
                     let res = crate::platform_hooks::apply_window_backdrop(
                         window,
-                        dwm_backdrop,
-                        is_dark,
+                        active_palette.backdrop,
+                        active_palette.tone,
                     );
                     window.activate_window();
                     res.is_err()
                 })
                 .unwrap_or(false);
             if backdrop_failed && active_palette.backdrop != ThemeBackdrop::Opaque {
+                let (active_theme_id, active_accent) = main_app_for_fallback
+                    .update(cx, |app, _| app.active_theme_selection())
+                    .unwrap_or((fallback_theme, fallback_accent));
                 crate::sync_theme_and_backdrops(
-                    &fallback_theme,
-                    fallback_accent.as_deref(),
+                    &active_theme_id,
+                    active_accent.as_deref(),
                     cx,
                 );
             }
@@ -117,6 +120,20 @@ impl PreflightWindow {
     ) -> Self {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
+        let main_app_for_appearance = main_app.clone();
+        let _appearance_subscription = window.observe_window_appearance(move |window, cx| {
+            let Ok((theme_id, _)) =
+                main_app_for_appearance.update(cx, |app, _| app.active_theme_selection())
+            else {
+                return;
+            };
+            if crate::is_forced_mica_polarity(&theme_id) {
+                let is_dark = active_theme().tone == PaletteTone::Dark;
+                window.defer(cx, move |window, _| {
+                    crate::platform_hooks::assert_window_dark_mode(window, is_dark);
+                });
+            }
+        });
         let mut this = Self {
             bridge,
             settings,
@@ -128,6 +145,7 @@ impl PreflightWindow {
             focus_handle,
             main_window,
             main_app,
+            _appearance_subscription,
             probe_generation: 0,
         };
         this.begin_probe(url, headers, window, cx);

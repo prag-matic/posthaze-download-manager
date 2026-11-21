@@ -11,7 +11,7 @@ use posthaze_engine::{DownloadId, DownloadRequest, PreflightInfo};
 
 use crate::curl_parser::mask_header_summary;
 use crate::grid_cells::{
-    CellBorder, GridTone, grid_cell_button, grid_modal_footer,
+    CellBorder, GridTone, grid_cell_button, grid_kv_row_with_bg, grid_modal_footer,
 };
 use crate::theme::*;
 use crate::view_model::format_bytes;
@@ -935,7 +935,7 @@ where
         .p_5()
         .bg(modal_bg())
         .border_1()
-        .border_color(graphite_border())
+        .border_color(errata_vermilion())
         .rounded(px(6.0))
         .shadow_lg()
         .flex()
@@ -1109,47 +1109,17 @@ fn compact_input_row_with_action(
 
 pub(crate) fn labeled_input(label: &'static str, state: &Entity<InputState>) -> impl IntoElement {
     div().border_t_1().border_color(graphite_border()).child(
-        div()
-            .min_h(px(32.0))
-            .w_full()
-            .border_b_1()
-            .border_color(graphite_border())
-            .flex()
-            .items_stretch()
-            .child(
-                div()
-                    .w(px(160.0))
-                    .flex_shrink_0()
-                    .px_3()
-                    .py_1p5()
-                    .bg(graphite_elevated())
-                    .border_r_1()
-                    .border_color(graphite_border())
-                    .flex()
-                    .items_center()
-                    .font_family(MONO_FONT)
-                    .text_size(TYPE_MICRO)
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(silver_muted())
-                    .child(label),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .px_3()
-                    .py_1p5()
-                    .bg(input_bg())
-                    .flex()
-                    .items_center()
-                    .child(
-                        div()
-                            .w_full()
-                            .font_family(MONO_FONT)
-                            .text_size(TYPE_BODY)
-                            .child(Input::new(state).appearance(false)),
-                    ),
-            ),
+        grid_kv_row_with_bg(
+            label,
+            160.0,
+            div()
+                .w_full()
+                .font_family(MONO_FONT)
+                .text_size(TYPE_BODY)
+                .child(Input::new(state).appearance(false)),
+            GridTone::Graphite,
+            Some(input_bg()),
+        ),
     )
 }
 
