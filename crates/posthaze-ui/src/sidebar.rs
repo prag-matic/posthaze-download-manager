@@ -83,7 +83,7 @@ impl PosthazeApp {
                             .bg(if selected {
                                 graphite_elevated()
                             } else {
-                                graphite_bg()
+                                Hsla::transparent_black()
                             })
                             .border_b_1()
                             .border_color(graphite_border())
@@ -215,7 +215,7 @@ impl PosthazeApp {
                             .bg(if selected {
                                 graphite_elevated()
                             } else {
-                                graphite_bg()
+                                Hsla::transparent_black()
                             })
                             .border_b_1()
                             .border_color(graphite_border())

@@ -594,9 +594,10 @@ where
         .h(px(540.0))
         .max_w_full()
         .max_h_full()
-        .bg(graphite_bg())
+        .bg(modal_bg())
         .border_1()
         .border_color(graphite_border())
+        .shadow_lg()
         .flex()
         .flex_col()
         .overflow_hidden()
@@ -641,7 +642,6 @@ where
                     div()
                         .w(px(176.0))
                         .h_full()
-                        .bg(graphite_bg())
                         .border_r_1()
                         .border_color(graphite_border())
                         .flex()
@@ -660,11 +660,11 @@ where
                                 .items_center()
                                 .cursor_pointer()
                                 .bg(if active {
-                                    graphite_elevated()
+                                    paper_selected()
                                 } else {
-                                    graphite_bg()
+                                    Hsla::transparent_black()
                                 })
-                                .hover(|s| s.bg(graphite_elevated()))
+                                .hover(|s| s.bg(paper_hover()))
                                 .on_click(move |_, window, cx| {
                                     act(SettingsAction::SelectTab(tab), window, cx);
                                 })
@@ -845,7 +845,7 @@ fn compact_input(
                 .w(width)
                 .h(px(30.0))
                 .px_2p5()
-                .bg(graphite_elevated())
+                .bg(input_bg())
                 .border_1()
                 .border_color(graphite_border())
                 .flex()
@@ -908,7 +908,7 @@ where
                     el.child(
                         Icon::new(IconName::Check)
                             .size(px(11.0))
-                            .text_color(graphite_bg()),
+                            .text_color(active_theme().accent_foreground.hsla()),
                     )
                 }),
         )
@@ -1355,9 +1355,9 @@ where
                                 .py_2()
                                 .cursor_pointer()
                                 .bg(if is_selected {
-                                    graphite_elevated()
+                                    paper_selected()
                                 } else {
-                                    graphite_bg()
+                                    Hsla::transparent_black()
                                 })
                                 .border_1()
                                 .border_color(if is_selected {
@@ -1365,7 +1365,7 @@ where
                                 } else {
                                     graphite_border()
                                 })
-                                .hover(|s| s.bg(graphite_elevated()))
+                                .hover(|s| s.bg(paper_hover()))
                                 .on_click(move |_, window, cx| {
                                     act(SettingsAction::SetTheme(theme_id.clone()), window, cx);
                                 })
@@ -1453,11 +1453,11 @@ where
                             graphite_border()
                         })
                         .bg(if active {
-                            graphite_elevated()
+                            paper_selected()
                         } else {
-                            graphite_bg()
+                            Hsla::transparent_black()
                         })
-                        .hover(|s| s.bg(graphite_elevated()))
+                        .hover(|s| s.bg(paper_hover()))
                         .cursor_pointer()
                         .flex()
                         .items_center()
@@ -1485,11 +1485,11 @@ where
                             graphite_border()
                         })
                         .bg(if active {
-                            graphite_elevated()
+                            paper_selected()
                         } else {
-                            graphite_bg()
+                            Hsla::transparent_black()
                         })
-                        .hover(|s| s.bg(graphite_elevated()))
+                        .hover(|s| s.bg(paper_hover()))
                         .cursor_pointer()
                         .flex()
                         .items_center()
@@ -1744,7 +1744,6 @@ where
                     div()
                         .h(px(32.0))
                         .px_3()
-                        .bg(graphite_bg())
                         .when(idx > 0, |el| el.border_t_1().border_color(graphite_border()))
                         .flex()
                         .items_center()
@@ -1870,7 +1869,6 @@ where
                     div()
                         .px_2()
                         .py_1()
-                        .bg(graphite_bg())
                         .border_1()
                         .border_color(graphite_border())
                         .font_family(MONO_FONT)
@@ -1908,7 +1906,7 @@ where
                         div()
                             .h(px(6.0))
                             .w_full()
-                            .bg(graphite_bg())
+                            .bg(byte_track_bg())
                             .border_1()
                             .border_color(graphite_border())
                             .child(

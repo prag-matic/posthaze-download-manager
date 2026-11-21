@@ -11,7 +11,7 @@ use posthaze_engine::{DownloadId, DownloadRequest, PreflightInfo};
 
 use crate::curl_parser::mask_header_summary;
 use crate::grid_cells::{
-    CellBorder, GridTone, grid_cell_button, grid_kv_row, grid_modal_footer,
+    CellBorder, GridTone, grid_cell_button, grid_modal_footer,
 };
 use crate::theme::*;
 use crate::view_model::format_bytes;
@@ -125,7 +125,6 @@ where
             .w_full()
             .flex_1()
             .min_h_0()
-            .bg(graphite_bg())
             .flex()
             .flex_col()
             .child(
@@ -154,6 +153,7 @@ where
                     .flex_1()
                     .min_h_0()
                     .p_3()
+                    .bg(paper_bg())
                     .flex()
                     .flex_col()
                     .gap_2()
@@ -220,16 +220,20 @@ where
                         )
                     }),
             )
-            .child(grid_modal_footer(GridTone::Graphite).child(grid_cell_button(
-                "probe-cancel",
-                Some(IconName::X),
-                Some("CANCEL"),
-                None,
-                GridTone::Graphite,
-                CellBorder::Left,
-                false,
-                move |_, window, cx| on_close(window, cx),
-            ))),
+            .child(
+                grid_modal_footer(GridTone::Graphite)
+                    .bg(graphite_bg())
+                    .child(grid_cell_button(
+                        "probe-cancel",
+                        Some(IconName::X),
+                        Some("CANCEL"),
+                        None,
+                        GridTone::Graphite,
+                        CellBorder::Left,
+                        false,
+                        move |_, window, cx| on_close(window, cx),
+                    )),
+            ),
         PreflightModalState::Error {
             url,
             headers,
@@ -243,7 +247,6 @@ where
                 .w_full()
                 .flex_1()
                 .min_h_0()
-                .bg(graphite_bg())
                 .border_t_2()
                 .border_color(errata_vermilion())
                 .flex()
@@ -254,6 +257,7 @@ where
                         .flex_1()
                         .min_h_0()
                         .p_3()
+                        .bg(paper_bg())
                         .flex()
                         .flex_col()
                         .gap_2()
@@ -310,6 +314,7 @@ where
                 )
                 .child(
                     grid_modal_footer(GridTone::Graphite)
+                        .bg(graphite_bg())
                         .child(grid_cell_button(
                             "probe-edit",
                             Some(IconName::Clipboard),
@@ -411,7 +416,6 @@ where
                 .w_full()
                 .flex_1()
                 .min_h_0()
-                .bg(graphite_bg())
                 .flex()
                 .flex_col()
                 .child(
@@ -420,6 +424,7 @@ where
                         .flex_1()
                         .min_h_0()
                         .p_2p5()
+                        .bg(paper_bg())
                         .flex()
                         .flex_col()
                         .gap_1()
@@ -687,6 +692,7 @@ where
                     div()
                         .h(px(34.0))
                         .w_full()
+                        .bg(graphite_bg())
                         .flex()
                         .justify_end()
                         .child(grid_cell_button(
@@ -769,10 +775,11 @@ where
         } => div()
             .w(px(520.0))
             .p_5()
-            .bg(graphite_bg())
+            .bg(modal_bg())
             .border_1()
             .border_color(graphite_border())
             .rounded(px(6.0))
+            .shadow_lg()
             .flex()
             .flex_col()
             .gap_3()
@@ -926,10 +933,11 @@ where
     let card = div()
         .w(px(440.0))
         .p_5()
-        .bg(graphite_bg())
+        .bg(modal_bg())
         .border_1()
-        .border_color(errata_vermilion())
+        .border_color(graphite_border())
         .rounded(px(6.0))
+        .shadow_lg()
         .flex()
         .flex_col()
         .gap_3()
@@ -1005,10 +1013,11 @@ where
     div()
         .w(width)
         .p_5()
-        .bg(graphite_bg())
+        .bg(modal_bg())
         .border_1()
         .border_color(graphite_border())
         .rounded(px(6.0))
+        .shadow_lg()
         .flex()
         .flex_col()
         .gap_3()
@@ -1066,7 +1075,7 @@ fn compact_input_row_with_action(
     div()
         .w_full()
         .h(px(30.0))
-        .bg(graphite_bg())
+        .bg(input_bg())
         .border_1()
         .border_color(graphite_border())
         .flex()
@@ -1100,16 +1109,47 @@ fn compact_input_row_with_action(
 
 pub(crate) fn labeled_input(label: &'static str, state: &Entity<InputState>) -> impl IntoElement {
     div().border_t_1().border_color(graphite_border()).child(
-        grid_kv_row(
-            label,
-            160.0,
-            div()
-                .w_full()
-                .font_family(MONO_FONT)
-                .text_size(TYPE_BODY)
-                .child(Input::new(state).appearance(false)),
-            GridTone::Graphite,
-        ),
+        div()
+            .min_h(px(32.0))
+            .w_full()
+            .border_b_1()
+            .border_color(graphite_border())
+            .flex()
+            .items_stretch()
+            .child(
+                div()
+                    .w(px(160.0))
+                    .flex_shrink_0()
+                    .px_3()
+                    .py_1p5()
+                    .bg(graphite_elevated())
+                    .border_r_1()
+                    .border_color(graphite_border())
+                    .flex()
+                    .items_center()
+                    .font_family(MONO_FONT)
+                    .text_size(TYPE_MICRO)
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(silver_muted())
+                    .child(label),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .px_3()
+                    .py_1p5()
+                    .bg(input_bg())
+                    .flex()
+                    .items_center()
+                    .child(
+                        div()
+                            .w_full()
+                            .font_family(MONO_FONT)
+                            .text_size(TYPE_BODY)
+                            .child(Input::new(state).appearance(false)),
+                    ),
+            ),
     )
 }
 
@@ -1123,7 +1163,7 @@ where
         .inset_0()
         .occlude()
         .p_4()
-        .bg(rgba(0x141413AA))
+        .bg(modal_scrim())
         .flex()
         .items_center()
         .justify_center()

@@ -238,7 +238,7 @@ where
                 .top(pos.y)
                 .w(px(MENU_WIDTH))
                 .py_1()
-                .bg(graphite_bg())
+                .bg(context_menu_bg())
                 .border_1()
                 .border_color(graphite_border())
                 .rounded(px(4.0))
@@ -294,7 +294,7 @@ where
                                         s.bg(if danger {
                                             errata_vermilion().opacity(0.14)
                                         } else {
-                                            graphite_elevated()
+                                            paper_hover()
                                         })
                                     })
                                     .on_click(move |_, window, cx| {

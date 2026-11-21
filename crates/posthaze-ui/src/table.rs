@@ -46,7 +46,6 @@ impl PosthazeApp {
                     .w_full()
                     .flex()
                     .items_center()
-                    .bg(paper_bg())
                     .border_b_1()
                     .border_color(paper_border())
                     // Intake cell: URL field, or the selection summary while downloads are selected
@@ -60,7 +59,7 @@ impl PosthazeApp {
                             .pr_2()
                             .border_r_1()
                             .border_color(paper_border())
-                            .bg(graphite_bg().opacity(0.45))
+                            .bg(input_bg())
                             .flex()
                             .items_center()
                             .child(
@@ -141,7 +140,6 @@ impl PosthazeApp {
                 .w_full()
                 .flex()
                 .items_center()
-                .bg(paper_bg())
                 .border_b_1()
                 .border_color(paper_border())
                 .child(
@@ -169,7 +167,7 @@ impl PosthazeApp {
                         .min_w(px(120.0))
                         .h_full()
                         .px_2()
-                        .bg(graphite_bg().opacity(0.35))
+                        .bg(input_bg())
                         .flex()
                         .items_center()
                         .child(
@@ -211,6 +209,7 @@ impl PosthazeApp {
             .flex_1()
             .min_w(px(180.0))
             .h_full()
+            .bg(paper_bg())
             .border_r_1()
             .border_color(paper_border())
             .flex()
@@ -621,7 +620,6 @@ impl PosthazeApp {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .bg(paper_bg())
             // Table Header (shared column constants with render_row)
             .child(
                 div()
@@ -692,6 +690,7 @@ impl PosthazeApp {
                     .flex_1()
                     .size_full()
                     .overflow_hidden()
+                    .bg(paper_bg())
                     .child(
                         uniform_list("downloads-table-scroll", row_count, move |range, _window, cx| {
                             entity.update(cx, |app, cx| {
@@ -815,7 +814,7 @@ impl PosthazeApp {
             .bg(if is_selected {
                 paper_selected()
             } else {
-                paper_bg()
+                Hsla::transparent_black()
             })
             .hover(|s| s.bg(paper_hover()))
             .cursor_pointer()
@@ -894,7 +893,7 @@ impl PosthazeApp {
                     .bg(if is_selected {
                         selenium_amber()
                     } else {
-                        paper_bg()
+                        Hsla::transparent_black()
                     }),
             )
             // State + FIFO rank badge
@@ -1006,7 +1005,7 @@ impl PosthazeApp {
                         div()
                             .h(px(6.0))
                             .w_full()
-                            .bg(graphite_bg())
+                            .bg(byte_track_bg())
                             .when(motion_sample.completion_flash > 0.05, |el| {
                                 el.border_1()
                                     .border_color(halide_emerald().opacity(motion_sample.completion_flash))
