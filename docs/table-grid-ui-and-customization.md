@@ -42,7 +42,7 @@ Persisted in SQLite (`settings` table) and editable under **Settings > Interface
 
 | Setting | Options / Default | Effect |
 | :--- | :--- | :--- |
-| **Appearance Theme** | 5 built-in themes (`chronophotographic` default) | Switches dark/light `ThemePalette` live. |
+| **Appearance Theme** | 8 built-in presets: 5 opaque themes (`chronophotographic` default) + 3 Windows 11 Mica presets (`Mica (System)`, `Mica Dark`, `Mica Light`) | Switches dark/light `ThemePalette` and Windows 11 22H2+ DWM Mica backdrop live across all windows (with automatic opaque fallback on Windows 10, High Contrast, or Transparency Effects off). |
 | **Accent Override** | `Theme Default` or `amber`, `blue`, `emerald`, `cyan`, `crimson` | Layers `ACCENT_PRESETS` over the active theme via `apply_theme_with_accent`. |
 | **Table Row Density** | `Compact` (`30px`), `Standard` (`38px`, default), `Comfortable` (`46px`) | Adjusts `render_row` height and keyboard smooth-scroll step height. |
 | **Visible Columns** | `SPEED`, `ETA`, `SEGS` (all `true` by default) | Toggles optional columns alongside responsive width breakpoints (`LayoutProfile::with_settings`). |
