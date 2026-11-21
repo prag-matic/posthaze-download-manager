@@ -450,6 +450,8 @@ pub struct Settings {
     pub ui_close_to_tray: bool,
     /// Whether Posthaze launches minimized to the System Tray on Windows user login.
     pub launch_on_startup: bool,
+    /// Whether Posthaze checks GitHub Releases for a newer version at startup and every 24 hours.
+    pub auto_check_updates: bool,
 }
 
 impl Default for Settings {
@@ -489,6 +491,7 @@ impl Default for Settings {
             ui_lock_file_extension: true,
             ui_close_to_tray: true,
             launch_on_startup: false,
+            auto_check_updates: true,
         }
     }
 }

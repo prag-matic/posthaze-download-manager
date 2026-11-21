@@ -660,7 +660,8 @@ impl DownloadStore {
                     ui_table_density, ui_show_speed_col, ui_show_eta_col, ui_show_segs_col,
                     ui_show_toolbar_labels, ui_show_scrollbar_minimap,
                     ui_show_titlebar_telemetry, ui_start_sidebar_collapsed, ui_accent_override,
-                    ui_lock_file_extension, ui_close_to_tray, launch_on_startup
+                    ui_lock_file_extension, ui_close_to_tray, launch_on_startup,
+                    auto_check_updates
              FROM settings WHERE id = 1",
         )
         .fetch_one(&self.pool)
@@ -726,6 +727,7 @@ impl DownloadStore {
         let ui_lock_file_extension = row.try_get::<i64, _>("ui_lock_file_extension")? != 0;
         let ui_close_to_tray = row.try_get::<i64, _>("ui_close_to_tray")? != 0;
         let launch_on_startup = row.try_get::<i64, _>("launch_on_startup")? != 0;
+        let auto_check_updates = row.try_get::<i64, _>("auto_check_updates")? != 0;
 
         Ok(Settings {
             default_output_dir: PathBuf::from(dir_str),
@@ -762,6 +764,7 @@ impl DownloadStore {
             ui_lock_file_extension,
             ui_close_to_tray,
             launch_on_startup,
+            auto_check_updates,
         })
     }
 
@@ -802,7 +805,8 @@ impl DownloadStore {
                  ui_accent_override = ?,
                  ui_lock_file_extension = ?,
                  ui_close_to_tray = ?,
-                 launch_on_startup = ?
+                 launch_on_startup = ?,
+                 auto_check_updates = ?
              WHERE id = 1",
         )
         .bind(settings.default_output_dir.to_string_lossy().into_owned())
@@ -839,6 +843,7 @@ impl DownloadStore {
         .bind(i64::from(settings.ui_lock_file_extension))
         .bind(i64::from(settings.ui_close_to_tray))
         .bind(i64::from(settings.launch_on_startup))
+        .bind(i64::from(settings.auto_check_updates))
         .execute(&self.pool)
         .await?;
         Ok(())

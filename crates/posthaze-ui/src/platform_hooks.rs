@@ -197,6 +197,47 @@ pub(crate) fn open_file_in_shell(path: &Path) -> Result<(), String> {
     }
 }
 
+/// Opens an `http://` or `https://` URL in the user's default web browser via `ShellExecuteW`.
+pub(crate) fn open_url_in_browser(url: &str) -> Result<(), String> {
+    if !url.starts_with("https://") && !url.starts_with("http://") {
+        return Err(format!("Refusing to open non-HTTP URL: {url}"));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::ffi::OsStrExt as _;
+        use windows_sys::Win32::UI::Shell::ShellExecuteW;
+        use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+        let verb: Vec<u16> = "open\0".encode_utf16().collect();
+        let target: Vec<u16> = std::ffi::OsStr::new(url)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let res = unsafe {
+            ShellExecuteW(
+                std::ptr::null_mut(),
+                verb.as_ptr(),
+                target.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                SW_SHOWNORMAL,
+            )
+        };
+        if (res as isize) <= 32 {
+            return Err(format!(
+                "Could not open URL (ShellExecuteW error {})",
+                res as isize
+            ));
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = url;
+        Err("Open URL is only supported on Windows".to_string())
+    }
+}
+
 /// Reveals a downloaded file or its parent directory in the OS file manager.
 pub(crate) fn open_folder_in_shell(path: &Path) -> Result<(), String> {
     if path.exists() {

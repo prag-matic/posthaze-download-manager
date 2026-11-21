@@ -39,3 +39,9 @@ _Avoid_: Sniffing, hook, interception
 **Pre-Flight**:
 The capability-probing and confirmation step (`Probing` probe + `Add Download` window) executed before a URL is admitted into the `Queue` as a `Download`.
 _Avoid_: Preview, staging, pre-check
+
+### Update Channel
+The GitHub Releases feed queried by `posthaze-ui` for newer stable SemVer releases (excluding drafts and prereleases).
+
+### Update Signature
+An Ed25519 signature (`.sig`) published alongside the Windows installer on GitHub Releases and verified against embedded public keys in `posthaze-ui` before silent installation.

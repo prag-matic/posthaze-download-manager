@@ -81,6 +81,17 @@ jobs:
           }
           iscc "/DMyAppVersion=$env:RELEASE_VERSION" packaging\windows\posthaze.iss
 
+      - name: Sign installer (Ed25519)
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          UPDATER_SIGNING_KEY: ${{ secrets.UPDATER_SIGNING_KEY }}
+        run: |
+          if (-not $env:UPDATER_SIGNING_KEY) {
+            throw "UPDATER_SIGNING_KEY secret is not configured for tagged release"
+          }
+          cargo run --release -p posthaze-keytool -- sign "dist\posthaze-$env:RELEASE_VERSION-windows-x64-setup.exe"
+
       - name: Generate SHA-256 checksums
         shell: pwsh
         run: |
@@ -97,6 +108,7 @@ jobs:
         with:
           files: |
             dist/*.exe
+            dist/*.sig
             dist/*.zip
             dist/SHA256SUMS.txt
           body: |

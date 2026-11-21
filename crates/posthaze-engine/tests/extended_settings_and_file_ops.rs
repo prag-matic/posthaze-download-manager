@@ -56,6 +56,7 @@ async fn extended_settings_round_trip_and_categorize_helpers() {
         ui_lock_file_extension: false,
         ui_close_to_tray: false,
         launch_on_startup: true,
+        auto_check_updates: false,
     };
 
     {

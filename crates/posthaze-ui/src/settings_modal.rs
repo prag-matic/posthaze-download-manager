@@ -10,11 +10,12 @@ use gpui_kit::*;
 use posthaze_engine::{CollisionPolicy, DeleteDefaultAction, ProxyMode, Settings, TableDensity};
 
 use crate::grid_cells::{
-    CellBorder, GridTone, grid_boxed_button, grid_cell_button, grid_modal_footer,
-    grid_section_header,
+    CellBorder, GridTone, grid_boxed_button, grid_cell_button, grid_cell_button_dyn,
+    grid_modal_footer, grid_section_header,
 };
 use crate::modals::{labeled_input, modal_backdrop};
 use crate::theme::*;
+use crate::updater::UpdateState;
 
 /// Navigation tabs inside the comprehensive Settings modal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,11 +27,12 @@ pub(crate) enum SettingsTab {
     Automation,
     Integration,
     Interface,
+    Updates,
     Reset,
 }
 
 impl SettingsTab {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::General,
         Self::Interface,
         Self::Downloads,
@@ -38,6 +40,7 @@ impl SettingsTab {
         Self::Notifications,
         Self::Automation,
         Self::Integration,
+        Self::Updates,
         Self::Reset,
     ];
 
@@ -50,6 +53,7 @@ impl SettingsTab {
             Self::Automation => "Automation",
             Self::Integration => "Integration",
             Self::Interface => "Interface",
+            Self::Updates => "Updates",
             Self::Reset => "Reset",
         }
     }
@@ -63,6 +67,7 @@ impl SettingsTab {
             Self::Automation => "External commands and antivirus scans run after completion.",
             Self::Integration => "Browser Capture Native Messaging Host setup for Chrome, Edge, and Brave.",
             Self::Interface => "Row interactions, Pre-Flight actions, and display scale.",
+            Self::Updates => "Version info, automatic update checks, and signed releases.",
             Self::Reset => "Restore all preferences to factory defaults.",
         }
     }
@@ -76,6 +81,7 @@ impl SettingsTab {
             Self::Automation => IconName::ShieldCheck,
             Self::Integration => IconName::Globe,
             Self::Interface => IconName::LayoutDashboard,
+            Self::Updates => IconName::RefreshCw,
             Self::Reset => IconName::RotateCcw,
         }
     }
@@ -118,6 +124,7 @@ pub(crate) struct SettingsDraft {
     pub ui_lock_file_extension: bool,
     pub ui_close_to_tray: bool,
     pub launch_on_startup: bool,
+    pub auto_check_updates: bool,
 }
 
 impl SettingsDraft {
@@ -157,6 +164,7 @@ impl SettingsDraft {
             ui_lock_file_extension: settings.ui_lock_file_extension,
             ui_close_to_tray: settings.ui_close_to_tray,
             launch_on_startup: settings.launch_on_startup,
+            auto_check_updates: settings.auto_check_updates,
         }
     }
 
@@ -237,6 +245,7 @@ impl SettingsDraft {
             ui_lock_file_extension: self.ui_lock_file_extension,
             ui_close_to_tray: self.ui_close_to_tray,
             launch_on_startup: self.launch_on_startup,
+            auto_check_updates: self.auto_check_updates,
         };
         settings.validate().map_err(|e| e.to_string())?;
         Ok(settings)
@@ -389,6 +398,12 @@ impl SettingsModalState {
             SettingsAction::ToggleLaunchOnStartup => {
                 self.draft.launch_on_startup = !self.draft.launch_on_startup;
             }
+            SettingsAction::ToggleAutoCheckUpdates => {
+                self.draft.auto_check_updates = !self.draft.auto_check_updates;
+            }
+            SettingsAction::CheckForUpdates
+            | SettingsAction::InstallUpdate
+            | SettingsAction::OpenReleaseNotes(_) => {}
             SettingsAction::SetTableDensity(density) => {
                 self.draft.ui_table_density = density;
             }
@@ -463,6 +478,7 @@ impl SettingsModalState {
                         "ui_lock_file_extension": settings.ui_lock_file_extension,
                         "ui_close_to_tray": settings.ui_close_to_tray,
                         "launch_on_startup": settings.launch_on_startup,
+                        "auto_check_updates": settings.auto_check_updates,
                     });
                     if let Ok(pretty) = serde_json::to_string_pretty(&payload) {
                         cx.write_to_clipboard(ClipboardItem::new_string(pretty));
@@ -522,6 +538,10 @@ pub(crate) enum SettingsAction {
     ToggleLockFileExtension,
     ToggleCloseToTray,
     ToggleLaunchOnStartup,
+    ToggleAutoCheckUpdates,
+    CheckForUpdates,
+    InstallUpdate,
+    OpenReleaseNotes(String),
     SetTableDensity(TableDensity),
     ToggleSpeedCol,
     ToggleEtaCol,
@@ -541,6 +561,8 @@ pub(crate) enum SettingsAction {
 
 pub(crate) fn render_settings_modal<F1, F2, F3>(
     state: &SettingsModalState,
+    update_state: &UpdateState,
+    is_portable: bool,
     on_action: F1,
     on_cancel: F2,
     on_save: F3,
@@ -560,6 +582,9 @@ where
         SettingsTab::Automation => render_automation_tab(state, on_action.clone()),
         SettingsTab::Integration => render_integration_tab(state, on_action.clone()),
         SettingsTab::Interface => render_interface_tab(state, on_action.clone()),
+        SettingsTab::Updates => {
+            render_updates_tab(state, update_state, is_portable, on_action.clone())
+        }
         SettingsTab::Reset => render_reset_tab(on_action.clone()),
     };
 
@@ -1724,6 +1749,226 @@ where
                                 }),
                         )
                 })),
+        )
+        .into_any_element()
+}
+
+fn render_updates_tab<F>(
+    state: &SettingsModalState,
+    update_state: &UpdateState,
+    is_portable: bool,
+    on_action: F,
+) -> AnyElement
+where
+    F: Fn(SettingsAction, &mut Window, &mut App) + Clone + 'static,
+{
+    let install_mode = if is_portable { "PORTABLE" } else { "INSTALLED" };
+    let (status_color, status_text, progress_pct) = match update_state {
+        UpdateState::Idle => (
+            silver_muted(),
+            "Click Check Now to check GitHub Releases for a newer version.".to_string(),
+            None,
+        ),
+        UpdateState::Checking => (
+            selenium_amber(),
+            "Checking GitHub Releases for updates...".to_string(),
+            None,
+        ),
+        UpdateState::UpToDate => (
+            halide_emerald(),
+            format!(
+                "Posthaze v{} is up to date.",
+                env!("CARGO_PKG_VERSION")
+            ),
+            None,
+        ),
+        UpdateState::Available(info) => (
+            selenium_amber(),
+            if is_portable {
+                format!(
+                    "Posthaze v{} is available. Portable builds update manually from GitHub Releases.",
+                    info.version
+                )
+            } else {
+                format!(
+                    "Posthaze v{} is available (SHA-256 + Ed25519 verified).",
+                    info.version
+                )
+            },
+            None,
+        ),
+        UpdateState::Downloading { info, pct } => (
+            selenium_amber(),
+            format!("Downloading & verifying Posthaze v{} ({pct}%)...", info.version),
+            Some(*pct),
+        ),
+        UpdateState::Installing => (
+            halide_emerald(),
+            "Verified! Launching silent installer and restarting...".to_string(),
+            Some(100),
+        ),
+        UpdateState::Failed(err) => (errata_vermilion(), format!("Update error: {err}"), None),
+    };
+
+    let available = update_state.available_release().cloned();
+    let is_busy = matches!(
+        update_state,
+        UpdateState::Checking | UpdateState::Downloading { .. } | UpdateState::Installing
+    );
+
+    div()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .child(
+            div()
+                .p_3p5()
+                .bg(graphite_elevated())
+                .border_1()
+                .border_color(graphite_border())
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            div()
+                                .font_family(MONO_FONT)
+                                .text_size(TYPE_BODY)
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(silver_text())
+                                .child(concat!("POSTHAZE v", env!("CARGO_PKG_VERSION"))),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(silver_muted())
+                                .child("Signed GitHub Releases update channel"),
+                        ),
+                )
+                .child(
+                    div()
+                        .px_2()
+                        .py_1()
+                        .bg(graphite_bg())
+                        .border_1()
+                        .border_color(graphite_border())
+                        .font_family(MONO_FONT)
+                        .text_size(TYPE_MICRO)
+                        .text_color(silver_muted())
+                        .child(install_mode),
+                ),
+        )
+        .child(toggle_row(
+            "settings-auto-check-updates",
+            "Check for updates automatically",
+            "Check GitHub Releases at startup and every 24 hours.",
+            state.draft.auto_check_updates,
+            SettingsAction::ToggleAutoCheckUpdates,
+            on_action.clone(),
+        ))
+        .child(
+            div()
+                .p_3p5()
+                .bg(graphite_elevated())
+                .border_1()
+                .border_color(graphite_border())
+                .flex()
+                .flex_col()
+                .gap_2p5()
+                .child(
+                    div()
+                        .font_family(MONO_FONT)
+                        .text_size(TYPE_MICRO)
+                        .text_color(status_color)
+                        .child(status_text),
+                )
+                .when_some(progress_pct, |el, pct| {
+                    el.child(
+                        div()
+                            .h(px(6.0))
+                            .w_full()
+                            .bg(graphite_bg())
+                            .border_1()
+                            .border_color(graphite_border())
+                            .child(
+                                div()
+                                    .h_full()
+                                    .w(relative(f32::from(pct) / 100.0))
+                                    .bg(selenium_amber()),
+                            ),
+                    )
+                })
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .when(!is_busy, |el| {
+                            let act = on_action.clone();
+                            el.child(grid_boxed_button(
+                                "settings-check-updates",
+                                px(32.0),
+                                Some(IconName::RefreshCw),
+                                Some("CHECK NOW"),
+                                Some("Check GitHub Releases for a newer version"),
+                                GridTone::Graphite,
+                                false,
+                                move |_, window, cx| act(SettingsAction::CheckForUpdates, window, cx),
+                            ))
+                        })
+                        .when_some(
+                            available
+                                .as_ref()
+                                .filter(|_| !is_portable && matches!(update_state, UpdateState::Available(_))),
+                            |el, info| {
+                                let act = on_action.clone();
+                                let lbl = SharedString::from(format!("INSTALL v{}", info.version));
+                                el.child(
+                                    div()
+                                        .h(px(32.0))
+                                        .border_1()
+                                        .border_color(graphite_border())
+                                        .child(grid_cell_button_dyn(
+                                            "settings-install-update",
+                                            Some(IconName::Download),
+                                            Some(lbl),
+                                            Some("Download, verify signature, and install silently"),
+                                            GridTone::Primary,
+                                            CellBorder::None,
+                                            false,
+                                            move |_, window, cx| {
+                                                act(SettingsAction::InstallUpdate, window, cx)
+                                            },
+                                        )),
+                                )
+                            },
+                        )
+                        .when_some(available.as_ref(), |el, info| {
+                            let act = on_action.clone();
+                            let url = info.notes_url.clone();
+                            let label = if is_portable {
+                                "DOWNLOAD FROM GITHUB"
+                            } else {
+                                "RELEASE NOTES"
+                            };
+                            el.child(grid_boxed_button(
+                                "settings-release-notes",
+                                px(32.0),
+                                Some(IconName::Globe),
+                                Some(label),
+                                Some("Open release page in default browser"),
+                                GridTone::Graphite,
+                                false,
+                                move |_, window, cx| {
+                                    act(SettingsAction::OpenReleaseNotes(url.clone()), window, cx)
+                                },
+                            ))
+                        }),
+                ),
         )
         .into_any_element()
 }

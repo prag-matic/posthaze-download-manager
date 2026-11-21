@@ -20,6 +20,7 @@ mod sidebar;
 mod table;
 mod theme;
 mod tray;
+mod updater;
 mod view_model;
 
 use std::path::PathBuf;
@@ -47,12 +48,15 @@ use crate::modals::{
 use crate::motion::MotionState;
 use crate::platform_hooks::{
     hide_window_to_tray, is_window_visible, open_directory_in_shell, open_file_in_shell,
-    open_folder_in_shell, show_window_from_tray, spawn_completion_hook, spawn_windows_toast,
-    sync_windows_startup_registry,
+    open_folder_in_shell, open_url_in_browser, show_window_from_tray, spawn_completion_hook,
+    spawn_windows_toast, sync_windows_startup_registry,
 };
 use crate::preflight_window::PreflightWindow;
-use crate::settings_modal::{SettingsAction, SettingsModalState, render_settings_modal};
+use crate::settings_modal::{
+    SettingsAction, SettingsModalState, SettingsTab, render_settings_modal,
+};
 use crate::theme::*;
+use crate::updater::UpdateState;
 use crate::view_model::{
     COLLAPSED_INSPECTOR_HEIGHT, DEFAULT_INSPECTOR_HEIGHT, DEFAULT_SIDEBAR_WIDTH, DownloadRowView,
     FilterTab, INSPECTOR_MAGNETIC_SNAP_RADIUS, KeyboardAction, KeyboardContext,
@@ -132,6 +136,9 @@ pub(crate) struct PosthazeApp {
     last_progress_notify: Instant,
     quitting: bool,
     _tray_handle: Option<tray::TrayHandle>,
+    update_state: UpdateState,
+    is_portable: bool,
+    update_timer_started: bool,
 }
 
 impl PosthazeApp {
@@ -190,6 +197,9 @@ impl PosthazeApp {
             last_progress_notify: Instant::now(),
             quitting: false,
             _tray_handle: None,
+            update_state: UpdateState::Idle,
+            is_portable: updater::is_current_install_portable(),
+            update_timer_started: false,
         };
         if let Some((tray_handle, tray_rx)) = tray::init_tray() {
             app._tray_handle = Some(tray_handle);
@@ -221,6 +231,13 @@ impl PosthazeApp {
             self.startup_layout_applied = true;
             if self.queue.settings.ui_start_sidebar_collapsed {
                 self.sidebar_collapsed = true;
+            }
+            if self.queue.settings.auto_check_updates {
+                self.check_for_updates(true, cx);
+            }
+            if !self.update_timer_started {
+                self.update_timer_started = true;
+                self.start_update_timer(cx);
             }
         }
         theme::apply_theme_with_accent(
@@ -573,8 +590,189 @@ impl PosthazeApp {
     }
 
     fn open_settings_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.settings_modal = Some(SettingsModalState::from_settings(&self.queue.settings, window, cx));
+        self.open_settings_modal_on_tab(SettingsTab::General, window, cx);
+    }
+
+    fn open_settings_modal_on_tab(
+        &mut self,
+        tab: SettingsTab,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut state = SettingsModalState::from_settings(&self.queue.settings, window, cx);
+        state.active_tab = tab;
+        self.settings_modal = Some(state);
         cx.notify();
+    }
+
+    fn check_for_updates(&mut self, background: bool, cx: &mut Context<Self>) {
+        if matches!(
+            self.update_state,
+            UpdateState::Checking | UpdateState::Downloading { .. } | UpdateState::Installing
+        ) {
+            return;
+        }
+        if !background {
+            self.update_state = UpdateState::Checking;
+            cx.notify();
+        }
+        let runtime = self.bridge.runtime().clone();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        runtime.spawn(async move {
+            let res = updater::check_latest_release(env!("CARGO_PKG_VERSION")).await;
+            let _ = tx.send(res);
+        });
+        let window_handle = self.window_handle;
+        cx.spawn(async move |this, cx| {
+            let Ok(res) = rx.await else {
+                return;
+            };
+            let is_active = cx
+                .update_window(window_handle, |_, window, _| window.is_window_active())
+                .unwrap_or(true);
+            let _ = this.update(cx, |app, cx| {
+                match res {
+                    Ok(Some(info)) => {
+                        let ver = info.version.clone();
+                        let was_same = app
+                            .update_state
+                            .available_release()
+                            .is_some_and(|prev| prev.version == ver);
+                        app.update_state = UpdateState::Available(info);
+                        if !was_same && !is_active {
+                            spawn_windows_toast(
+                                "Posthaze — Update Available",
+                                &format!("Posthaze v{ver} is ready to install."),
+                            );
+                        }
+                    }
+                    Ok(None) => {
+                        if !background {
+                            app.update_state = UpdateState::UpToDate;
+                        }
+                    }
+                    Err(err) => {
+                        if !background {
+                            app.update_state = UpdateState::Failed(err);
+                        } else {
+                            tracing::debug!("background update check skipped/failed: {err}");
+                        }
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn start_update_timer(&mut self, cx: &mut Context<Self>) {
+        let runtime = self.bridge.runtime().clone();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        runtime.spawn(async move {
+            loop {
+                tokio::time::sleep(updater::AUTO_CHECK_INTERVAL).await;
+                if tx.send(()).is_err() {
+                    break;
+                }
+            }
+        });
+        cx.spawn(async move |this, cx| {
+            while rx.recv().await.is_some() {
+                let keep_going = this
+                    .update(cx, |app, cx| {
+                        if app.queue.settings.auto_check_updates {
+                            app.check_for_updates(true, cx);
+                        }
+                    })
+                    .is_ok();
+                if !keep_going {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn install_available_update(&mut self, cx: &mut Context<Self>) {
+        if self.is_portable {
+            return;
+        }
+        let Some(info) = self.update_state.available_release().cloned() else {
+            return;
+        };
+        let keys = match updater::embedded_verifying_keys() {
+            Ok(keys) => keys,
+            Err(err) => {
+                self.update_state = UpdateState::Failed(err);
+                cx.notify();
+                return;
+            }
+        };
+        self.update_state = UpdateState::Downloading {
+            info: info.clone(),
+            pct: 0,
+        };
+        cx.notify();
+
+        let runtime = self.bridge.runtime().clone();
+        let (pct_tx, mut pct_rx) = tokio::sync::mpsc::unbounded_channel::<u8>();
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        let dl_info = info.clone();
+        runtime.spawn(async move {
+            let res = updater::download_and_verify_update(&dl_info, &keys, move |pct| {
+                let _ = pct_tx.send(pct);
+            })
+            .await;
+            let _ = done_tx.send(res);
+        });
+
+        let info_for_pct = info.clone();
+        cx.spawn(async move |this, cx| {
+            while let Some(pct) = pct_rx.recv().await {
+                let ok = this
+                    .update(cx, |app, cx| {
+                        if matches!(app.update_state, UpdateState::Downloading { .. }) {
+                            app.update_state = UpdateState::Downloading {
+                                info: info_for_pct.clone(),
+                                pct,
+                            };
+                            cx.notify();
+                        }
+                    })
+                    .is_ok();
+                if !ok {
+                    break;
+                }
+            }
+        })
+        .detach();
+
+        cx.spawn(async move |this, cx| {
+            let Ok(res) = done_rx.await else {
+                return;
+            };
+            let _ = this.update(cx, |app, cx| match res {
+                Ok(setup_path) => {
+                    app.update_state = UpdateState::Installing;
+                    cx.notify();
+                    match updater::launch_silent_installer(&setup_path) {
+                        Ok(()) => {
+                            app.quitting = true;
+                            cx.quit();
+                        }
+                        Err(err) => {
+                            app.update_state = UpdateState::Failed(err);
+                            cx.notify();
+                        }
+                    }
+                }
+                Err(err) => {
+                    app.update_state = UpdateState::Failed(err);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     fn save_settings_modal(&mut self, cx: &mut Context<Self>) {
@@ -603,6 +801,21 @@ impl PosthazeApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if matches!(action, SettingsAction::CheckForUpdates) {
+            self.check_for_updates(false, cx);
+            return;
+        }
+        if matches!(action, SettingsAction::InstallUpdate) {
+            self.install_available_update(cx);
+            return;
+        }
+        if let SettingsAction::OpenReleaseNotes(url) = action {
+            if let Err(err) = open_url_in_browser(&url) {
+                self.status_banner = Some(err);
+                cx.notify();
+            }
+            return;
+        }
         if matches!(action, SettingsAction::RefreshBrowserStatus) {
             if let Some(modal) = &mut self.settings_modal {
                 modal.browser_statuses = browser_integration::query_browser_statuses();
@@ -1174,6 +1387,8 @@ impl Render for PosthazeApp {
             let e_save = cx.entity().clone();
             render_settings_modal(
                 modal,
+                &self.update_state,
+                self.is_portable,
                 move |action, window, cx| {
                     e_action.update(cx, |app, cx| app.handle_settings_action(action, window, cx));
                 },
@@ -1466,7 +1681,7 @@ impl Render for PosthazeApp {
                     }
                 }),
             )
-            .child(self.render_titlebar(active_slots, total_speed, total_count))
+            .child(self.render_titlebar(active_slots, total_speed, total_count, cx))
             .child(
                 div()
                     .flex_1()
@@ -1748,7 +1963,32 @@ impl PosthazeApp {
         active_slots: usize,
         total_speed: u64,
         total_count: usize,
+        cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let update_chip = self.update_state.available_release().map(|info| {
+            let label = format!("UPDATE v{}", info.version);
+            div()
+                .id("titlebar-update-chip")
+                .h_full()
+                .px_2p5()
+                .border_r_1()
+                .border_color(graphite_border())
+                .bg(selenium_amber())
+                .hover(|s| s.bg(rgb(active_theme().accent_hover)))
+                .cursor_pointer()
+                .flex()
+                .items_center()
+                .gap_1()
+                .font_family(MONO_FONT)
+                .text_size(TYPE_MICRO)
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(rgb(active_theme().accent_foreground))
+                .on_click(cx.listener(|app, _, window, cx| {
+                    app.open_settings_modal_on_tab(SettingsTab::Updates, window, cx);
+                }))
+                .child(Icon::new(IconName::ArrowDown).size(px(11.0)))
+                .child(label)
+        });
 
         TitleBar::new()
             .bg(graphite_bg())
@@ -1798,6 +2038,8 @@ impl PosthazeApp {
                             .text_color(silver_muted())
                             .child(concat!("v", env!("CARGO_PKG_VERSION"), " beta")),
                     )
+                    // Update available chip
+                    .when_some(update_chip, |el, chip| el.child(chip))
                     // Engine / Queue telemetry cell
                     .when(self.queue.settings.ui_show_titlebar_telemetry, |el| {
                         el.child(
