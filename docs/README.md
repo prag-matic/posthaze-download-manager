@@ -31,7 +31,7 @@ Documentation is a first-class part of Posthaze Download Manager.
 - [Table-Grid Cell UI System & Interface Customization](table-grid-ui-and-customization.md)
 - [Independent Pre-Flight Window, Folder Picker & Extension Lock](preflight-window-and-pickers.md)
 - [Release Packaging & Portable Mode](release-packaging-and-portable-mode.md)
-- [Creating Themes for Posthaze](creating-themes.md)
+- [Creating Themes for Posthaze (Opaque & Windows 11 Mica)](creating-themes.md)
 
 - [Ticket 01 — Single-Stream HTTP Download Engine & CLI](ticket-01-single-stream-engine.md)
 - [Ticket 02 — `HEAD`-Blocked Range Probe Fallback & Chunked Handling](ticket-02-range-probe-fallback.md)
