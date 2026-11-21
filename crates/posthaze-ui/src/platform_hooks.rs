@@ -265,36 +265,13 @@ fn set_dwm_backdrop_type(hwnd: windows_sys::Win32::Foundation::HWND, backdrop_ty
 }
 
 #[cfg(target_os = "windows")]
-fn extend_dwm_frame(hwnd: windows_sys::Win32::Foundation::HWND, margin: i32) -> i32 {
-    use windows_sys::Win32::Graphics::Dwm::DwmExtendFrameIntoClientArea;
-    use windows_sys::Win32::UI::Controls::MARGINS;
-
-    let margins = MARGINS {
-        cxLeftWidth: margin,
-        cxRightWidth: margin,
-        cyTopHeight: margin,
-        cyBottomHeight: margin,
-    };
-    unsafe { DwmExtendFrameIntoClientArea(hwnd, &margins) }
-}
-
-#[cfg(target_os = "windows")]
-fn check_dwm_hr(
-    hr: i32,
-    op: &'static str,
-    window: &gpui_kit::Window,
-    hwnd: windows_sys::Win32::Foundation::HWND,
-    reset_margins_on_err: bool,
-) -> Result<(), String> {
+fn check_dwm_hr(hr: i32, op: &'static str, window: &gpui_kit::Window) -> Result<(), String> {
     if hr < 0 {
         tracing::warn!(
             hr = format_args!("0x{:08X}", hr as u32),
             op,
             "Win32 DWM call failed while enabling Mica"
         );
-        if reset_margins_on_err {
-            let _ = extend_dwm_frame(hwnd, 0);
-        }
         DWM_REJECTED.store(true, Ordering::Relaxed);
         window.set_background_appearance(gpui_kit::WindowBackgroundAppearance::Opaque);
         return Err(format!("{op} failed (HRESULT 0x{:08X})", hr as u32));
@@ -304,6 +281,13 @@ fn check_dwm_hr(
 
 /// Applies the requested window backdrop (`Opaque`, `Mica`, or `MicaAlt`) and
 /// immersive dark-mode polarity to a GPUI window.
+///
+/// GPUI creates its Windows HWND with `WS_EX_NOREDIRECTIONBITMAP` and a
+/// premultiplied DirectComposition swap chain, so DWM composites
+/// `DWMWA_SYSTEMBACKDROP_TYPE` behind the entire client area without
+/// `DwmExtendFrameIntoClientArea`. Extending the DWM frame into the client
+/// area (`MARGINS { -1 }`) would cause Windows to paint duplicate native
+/// non-client caption buttons behind GPUI Kit's custom `TitleBar` controls.
 pub(crate) fn apply_window_backdrop(
     window: &gpui_kit::Window,
     backdrop: ThemeBackdrop,
@@ -334,22 +318,11 @@ pub(crate) fn apply_window_backdrop(
                     set_dwm_dark_mode(hwnd, is_dark),
                     "DWMWA_USE_IMMERSIVE_DARK_MODE",
                     window,
-                    hwnd,
-                    false,
-                )?;
-                check_dwm_hr(
-                    extend_dwm_frame(hwnd, -1),
-                    "DwmExtendFrameIntoClientArea",
-                    window,
-                    hwnd,
-                    false,
                 )?;
                 check_dwm_hr(
                     set_dwm_backdrop_type(hwnd, backdrop_value),
                     "DWMWA_SYSTEMBACKDROP_TYPE",
                     window,
-                    hwnd,
-                    true,
                 )?;
             }
             ThemeBackdrop::Opaque => {
@@ -361,13 +334,6 @@ pub(crate) fn apply_window_backdrop(
                             "DWMWA_SYSTEMBACKDROP_TYPE(DWMSBT_NONE) failed"
                         );
                     }
-                }
-                let hr_margins = extend_dwm_frame(hwnd, 0);
-                if hr_margins < 0 {
-                    tracing::warn!(
-                        hr = format_args!("0x{:08X}", hr_margins as u32),
-                        "DwmExtendFrameIntoClientArea(0) failed"
-                    );
                 }
                 let hr_dark = set_dwm_dark_mode(hwnd, is_dark);
                 if hr_dark < 0 {
