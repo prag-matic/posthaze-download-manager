@@ -299,6 +299,11 @@ async fn check_release_from_url(
         .send()
         .await
         .map_err(|err| format!("Update check failed: {err}"))?;
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        // GitHub's `/releases/latest` returns 404 when no non-draft, non-prerelease
+        // release has been published yet. Treat that as "no newer stable release".
+        return Ok(None);
+    }
     if !resp.status().is_success() {
         return Err(format!("Update server returned HTTP {}", resp.status()));
     }
@@ -579,7 +584,7 @@ mod tests {
         ];
 
         let server = tokio::spawn(async move {
-            for _ in 0..8 {
+            for _ in 0..16 {
                 let Ok((mut sock, _)) = listener.accept().await else {
                     break;
                 };
@@ -608,6 +613,12 @@ mod tests {
                 });
             }
         });
+
+        // GitHub returns 404 on /releases/latest when no stable release exists yet.
+        let missing = check_release_from_url(&format!("{base}/no-stable-release"), "0.1.1", false)
+            .await
+            .expect("HTTP 404 should resolve cleanly to Ok(None)");
+        assert!(missing.is_none());
 
         let found = check_release_from_url(&format!("{base}/latest"), "0.1.1", false)
             .await
