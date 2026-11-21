@@ -1,6 +1,602 @@
-//! Platform-specific OS helpers for file/folder shell launches, Windows notifications, and post-completion hooks.
+//! Platform-specific OS helpers for file/folder shell launches, Windows notifications,
+//! Win32 DWM Mica backdrops, and post-completion hooks.
 
 use std::path::Path;
+#[cfg(target_os = "windows")]
+use std::collections::HashMap;
+#[cfg(target_os = "windows")]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(target_os = "windows")]
+use std::sync::{Mutex, OnceLock};
+
+/// Minimum Windows build number supporting `DWMWA_SYSTEMBACKDROP_TYPE` (Windows 11 22H2).
+const MIN_MICA_WINDOWS_BUILD: u32 = 22621;
+
+/// Window backdrop material applied via GPUI and Win32 DWM.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DwmBackdrop {
+    /// Standard opaque window surface (`DWMSBT_NONE`).
+    Opaque,
+    /// Windows 11 Mica backdrop (`DWMSBT_MAINWINDOW`).
+    Mica,
+    /// Windows 11 Mica Alt backdrop (`DWMSBT_TABBEDWINDOW`).
+    MicaAlt,
+}
+
+impl DwmBackdrop {
+    /// Converts this backdrop material to GPUI's `WindowBackgroundAppearance`.
+    #[allow(dead_code)]
+    pub(crate) const fn to_window_background(self) -> gpui_kit::WindowBackgroundAppearance {
+        match self {
+            Self::Opaque => gpui_kit::WindowBackgroundAppearance::Opaque,
+            Self::Mica => gpui_kit::WindowBackgroundAppearance::MicaBackdrop,
+            Self::MicaAlt => gpui_kit::WindowBackgroundAppearance::MicaAltBackdrop,
+        }
+    }
+}
+
+/// Reason why native Windows 11 Mica translucency is unavailable and Posthaze
+/// has fallen back to its calibrated opaque palette.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MicaFallbackReason {
+    /// OS is non-Windows or Windows build `< 22621` (older than Windows 11 22H2).
+    UnsupportedOs,
+    /// `GPUI_DISABLE_DIRECT_COMPOSITION` is enabled (`"1"` or `"true"`).
+    DirectCompositionDisabled,
+    /// Windows High Contrast mode (`SPI_GETHIGHCONTRAST` / `HCF_HIGHCONTRASTON`) is active.
+    HighContrastActive,
+    /// Windows Transparency Effects (`EnableTransparency == 0`) are turned off.
+    TransparencyDisabled,
+    /// A Win32 DWM call returned a failure `HRESULT` (`< 0`).
+    DwmRejected,
+}
+
+impl MicaFallbackReason {
+    /// Returns the user-facing status note displayed below the theme grid in `Settings > Interface`.
+    #[allow(dead_code)]
+    pub(crate) const fn status_note(self) -> &'static str {
+        match self {
+            Self::UnsupportedOs => {
+                "Native Mica translucency requires Windows 11 22H2 or newer — using calibrated opaque fallback."
+            }
+            Self::DirectCompositionDisabled => {
+                "DirectComposition is disabled (`GPUI_DISABLE_DIRECT_COMPOSITION=1`) — using calibrated opaque fallback."
+            }
+            Self::HighContrastActive => {
+                "Windows High Contrast mode is active — using calibrated opaque fallback."
+            }
+            Self::TransparencyDisabled => {
+                "Windows Transparency Effects are turned off — using calibrated opaque fallback."
+            }
+            Self::DwmRejected => {
+                "Windows DWM declined the Mica backdrop — using calibrated opaque fallback."
+            }
+        }
+    }
+}
+
+/// Pure snapshot of OS and runtime inputs used to evaluate Mica availability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MicaProbeInputs {
+    windows_build: Option<u32>,
+    direct_composition_disabled: bool,
+    high_contrast_active: bool,
+    transparency_enabled: bool,
+    dwm_rejected: bool,
+}
+
+/// Evaluates Mica availability in strict spec priority order.
+#[allow(dead_code)]
+fn evaluate_mica_availability(inputs: MicaProbeInputs) -> Result<(), MicaFallbackReason> {
+    if inputs.windows_build.is_none_or(|build| build < MIN_MICA_WINDOWS_BUILD) {
+        return Err(MicaFallbackReason::UnsupportedOs);
+    }
+    if inputs.direct_composition_disabled {
+        return Err(MicaFallbackReason::DirectCompositionDisabled);
+    }
+    if inputs.high_contrast_active {
+        return Err(MicaFallbackReason::HighContrastActive);
+    }
+    if !inputs.transparency_enabled {
+        return Err(MicaFallbackReason::TransparencyDisabled);
+    }
+    if inputs.dwm_rejected {
+        return Err(MicaFallbackReason::DwmRejected);
+    }
+    Ok(())
+}
+
+/// Parses the `GPUI_DISABLE_DIRECT_COMPOSITION` environment variable value.
+#[allow(dead_code)]
+fn is_direct_composition_disabled_value(value: Option<&str>) -> bool {
+    matches!(value, Some(v) if v == "1" || v.eq_ignore_ascii_case("true"))
+}
+
+#[cfg(target_os = "windows")]
+static DWM_REJECTED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(target_os = "windows")]
+fn last_window_backdrops() -> &'static Mutex<HashMap<isize, (DwmBackdrop, bool)>> {
+    static MAP: OnceLock<Mutex<HashMap<isize, (DwmBackdrop, bool)>>> = OnceLock::new();
+    MAP.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_build_number() -> Option<u32> {
+    use windows_sys::Wdk::System::SystemServices::RtlGetVersion;
+    use windows_sys::Win32::System::SystemInformation::OSVERSIONINFOW;
+
+    static BUILD: OnceLock<Option<u32>> = OnceLock::new();
+    *BUILD.get_or_init(|| {
+        let mut info: OSVERSIONINFOW = unsafe { std::mem::zeroed() };
+        info.dwOSVersionInfoSize = std::mem::size_of::<OSVERSIONINFOW>() as u32;
+        let status = unsafe { RtlGetVersion(&mut info) };
+        if status == 0 {
+            Some(info.dwBuildNumber)
+        } else {
+            None
+        }
+    })
+}
+
+#[cfg(target_os = "windows")]
+fn is_high_contrast_active() -> bool {
+    use windows_sys::Win32::UI::Accessibility::{HCF_HIGHCONTRASTON, HIGHCONTRASTW};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SPI_GETHIGHCONTRAST, SystemParametersInfoW,
+    };
+
+    let mut hc: HIGHCONTRASTW = unsafe { std::mem::zeroed() };
+    hc.cbSize = std::mem::size_of::<HIGHCONTRASTW>() as u32;
+    let ok = unsafe {
+        SystemParametersInfoW(
+            SPI_GETHIGHCONTRAST,
+            hc.cbSize,
+            (&mut hc as *mut HIGHCONTRASTW).cast::<std::ffi::c_void>(),
+            0,
+        )
+    };
+    ok != 0 && (hc.dwFlags & HCF_HIGHCONTRASTON) != 0
+}
+
+#[cfg(target_os = "windows")]
+fn is_transparency_enabled() -> bool {
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::System::Registry::{
+        HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW,
+    };
+
+    let subkey: Vec<u16> =
+        "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize\0"
+            .encode_utf16()
+            .collect();
+    let value_name: Vec<u16> = "EnableTransparency\0".encode_utf16().collect();
+    let mut data: u32 = 1;
+    let mut data_size = std::mem::size_of::<u32>() as u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            subkey.as_ptr(),
+            value_name.as_ptr(),
+            RRF_RT_REG_DWORD,
+            std::ptr::null_mut(),
+            (&mut data as *mut u32).cast::<std::ffi::c_void>(),
+            &mut data_size,
+        )
+    };
+    if status == ERROR_SUCCESS {
+        data != 0
+    } else {
+        // Missing key or value defaults to enabled on Windows.
+        true
+    }
+}
+
+/// Checks whether native Windows 11 Mica translucency is currently available.
+#[allow(dead_code)]
+pub(crate) fn mica_availability() -> Result<(), MicaFallbackReason> {
+    #[cfg(target_os = "windows")]
+    {
+        let env_val = std::env::var("GPUI_DISABLE_DIRECT_COMPOSITION").ok();
+        evaluate_mica_availability(MicaProbeInputs {
+            windows_build: windows_build_number(),
+            direct_composition_disabled: is_direct_composition_disabled_value(env_val.as_deref()),
+            high_contrast_active: is_high_contrast_active(),
+            transparency_enabled: is_transparency_enabled(),
+            dwm_rejected: DWM_REJECTED.load(Ordering::Relaxed),
+        })
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        evaluate_mica_availability(MicaProbeInputs {
+            windows_build: None,
+            direct_composition_disabled: false,
+            high_contrast_active: false,
+            transparency_enabled: false,
+            dwm_rejected: false,
+        })
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn set_dwm_dark_mode(hwnd: windows_sys::Win32::Foundation::HWND, is_dark: bool) -> i32 {
+    use windows_sys::Win32::Graphics::Dwm::{DWMWA_USE_IMMERSIVE_DARK_MODE, DwmSetWindowAttribute};
+
+    let dark: i32 = i32::from(is_dark);
+    unsafe {
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_USE_IMMERSIVE_DARK_MODE as u32,
+            (&dark as *const i32).cast::<std::ffi::c_void>(),
+            std::mem::size_of::<i32>() as u32,
+        )
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn set_dwm_backdrop_type(hwnd: windows_sys::Win32::Foundation::HWND, backdrop_type: i32) -> i32 {
+    use windows_sys::Win32::Graphics::Dwm::{DWMWA_SYSTEMBACKDROP_TYPE, DwmSetWindowAttribute};
+
+    unsafe {
+        DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_SYSTEMBACKDROP_TYPE as u32,
+            (&backdrop_type as *const i32).cast::<std::ffi::c_void>(),
+            std::mem::size_of::<i32>() as u32,
+        )
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn extend_dwm_frame(hwnd: windows_sys::Win32::Foundation::HWND, margin: i32) -> i32 {
+    use windows_sys::Win32::Graphics::Dwm::DwmExtendFrameIntoClientArea;
+    use windows_sys::Win32::UI::Controls::MARGINS;
+
+    let margins = MARGINS {
+        cxLeftWidth: margin,
+        cxRightWidth: margin,
+        cyTopHeight: margin,
+        cyBottomHeight: margin,
+    };
+    unsafe { DwmExtendFrameIntoClientArea(hwnd, &margins) }
+}
+
+/// Applies the requested window backdrop (`Opaque`, `Mica`, or `MicaAlt`) and
+/// immersive dark-mode polarity to a GPUI window.
+#[allow(dead_code)]
+pub(crate) fn apply_window_backdrop(
+    window: &gpui_kit::Window,
+    backdrop: DwmBackdrop,
+    is_dark: bool,
+) -> Result<(), String> {
+    window.set_background_appearance(backdrop.to_window_background());
+
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::Graphics::Dwm::{
+            DWMSBT_MAINWINDOW, DWMSBT_NONE, DWMSBT_TABBEDWINDOW,
+        };
+
+        let Some(hwnd) = win32_hwnd(window) else {
+            return Ok(());
+        };
+
+        match backdrop {
+            DwmBackdrop::Mica | DwmBackdrop::MicaAlt => {
+                let backdrop_value = match backdrop {
+                    DwmBackdrop::Mica => DWMSBT_MAINWINDOW,
+                    DwmBackdrop::MicaAlt => DWMSBT_TABBEDWINDOW,
+                    DwmBackdrop::Opaque => unreachable!(),
+                };
+
+                let hr_dark = set_dwm_dark_mode(hwnd, is_dark);
+                if hr_dark < 0 {
+                    tracing::warn!(
+                        hr = format_args!("0x{:08X}", hr_dark as u32),
+                        is_dark,
+                        "DWMWA_USE_IMMERSIVE_DARK_MODE failed while enabling Mica"
+                    );
+                    DWM_REJECTED.store(true, Ordering::Relaxed);
+                    window.set_background_appearance(gpui_kit::WindowBackgroundAppearance::Opaque);
+                    return Err(format!(
+                        "DWMWA_USE_IMMERSIVE_DARK_MODE failed (HRESULT 0x{:08X})",
+                        hr_dark as u32
+                    ));
+                }
+
+                let hr_margins = extend_dwm_frame(hwnd, -1);
+                if hr_margins < 0 {
+                    tracing::warn!(
+                        hr = format_args!("0x{:08X}", hr_margins as u32),
+                        "DwmExtendFrameIntoClientArea(-1) failed while enabling Mica"
+                    );
+                    DWM_REJECTED.store(true, Ordering::Relaxed);
+                    window.set_background_appearance(gpui_kit::WindowBackgroundAppearance::Opaque);
+                    return Err(format!(
+                        "DwmExtendFrameIntoClientArea failed (HRESULT 0x{:08X})",
+                        hr_margins as u32
+                    ));
+                }
+
+                let hr_backdrop = set_dwm_backdrop_type(hwnd, backdrop_value);
+                if hr_backdrop < 0 {
+                    tracing::warn!(
+                        hr = format_args!("0x{:08X}", hr_backdrop as u32),
+                        ?backdrop,
+                        "DWMWA_SYSTEMBACKDROP_TYPE failed while enabling Mica"
+                    );
+                    let _ = extend_dwm_frame(hwnd, 0);
+                    DWM_REJECTED.store(true, Ordering::Relaxed);
+                    window.set_background_appearance(gpui_kit::WindowBackgroundAppearance::Opaque);
+                    return Err(format!(
+                        "DWMWA_SYSTEMBACKDROP_TYPE failed (HRESULT 0x{:08X})",
+                        hr_backdrop as u32
+                    ));
+                }
+            }
+            DwmBackdrop::Opaque => {
+                if windows_build_number().is_some_and(|build| build >= MIN_MICA_WINDOWS_BUILD) {
+                    let hr_backdrop = set_dwm_backdrop_type(hwnd, DWMSBT_NONE);
+                    if hr_backdrop < 0 {
+                        tracing::warn!(
+                            hr = format_args!("0x{:08X}", hr_backdrop as u32),
+                            "DWMWA_SYSTEMBACKDROP_TYPE(DWMSBT_NONE) failed"
+                        );
+                    }
+                }
+                let hr_margins = extend_dwm_frame(hwnd, 0);
+                if hr_margins < 0 {
+                    tracing::warn!(
+                        hr = format_args!("0x{:08X}", hr_margins as u32),
+                        "DwmExtendFrameIntoClientArea(0) failed"
+                    );
+                }
+                let hr_dark = set_dwm_dark_mode(hwnd, is_dark);
+                if hr_dark < 0 {
+                    tracing::warn!(
+                        hr = format_args!("0x{:08X}", hr_dark as u32),
+                        is_dark,
+                        "DWMWA_USE_IMMERSIVE_DARK_MODE failed"
+                    );
+                }
+            }
+        }
+
+        if let Ok(mut map) = last_window_backdrops().lock() {
+            map.insert(hwnd as isize, (backdrop, is_dark));
+        }
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = is_dark;
+        Ok(())
+    }
+}
+
+/// Re-asserts Win32 `DWMWA_USE_IMMERSIVE_DARK_MODE` on a GPUI window.
+///
+/// Intended to be called in a deferred task (`window.defer(...)`) after GPUI's
+/// `WM_SETTINGCHANGE` (`ImmersiveColorSet`) handler runs so forced-polarity Mica
+/// themes (`Mica Dark` / `Mica Light`) keep their DWM dark-mode bit.
+#[allow(dead_code)]
+pub(crate) fn assert_window_dark_mode(window: &gpui_kit::Window, is_dark: bool) {
+    #[cfg(target_os = "windows")]
+    if let Some(hwnd) = win32_hwnd(window) {
+        let hr = set_dwm_dark_mode(hwnd, is_dark);
+        if hr < 0 {
+            tracing::warn!(
+                hr = format_args!("0x{:08X}", hr as u32),
+                is_dark,
+                "Deferred DWMWA_USE_IMMERSIVE_DARK_MODE assertion failed"
+            );
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = (window, is_dark);
+}
+
+#[cfg(target_os = "windows")]
+std::thread_local! {
+    static MICA_PREF_CALLBACK: std::cell::RefCell<Option<Box<dyn Fn()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn mica_pref_wnd_proc(
+    hwnd: windows_sys::Win32::Foundation::HWND,
+    msg: u32,
+    wparam: windows_sys::Win32::Foundation::WPARAM,
+    lparam: windows_sys::Win32::Foundation::LPARAM,
+) -> windows_sys::Win32::Foundation::LRESULT {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        DefWindowProcW, WM_SETTINGCHANGE, WM_SYSCOLORCHANGE, WM_THEMECHANGED,
+    };
+
+    if matches!(msg, WM_SETTINGCHANGE | WM_THEMECHANGED | WM_SYSCOLORCHANGE) {
+        MICA_PREF_CALLBACK.with(|slot| {
+            if let Some(cb) = slot.borrow().as_ref() {
+                cb();
+            }
+        });
+    }
+    unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+}
+
+/// Spawns a lightweight, zero-polling background listener that invokes `on_change`
+/// whenever Windows Transparency Effects (`EnableTransparency`) or High Contrast
+/// (`SPI_SETHIGHCONTRAST` / `WM_THEMECHANGED` / `WM_SYSCOLORCHANGE`) change.
+#[allow(dead_code)]
+pub(crate) fn spawn_mica_preference_listener<F>(on_change: F)
+where
+    F: Fn() + Send + 'static,
+{
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::thread::Builder::new()
+            .name("posthaze-mica-pref-listener".to_string())
+            .spawn(move || {
+                use windows_sys::Win32::Foundation::{
+                    CloseHandle, ERROR_SUCCESS, HANDLE, WAIT_OBJECT_0,
+                };
+                use windows_sys::Win32::System::Registry::{
+                    HKEY, HKEY_CURRENT_USER, KEY_NOTIFY, REG_NOTIFY_CHANGE_LAST_SET, RegCloseKey,
+                    RegNotifyChangeKeyValue, RegOpenKeyExW,
+                };
+                use windows_sys::Win32::System::Threading::{CreateEventW, INFINITE};
+                use windows_sys::Win32::UI::WindowsAndMessaging::{
+                    CreateWindowExW, DestroyWindow, DispatchMessageW, GetMessageW, MSG,
+                    MsgWaitForMultipleObjects, PM_REMOVE, PeekMessageW, QS_ALLINPUT,
+                    RegisterClassW, TranslateMessage, WM_QUIT, WNDCLASSW, WS_OVERLAPPED,
+                };
+
+                MICA_PREF_CALLBACK.with(|slot| {
+                    *slot.borrow_mut() = Some(Box::new(on_change));
+                });
+
+                let class_name: Vec<u16> = "PosthazeMicaPrefListener\0".encode_utf16().collect();
+                let wc = WNDCLASSW {
+                    style: 0,
+                    lpfnWndProc: Some(mica_pref_wnd_proc),
+                    cbClsExtra: 0,
+                    cbWndExtra: 0,
+                    hInstance: std::ptr::null_mut(),
+                    hIcon: std::ptr::null_mut(),
+                    hCursor: std::ptr::null_mut(),
+                    hbrBackground: std::ptr::null_mut(),
+                    lpszMenuName: std::ptr::null(),
+                    lpszClassName: class_name.as_ptr(),
+                };
+                unsafe {
+                    RegisterClassW(&wc);
+                }
+
+                // Must be a hidden top-level WS_OVERLAPPED window (never HWND_MESSAGE,
+                // which does not receive HWND_BROADCAST WM_SETTINGCHANGE/WM_THEMECHANGED).
+                let hwnd = unsafe {
+                    CreateWindowExW(
+                        0,
+                        class_name.as_ptr(),
+                        class_name.as_ptr(),
+                        WS_OVERLAPPED,
+                        0,
+                        0,
+                        0,
+                        0,
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                        std::ptr::null(),
+                    )
+                };
+
+                let subkey: Vec<u16> =
+                    "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize\0"
+                        .encode_utf16()
+                        .collect();
+                let mut hkey: HKEY = std::ptr::null_mut();
+                let reg_opened = unsafe {
+                    RegOpenKeyExW(
+                        HKEY_CURRENT_USER,
+                        subkey.as_ptr(),
+                        0,
+                        KEY_NOTIFY,
+                        &mut hkey,
+                    )
+                } == ERROR_SUCCESS;
+
+                let reg_event: HANDLE = if reg_opened {
+                    unsafe { CreateEventW(std::ptr::null(), 0, 0, std::ptr::null()) }
+                } else {
+                    std::ptr::null_mut()
+                };
+
+                let arm_reg_watch = |key: HKEY, event: HANDLE| -> bool {
+                    if key.is_null() || event.is_null() {
+                        return false;
+                    }
+                    unsafe {
+                        RegNotifyChangeKeyValue(key, 0, REG_NOTIFY_CHANGE_LAST_SET, event, 1)
+                            == ERROR_SUCCESS
+                    }
+                };
+
+                let mut reg_watch_active = arm_reg_watch(hkey, reg_event);
+                let mut msg: MSG = unsafe { std::mem::zeroed() };
+
+                if reg_watch_active {
+                    let handles = [reg_event];
+                    loop {
+                        let wait = unsafe {
+                            MsgWaitForMultipleObjects(
+                                handles.len() as u32,
+                                handles.as_ptr(),
+                                0,
+                                INFINITE,
+                                QS_ALLINPUT,
+                            )
+                        };
+                        if wait == WAIT_OBJECT_0 {
+                            reg_watch_active = arm_reg_watch(hkey, reg_event);
+                            MICA_PREF_CALLBACK.with(|slot| {
+                                if let Some(cb) = slot.borrow().as_ref() {
+                                    cb();
+                                }
+                            });
+                            if !reg_watch_active {
+                                break;
+                            }
+                        } else if wait == WAIT_OBJECT_0 + handles.len() as u32 {
+                            let mut quit = false;
+                            while unsafe {
+                                PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE)
+                            } != 0
+                            {
+                                if msg.message == WM_QUIT {
+                                    quit = true;
+                                    break;
+                                }
+                                unsafe {
+                                    TranslateMessage(&msg);
+                                    DispatchMessageW(&msg);
+                                }
+                            }
+                            if quit {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                } else if !hwnd.is_null() {
+                    while unsafe { GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) } > 0 {
+                        unsafe {
+                            TranslateMessage(&msg);
+                            DispatchMessageW(&msg);
+                        }
+                    }
+                }
+
+                if !reg_event.is_null() {
+                    unsafe { CloseHandle(reg_event) };
+                }
+                if reg_opened && !hkey.is_null() {
+                    unsafe { RegCloseKey(hkey) };
+                }
+                if !hwnd.is_null() {
+                    unsafe { DestroyWindow(hwnd) };
+                }
+                MICA_PREF_CALLBACK.with(|slot| {
+                    *slot.borrow_mut() = None;
+                });
+            });
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = on_change;
+}
 
 fn spawn_explorer(arg: impl AsRef<std::ffi::OsStr>, action_label: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
@@ -48,18 +644,30 @@ pub(crate) fn hide_window_to_tray(window: &gpui_kit::Window) {
     window.minimize_window();
 }
 
-/// Restores a hidden/minimized GPUI window to the taskbar and activates it.
+/// Restores a hidden/minimized GPUI window to the taskbar, activates it, and
+/// re-applies any previously configured DWM backdrop so restoring from `SW_HIDE`
+/// never loses Mica state.
 pub(crate) fn show_window_from_tray(window: &gpui_kit::Window) {
     #[cfg(target_os = "windows")]
-    if let Some(hwnd) = win32_hwnd(window) {
+    let saved_backdrop = if let Some(hwnd) = win32_hwnd(window) {
         unsafe {
             windows_sys::Win32::UI::WindowsAndMessaging::ShowWindowAsync(
                 hwnd,
                 windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOW,
             );
         }
-    }
+        last_window_backdrops()
+            .lock()
+            .ok()
+            .and_then(|map| map.get(&(hwnd as isize)).copied())
+    } else {
+        None
+    };
     window.activate_window();
+    #[cfg(target_os = "windows")]
+    if let Some((backdrop, is_dark)) = saved_backdrop {
+        let _ = apply_window_backdrop(window, backdrop, is_dark);
+    }
 }
 
 /// Returns whether the GPUI window is currently visible (not hidden to tray).
@@ -308,11 +916,154 @@ pub(crate) fn spawn_completion_hook(exe_path: &str, args_template: &str, file_pa
 mod tests {
     use std::path::Path;
 
-    use super::format_startup_command;
+    use super::{
+        DwmBackdrop, MicaFallbackReason, MicaProbeInputs, evaluate_mica_availability,
+        format_startup_command, is_direct_composition_disabled_value,
+    };
 
     #[test]
     fn formats_startup_registry_command_with_minimized_flag() {
         let cmd = format_startup_command(Path::new(r"C:\Users\Test\Posthaze\posthaze-ui.exe"));
         assert_eq!(cmd, "\"C:\\Users\\Test\\Posthaze\\posthaze-ui.exe\" --minimized");
+    }
+
+    #[test]
+    fn mica_fallback_reason_status_notes_match_spec() {
+        assert_eq!(
+            MicaFallbackReason::UnsupportedOs.status_note(),
+            "Native Mica translucency requires Windows 11 22H2 or newer — using calibrated opaque fallback."
+        );
+        assert_eq!(
+            MicaFallbackReason::DirectCompositionDisabled.status_note(),
+            "DirectComposition is disabled (`GPUI_DISABLE_DIRECT_COMPOSITION=1`) — using calibrated opaque fallback."
+        );
+        assert_eq!(
+            MicaFallbackReason::HighContrastActive.status_note(),
+            "Windows High Contrast mode is active — using calibrated opaque fallback."
+        );
+        assert_eq!(
+            MicaFallbackReason::TransparencyDisabled.status_note(),
+            "Windows Transparency Effects are turned off — using calibrated opaque fallback."
+        );
+        assert_eq!(
+            MicaFallbackReason::DwmRejected.status_note(),
+            "Windows DWM declined the Mica backdrop — using calibrated opaque fallback."
+        );
+    }
+
+    #[test]
+    fn evaluate_mica_availability_enforces_strict_priority_order() {
+        // All failing at once -> UnsupportedOs wins (priority 1)
+        assert_eq!(
+            evaluate_mica_availability(MicaProbeInputs {
+                windows_build: Some(22000),
+                direct_composition_disabled: true,
+                high_contrast_active: true,
+                transparency_enabled: false,
+                dwm_rejected: true,
+            }),
+            Err(MicaFallbackReason::UnsupportedOs)
+        );
+        // Non-Windows (None) -> UnsupportedOs
+        assert_eq!(
+            evaluate_mica_availability(MicaProbeInputs {
+                windows_build: None,
+                direct_composition_disabled: false,
+                high_contrast_active: false,
+                transparency_enabled: true,
+                dwm_rejected: false,
+            }),
+            Err(MicaFallbackReason::UnsupportedOs)
+        );
+        // Build 22621+ -> DirectCompositionDisabled wins (priority 2)
+        assert_eq!(
+            evaluate_mica_availability(MicaProbeInputs {
+                windows_build: Some(22621),
+                direct_composition_disabled: true,
+                high_contrast_active: true,
+                transparency_enabled: false,
+                dwm_rejected: true,
+            }),
+            Err(MicaFallbackReason::DirectCompositionDisabled)
+        );
+        // HighContrastActive wins (priority 3)
+        assert_eq!(
+            evaluate_mica_availability(MicaProbeInputs {
+                windows_build: Some(22631),
+                direct_composition_disabled: false,
+                high_contrast_active: true,
+                transparency_enabled: false,
+                dwm_rejected: true,
+            }),
+            Err(MicaFallbackReason::HighContrastActive)
+        );
+        // TransparencyDisabled wins (priority 4)
+        assert_eq!(
+            evaluate_mica_availability(MicaProbeInputs {
+                windows_build: Some(26100),
+                direct_composition_disabled: false,
+                high_contrast_active: false,
+                transparency_enabled: false,
+                dwm_rejected: true,
+            }),
+            Err(MicaFallbackReason::TransparencyDisabled)
+        );
+        // DwmRejected wins (priority 5)
+        assert_eq!(
+            evaluate_mica_availability(MicaProbeInputs {
+                windows_build: Some(26100),
+                direct_composition_disabled: false,
+                high_contrast_active: false,
+                transparency_enabled: true,
+                dwm_rejected: true,
+            }),
+            Err(MicaFallbackReason::DwmRejected)
+        );
+        // All clear -> Ok(())
+        assert_eq!(
+            evaluate_mica_availability(MicaProbeInputs {
+                windows_build: Some(22621),
+                direct_composition_disabled: false,
+                high_contrast_active: false,
+                transparency_enabled: true,
+                dwm_rejected: false,
+            }),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn dwm_backdrop_maps_to_gpui_window_background() {
+        assert_eq!(
+            DwmBackdrop::Opaque.to_window_background(),
+            gpui_kit::WindowBackgroundAppearance::Opaque
+        );
+        assert_eq!(
+            DwmBackdrop::Mica.to_window_background(),
+            gpui_kit::WindowBackgroundAppearance::MicaBackdrop
+        );
+        assert_eq!(
+            DwmBackdrop::MicaAlt.to_window_background(),
+            gpui_kit::WindowBackgroundAppearance::MicaAltBackdrop
+        );
+    }
+
+    #[test]
+    fn direct_composition_env_parser_recognizes_disabled_values() {
+        assert!(is_direct_composition_disabled_value(Some("1")));
+        assert!(is_direct_composition_disabled_value(Some("true")));
+        assert!(is_direct_composition_disabled_value(Some("TRUE")));
+        assert!(!is_direct_composition_disabled_value(Some("0")));
+        assert!(!is_direct_composition_disabled_value(Some("false")));
+        assert!(!is_direct_composition_disabled_value(Some("")));
+        assert!(!is_direct_composition_disabled_value(None));
+    }
+
+    #[test]
+    fn mica_availability_smoke_check_runs_cleanly() {
+        let result = super::mica_availability();
+        if let Err(reason) = result {
+            assert!(!reason.status_note().is_empty());
+        }
     }
 }
