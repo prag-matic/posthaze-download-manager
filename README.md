@@ -3,6 +3,7 @@
 <img src="assets/git_banner.png" alt="Posthaze Download Manager" width="100%" />
 
 <br />
+<br />
 
 **A fast, lightweight Windows 10/11 download manager built in Rust.**  
 Multi-connection acceleration, crash-safe resume, native Windows 11 Mica themes, and one-click Chrome/Edge/Brave browser capture—without Electron bloat.
