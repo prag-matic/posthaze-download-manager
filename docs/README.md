@@ -6,9 +6,10 @@ Documentation is a first-class part of Posthaze Download Manager.
 
 - [Architecture Proposal — Windows Download Manager](Architecture%20Proposal%20-%20Windows%20Download%20Manager.md)
 - [Engine & CLI Readiness for GPUI + GPUI Kit Desktop UI (`posthaze-ui`)](engine-gui-readiness.md)
-- [Domain Glossary](../GLOSSARY.md)
-- [Design System (`DESIGN.md`)](../DESIGN.md)
-- [Product Context](../PRODUCT.md)
+- [Domain Glossary](GLOSSARY.md)
+- [Design System (`DESIGN.md`)](DESIGN.md)
+- [Product Context](PRODUCT.md)
+- [Coding Standards](CODING_STANDARDS.md)
 - Architecture Decision Records (`docs/adr/`):
   - [0001 — Multi-crate Cargo workspace from day one](adr/0001-multi-crate-cargo-workspace.md)
   - [0002 — Single pre-allocated `.part` file with positional writes](adr/0002-preallocated-single-part-file.md)

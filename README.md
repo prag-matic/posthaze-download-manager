@@ -170,5 +170,5 @@ Posthaze is built on top of these open-source projects:
 
 ## Contributing & License
 
-- **Contributing:** Bug reports, feature requests, and pull requests are welcome. Before opening a PR, please review [`CODING_STANDARDS.md`](CODING_STANDARDS.md) and run `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo doc --workspace --no-deps`, and `./scripts/check-repo.ps1`.
+- **Contributing:** Bug reports, feature requests, and pull requests are welcome. Before opening a PR, please review [`docs/CODING_STANDARDS.md`](docs/CODING_STANDARDS.md) and run `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo doc --workspace --no-deps`, and `./scripts/check-repo.ps1`.
 - **License:** Released under the [MIT License](LICENSE).
