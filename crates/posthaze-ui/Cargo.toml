@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 base64 = "0.22"
+bytes.workspace = true
 ed25519-dalek = "2"
 futures-util.workspace = true
 gpui-kit = "0.10.0"

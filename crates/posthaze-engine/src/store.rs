@@ -123,10 +123,14 @@ impl DownloadStore {
             .create_if_missing(true)
             .journal_mode(SqliteJournalMode::Wal)
             .synchronous(SqliteSynchronous::Normal)
-            .foreign_keys(true);
+            .foreign_keys(true)
+            .pragma("cache_size", "-512")
+            .statement_cache_capacity(32);
 
         let pool = SqlitePoolOptions::new()
-            .max_connections(4)
+            .max_connections(2)
+            .min_connections(0)
+            .idle_timeout(Some(std::time::Duration::from_secs(30)))
             .connect_with(options)
             .await?;
 
@@ -153,6 +157,13 @@ impl DownloadStore {
         store.ensure_default_settings().await?;
         store.reconcile_crashed_downloads().await?;
         Ok(store)
+    }
+
+    /// Releases unused SQLite heap/page cache memory when the engine becomes idle.
+    pub(crate) async fn shrink_memory(&self) {
+        let _ = sqlx::query("PRAGMA shrink_memory;")
+            .execute(&self.pool)
+            .await;
     }
 
     /// Inserts a newly queued `Download` record.
@@ -603,7 +614,7 @@ impl DownloadStore {
         for row in rows {
             let id: String = row.try_get("download_id")?;
             let cnt: i64 = row.try_get("cnt")?;
-            counts.insert(DownloadId(id), usize::try_from(cnt).unwrap_or(0));
+            counts.insert(DownloadId::from(id), usize::try_from(cnt).unwrap_or(0));
         }
         Ok(counts)
     }
@@ -923,7 +934,7 @@ fn row_to_record(row: SqliteRow) -> Result<DownloadRecord, EngineError> {
     })?;
 
     Ok(DownloadRecord {
-        id: DownloadId(row.try_get("id")?),
+        id: DownloadId::from(row.try_get::<String, _>("id")?),
         url: row.try_get("url")?,
         final_url: row.try_get("final_url")?,
         output_dir: row
@@ -1043,6 +1054,56 @@ mod tests {
         let counts = store.list_segment_counts().await.unwrap();
         assert_eq!(counts.get(&id1), Some(&3));
         assert_eq!(counts.get(&id2), Some(&1));
+
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn composite_segment_index_and_shrink_memory_work_cleanly() {
+        let dir = std::env::temp_dir().join(format!("posthaze_store_idx_{}", DownloadId::new()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = DownloadStore::open(&dir.join("state.db")).await.unwrap();
+
+        let select_rows = sqlx::query(
+            "EXPLAIN QUERY PLAN SELECT segment_index, start_offset, end_offset, cursor_offset, completed \
+             FROM segments WHERE download_id = 'test-id' ORDER BY segment_index ASC",
+        )
+        .fetch_all(&store.pool)
+        .await
+        .unwrap();
+        let plan_joined = select_rows
+            .iter()
+            .map(|r| r.try_get::<String, _>("detail").unwrap())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(
+            plan_joined.contains("idx_segments_download_seg"),
+            "expected composite index in query plan, got: {plan_joined}"
+        );
+        assert!(
+            !plan_joined.contains("USE TEMP B-TREE FOR ORDER BY"),
+            "expected no temp B-tree sort, got: {plan_joined}"
+        );
+
+        let update_rows = sqlx::query(
+            "EXPLAIN QUERY PLAN UPDATE segments SET cursor_offset = 100 \
+             WHERE download_id = 'test-id' AND segment_index = 0",
+        )
+        .fetch_all(&store.pool)
+        .await
+        .unwrap();
+        let update_joined = update_rows
+            .iter()
+            .map(|r| r.try_get::<String, _>("detail").unwrap())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(
+            update_joined.contains("idx_segments_download_seg"),
+            "expected composite index in update plan, got: {update_joined}"
+        );
+
+        store.shrink_memory().await;
 
         drop(store);
         let _ = std::fs::remove_dir_all(&dir);

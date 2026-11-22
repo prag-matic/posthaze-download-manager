@@ -1,6 +1,6 @@
 //! Chronophotographic telemetry interpolation and transient state-snap timings.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use posthaze_engine::{DownloadId, DownloadState, ProgressSnapshot};
@@ -31,6 +31,7 @@ pub(crate) struct AnimatedTelemetry {
     pub last_segment_count: usize,
     pub split_flash_at: Option<Instant>,
     pub completed_flash_at: Option<Instant>,
+    pub terminal: bool,
 }
 
 /// Snapshot of visual telemetry ratios & pulse intensities for a single render frame.
@@ -177,6 +178,7 @@ impl MotionState {
             Some(entry) => {
                 entry.target_downloaded = target_dl;
                 entry.target_checkpointed = target_cp;
+                entry.terminal = false;
                 if seg_count > entry.last_segment_count && entry.last_segment_count > 0 {
                     entry.split_flash_at = Some(now);
                 }
@@ -193,11 +195,57 @@ impl MotionState {
                         last_segment_count: seg_count,
                         split_flash_at: None,
                         completed_flash_at: None,
+                        terminal: false,
                     },
                 );
             }
         }
         true
+    }
+
+    /// Snaps interpolated values immediately to live progress snapshots (used on restore from tray).
+    pub(crate) fn snap_to_live(&mut self, live_map: &HashMap<DownloadId, ProgressSnapshot>) {
+        for (id, snapshot) in live_map {
+            let target_dl = snapshot.bytes_downloaded as f64;
+            let checkpointed: u64 = if snapshot.state == DownloadState::Completed {
+                snapshot.bytes_downloaded
+            } else if !snapshot.segments.is_empty() {
+                snapshot
+                    .segments
+                    .iter()
+                    .map(|s| s.checkpointed_cursor.saturating_sub(s.start))
+                    .sum()
+            } else {
+                0
+            };
+            let target_cp = checkpointed as f64;
+            let seg_count = snapshot.segments.len();
+            self.entries.insert(
+                id.clone(),
+                AnimatedTelemetry {
+                    display_downloaded: target_dl,
+                    display_checkpointed: target_cp,
+                    target_downloaded: target_dl,
+                    target_checkpointed: target_cp,
+                    last_segment_count: seg_count,
+                    split_flash_at: None,
+                    completed_flash_at: None,
+                    terminal: false,
+                },
+            );
+        }
+        self.last_step_at = None;
+    }
+
+    /// Prunes entries for `Download`s no longer present in the `Queue`.
+    pub(crate) fn prune_missing(&mut self, existing: &HashSet<&DownloadId>) {
+        self.entries.retain(|id, _| existing.contains(id));
+    }
+
+    /// Returns the number of tracked per-download telemetry entries.
+    #[cfg(test)]
+    pub(crate) fn entry_count(&self) -> usize {
+        self.entries.len()
     }
 
     /// Records an engine state transition, triggering a completion pulse on `Completed`.
@@ -220,6 +268,7 @@ impl MotionState {
                         last_segment_count: 0,
                         split_flash_at: None,
                         completed_flash_at: Some(now),
+                        terminal: true,
                     }
                 });
                 if let Some(total) = total_bytes {
@@ -228,10 +277,22 @@ impl MotionState {
                     entry.target_checkpointed = full;
                 }
                 entry.completed_flash_at = Some(now);
+                entry.terminal = true;
                 true
             }
             DownloadState::Cancelled => {
                 self.entries.remove(id);
+                false
+            }
+            DownloadState::Paused | DownloadState::Failed => {
+                if let Some(entry) = self.entries.get_mut(id) {
+                    entry.terminal = true;
+                    entry.display_downloaded = entry.target_downloaded;
+                    entry.display_checkpointed = entry.target_checkpointed;
+                    if entry.split_flash_at.is_none() && entry.completed_flash_at.is_none() {
+                        self.entries.remove(id);
+                    }
+                }
                 false
             }
             _ => false,
@@ -287,6 +348,15 @@ impl MotionState {
                 }
             }
         }
+
+        // Prune settled terminal entries once their flashes have finished.
+        self.entries.retain(|_, entry| {
+            !entry.terminal
+                || entry.split_flash_at.is_some()
+                || entry.completed_flash_at.is_some()
+                || (entry.target_downloaded - entry.display_downloaded).abs() > 1.0
+                || (entry.target_checkpointed - entry.display_checkpointed).abs() > 1.0
+        });
 
         let panel_alpha = (1.0 - (-dt * 18.0).exp()) as f32;
         if let Some(mut anim) = self.sidebar_anim {
@@ -463,5 +533,53 @@ mod tests {
         motion.trigger_sash_detent(t0);
         assert!(motion.sash_detent_flash(t0 + Duration::from_millis(40)) > 0.5);
         assert_eq!(motion.sash_detent_flash(t0 + Duration::from_millis(300)), 0.0);
+    }
+
+    #[test]
+    fn snap_to_live_and_pruning_prevent_unbounded_motion_map_growth() {
+        let mut motion = MotionState::default();
+        let id1 = DownloadId::from("dl-1".to_string());
+        let id2 = DownloadId::from("dl-2".to_string());
+        let t0 = Instant::now();
+
+        let snap1 = ProgressSnapshot {
+            state: DownloadState::Active,
+            bytes_downloaded: 750,
+            total_bytes: Some(1000),
+            active_workers: 4,
+            bytes_per_sec: 1000,
+            eta_secs: Some(1),
+            segments: vec![],
+        };
+        let mut live = HashMap::new();
+        live.insert(id1.clone(), snap1.clone());
+        motion.snap_to_live(&live);
+        let restored = motion.sample(&id1, Some(1000), t0);
+        assert_eq!(restored.downloaded_ratio, Some(0.75));
+        assert_eq!(motion.entry_count(), 1);
+
+        // Completing and stepping past the flash prunes the settled entry.
+        motion.on_state_changed(&id1, DownloadState::Completed, Some(1000), t0);
+        let mut t = t0;
+        for _ in 0..40 {
+            t += Duration::from_millis(50);
+            motion.step(t);
+        }
+        assert_eq!(
+            motion.entry_count(),
+            0,
+            "completed entry should be pruned once settled and flash expires"
+        );
+
+        // Paused/missing entries are also pruned immediately.
+        motion.on_progress(&id2, &snap1, t);
+        assert_eq!(motion.entry_count(), 1);
+        motion.on_state_changed(&id2, DownloadState::Paused, Some(1000), t);
+        assert_eq!(motion.entry_count(), 0);
+
+        motion.on_progress(&id2, &snap1, t);
+        let existing: HashSet<&DownloadId> = HashSet::new();
+        motion.prune_missing(&existing);
+        assert_eq!(motion.entry_count(), 0);
     }
 }

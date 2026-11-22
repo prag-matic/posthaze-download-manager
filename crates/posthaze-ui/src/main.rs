@@ -58,11 +58,11 @@ use crate::settings_modal::{
 use crate::theme::*;
 use crate::updater::UpdateState;
 use crate::view_model::{
-    COLLAPSED_INSPECTOR_HEIGHT, DEFAULT_INSPECTOR_HEIGHT, DEFAULT_SIDEBAR_WIDTH, DownloadRowView,
+    COLLAPSED_INSPECTOR_HEIGHT, DEFAULT_INSPECTOR_HEIGHT, DEFAULT_SIDEBAR_WIDTH,
     FilterTab, INSPECTOR_MAGNETIC_SNAP_RADIUS, KeyboardAction, KeyboardContext,
     PrimaryDownloadAction, QueueController, RAIL_SIDEBAR_WIDTH, SIDEBAR_MAGNETIC_SNAP_RADIUS,
-    SortColumn, SortDirection, UiEffect, apply_magnetic_detent, compute_fifo_ranks,
-    compute_layout_profile, derive_display_filename, filter_and_sort_rows_with_query,
+    SortColumn, SortDirection, UiEffect, apply_magnetic_detent,
+    compute_layout_profile, derive_display_filename,
     resolve_inspector_drag, resolve_keyboard_action, resolve_sidebar_drag,
 };
 
@@ -214,7 +214,15 @@ fn main() {
             let bridge_for_win = bridge.clone();
             let startup_settings = initial_settings.clone();
             gpui_kit::open_window(window_options, cx, move |window, cx| {
-                cx.new(|cx| PosthazeApp::new(bridge_for_win, startup_settings, window, cx))
+                cx.new(|cx| {
+                    PosthazeApp::new(
+                        bridge_for_win,
+                        startup_settings,
+                        start_minimized,
+                        window,
+                        cx,
+                    )
+                })
             })
             .expect("failed to open Posthaze window");
 
@@ -263,6 +271,9 @@ pub(crate) struct PosthazeApp {
     refresh_pending: bool,
     last_progress_notify: Instant,
     quitting: bool,
+    window_hidden: bool,
+    last_applied_theme: Option<(String, Option<String>)>,
+    last_zoom_percent: Option<u16>,
     _tray_handle: Option<tray::TrayHandle>,
     _appearance_subscription: Subscription,
     update_state: UpdateState,
@@ -274,6 +285,7 @@ impl PosthazeApp {
     fn new(
         bridge: EngineBridge,
         initial_settings: posthaze_engine::Settings,
+        start_minimized: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -331,10 +343,11 @@ impl PosthazeApp {
             }
         });
 
-        let queue = QueueController {
-            settings: initial_settings,
-            ..Default::default()
-        };
+        let initial_theme_key = (
+            initial_settings.ui_theme.clone(),
+            initial_settings.ui_accent_override.clone(),
+        );
+        let queue = QueueController::with_settings(initial_settings);
 
         let mut app = Self {
             bridge,
@@ -365,6 +378,9 @@ impl PosthazeApp {
             refresh_pending: false,
             last_progress_notify: Instant::now(),
             quitting: false,
+            window_hidden: start_minimized,
+            last_applied_theme: Some(initial_theme_key),
+            last_zoom_percent: None,
             _tray_handle: None,
             _appearance_subscription,
             update_state: UpdateState::Idle,
@@ -378,8 +394,12 @@ impl PosthazeApp {
         let close_entity = cx.entity().downgrade();
         window.on_window_should_close(cx, move |window, cx| {
             let hide_to_tray = close_entity
-                .update(cx, |app, _| {
-                    !app.quitting && app.queue.settings.ui_close_to_tray
+                .update(cx, |app, cx| {
+                    let should_hide = !app.quitting && app.queue.settings.ui_close_to_tray;
+                    if should_hide {
+                        app.set_window_hidden(true, cx);
+                    }
+                    should_hide
                 })
                 .unwrap_or(false);
             if hide_to_tray {
@@ -428,8 +448,22 @@ impl PosthazeApp {
         .detach();
     }
 
+    fn set_window_hidden(&mut self, hidden: bool, cx: &mut Context<Self>) {
+        if self.window_hidden == hidden {
+            return;
+        }
+        self.window_hidden = hidden;
+        if !hidden {
+            self.motion.snap_to_live(&self.queue.live_map);
+            cx.notify();
+        }
+    }
+
     fn apply_snapshot(&mut self, snapshot: EngineSnapshot, cx: &mut Context<Self>) {
         let effect = self.queue.apply_snapshot(snapshot);
+        let existing: std::collections::HashSet<&DownloadId> =
+            self.queue.records.iter().map(|r| &r.id).collect();
+        self.motion.prune_missing(&existing);
         if !self.startup_layout_applied {
             self.startup_layout_applied = true;
             if self.queue.settings.ui_start_sidebar_collapsed {
@@ -443,12 +477,17 @@ impl PosthazeApp {
                 self.start_update_timer(cx);
             }
         }
-        let (theme_id, accent_override) = self.active_theme_selection();
-        sync_theme_and_backdrops(&theme_id, accent_override.as_deref(), cx);
+        let selection = self.active_theme_selection();
+        if self.last_applied_theme.as_ref() != Some(&selection) {
+            self.last_applied_theme = Some(selection.clone());
+            sync_theme_and_backdrops(&selection.0, selection.1.as_deref(), cx);
+        }
         if let Some(effect) = effect {
             self.execute_ui_effects(vec![effect], cx);
         }
-        cx.notify();
+        if !self.window_hidden {
+            cx.notify();
+        }
     }
 
     fn execute_ui_effects(&mut self, effects: Vec<UiEffect>, cx: &mut Context<Self>) {
@@ -495,8 +534,10 @@ impl PosthazeApp {
         cx.spawn(async move |this, cx| {
             if let Ok(Ok((id, segs))) = rx.await {
                 let _ = this.update(cx, |app, cx| {
-                    app.queue.persisted_segments.insert(id, segs);
-                    cx.notify();
+                    app.queue.insert_persisted_segments(id, segs);
+                    if !app.window_hidden {
+                        cx.notify();
+                    }
                 });
             }
         })
@@ -513,12 +554,19 @@ impl PosthazeApp {
             while let Some(action) = rx.recv().await {
                 match action {
                     tray::TrayAction::ToggleShowHide => {
-                        let _ = cx.update_window(window_handle, |_, window, _| {
-                            if is_window_visible(window) && window.is_window_active() {
-                                hide_window_to_tray(window);
-                            } else {
-                                show_window_from_tray(window);
-                            }
+                        let hid = cx
+                            .update_window(window_handle, |_, window, _| {
+                                if is_window_visible(window) && window.is_window_active() {
+                                    hide_window_to_tray(window);
+                                    true
+                                } else {
+                                    show_window_from_tray(window);
+                                    false
+                                }
+                            })
+                            .unwrap_or(false);
+                        let _ = this.update(cx, |app, cx| {
+                            app.set_window_hidden(hid, cx);
                         });
                     }
                     tray::TrayAction::PauseAll => {
@@ -548,6 +596,9 @@ impl PosthazeApp {
                     ipc::PipeCommand::ShowMainWindow => {
                         let _ = cx.update_window(window_handle, |_, window, _| {
                             show_window_from_tray(window);
+                        });
+                        let _ = this.update(cx, |app, cx| {
+                            app.set_window_hidden(false, cx);
                         });
                     }
                     ipc::PipeCommand::Enqueue(req) => {
@@ -586,11 +637,15 @@ impl PosthazeApp {
                 match events.recv().await {
                     Ok(EngineEvent::ProgressUpdated { id, snapshot }) => {
                         let _ = this.update(cx, |app, cx| {
+                            if app.window_hidden {
+                                app.queue.on_progress_updated(id, snapshot);
+                                return;
+                            }
                             let now = Instant::now();
                             if app.motion.on_progress(&id, &snapshot, now) {
                                 app.ensure_motion_loop(cx);
                             }
-                            app.queue.live_map.insert(id, snapshot);
+                            app.queue.on_progress_updated(id, snapshot);
                             if !app.motion_loop_running
                                 && now.duration_since(app.last_progress_notify)
                                     >= Duration::from_millis(33)
@@ -613,15 +668,29 @@ impl PosthazeApp {
                                 .iter()
                                 .find(|r| r.id == id)
                                 .and_then(|r| r.content_length);
-                            if app
-                                .motion
-                                .on_state_changed(&id, state, total_bytes, Instant::now())
+                            if !app.window_hidden
+                                && app
+                                    .motion
+                                    .on_state_changed(&id, state, total_bytes, Instant::now())
                             {
                                 app.ensure_motion_loop(cx);
+                            } else if app.window_hidden
+                                && matches!(
+                                    state,
+                                    DownloadState::Cancelled
+                                        | DownloadState::Paused
+                                        | DownloadState::Failed
+                                )
+                            {
+                                app.motion
+                                    .on_state_changed(&id, state, total_bytes, Instant::now());
                             }
-                            let win_active = cx
-                                .update_window(app.window_handle, |_, w, _| w.is_window_active())
-                                .unwrap_or(false);
+                            let win_active = if app.window_hidden {
+                                false
+                            } else {
+                                cx.update_window(app.window_handle, |_, w, _| w.is_window_active())
+                                    .unwrap_or(false)
+                            };
                             let effects = app.queue.on_engine_event(
                                 EngineEvent::StateChanged {
                                     id,
@@ -638,7 +707,9 @@ impl PosthazeApp {
                         let _ = this.update(cx, |app, cx| {
                             let effects = app.queue.on_engine_event(event, false);
                             app.execute_ui_effects(effects, cx);
-                            cx.notify();
+                            if !app.window_hidden {
+                                cx.notify();
+                            }
                         });
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
@@ -654,7 +725,7 @@ impl PosthazeApp {
     }
 
     fn ensure_motion_loop(&mut self, cx: &mut Context<Self>) {
-        if self.motion_loop_running {
+        if self.motion_loop_running || self.window_hidden {
             return;
         }
         self.motion_loop_running = true;
@@ -665,6 +736,10 @@ impl PosthazeApp {
                     .await;
                 let keep_going = this
                     .update(cx, |app, cx| {
+                        if app.window_hidden {
+                            app.motion_loop_running = false;
+                            return false;
+                        }
                         if let Some(expected_y) = app.motion.current_table_scroll() {
                             let actual_y = {
                                 let inner = app.table_scroll_handle.0.borrow();
@@ -816,9 +891,10 @@ impl PosthazeApp {
             cx.notify();
         }
         let runtime = self.bridge.runtime().clone();
+        let client = self.bridge.http_client();
         let (tx, rx) = tokio::sync::oneshot::channel();
         runtime.spawn(async move {
-            let res = updater::check_latest_release(env!("CARGO_PKG_VERSION")).await;
+            let res = updater::check_latest_release(&client, env!("CARGO_PKG_VERSION")).await;
             let _ = tx.send(res);
         });
         let window_handle = self.window_handle;
@@ -914,14 +990,16 @@ impl PosthazeApp {
         cx.notify();
 
         let runtime = self.bridge.runtime().clone();
+        let client = self.bridge.http_client();
         let (pct_tx, mut pct_rx) = tokio::sync::mpsc::unbounded_channel::<u8>();
         let (done_tx, done_rx) = tokio::sync::oneshot::channel();
         let dl_info = info.clone();
         runtime.spawn(async move {
-            let res = updater::download_and_verify_update(&dl_info, &keys, move |pct| {
-                let _ = pct_tx.send(pct);
-            })
-            .await;
+            let res =
+                updater::download_and_verify_update(&client, &dl_info, &keys, move |pct| {
+                    let _ = pct_tx.send(pct);
+                })
+                .await;
             let _ = done_tx.send(res);
         });
 
@@ -1460,8 +1538,12 @@ impl PosthazeApp {
 
 impl Render for PosthazeApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let zoom_rem = 16.0 * (self.queue.settings.ui_zoom_percent.clamp(80, 150) as f32) / 100.0;
-        window.set_rem_size(px(zoom_rem));
+        let zoom_percent = self.queue.settings.ui_zoom_percent.clamp(80, 150);
+        if self.last_zoom_percent != Some(zoom_percent) {
+            self.last_zoom_percent = Some(zoom_percent);
+            let zoom_rem = 16.0 * (zoom_percent as f32) / 100.0;
+            window.set_rem_size(px(zoom_rem));
+        }
         let viewport = window.viewport_size();
         let target_left_width = if self.sidebar_collapsed {
             RAIL_SIDEBAR_WIDTH
@@ -1486,46 +1568,34 @@ impl Render for PosthazeApp {
             .current_inspector_height(target_inspector_height);
         let render_inspector_collapsed = self.inspector_collapsed
             && (animated_inspector_height - COLLAPSED_INSPECTOR_HEIGHT).abs() <= 1.0;
-        let ranks = compute_fifo_ranks(&self.queue.records, &self.queue.live_map);
-        let all_rows: Vec<DownloadRowView> = self
-            .queue
-            .records
-            .iter()
-            .map(|rec| {
-                DownloadRowView::from_record(
-                    rec,
-                    self.queue.live_map.get(&rec.id),
-                    self.queue.segment_counts.get(&rec.id).copied().unwrap_or(0),
-                    ranks.get(&rec.id).copied(),
-                )
-            })
-            .collect();
-
-        let total_speed: u64 = all_rows
-            .iter()
-            .filter(|r| r.state == DownloadState::Active)
-            .map(|r| r.bytes_per_sec)
-            .sum();
-        let active_slots = all_rows
-            .iter()
-            .filter(|r| matches!(r.state, DownloadState::Active | DownloadState::Probing))
-            .count();
 
         let search_query = self.search_input.read(cx).value();
-        let visible_rows = filter_and_sort_rows_with_query(
-            &all_rows,
+        self.queue.ensure_projection(
             self.filter,
             &search_query,
             self.sort_col,
             self.sort_dir,
         );
-        let is_empty_queue = all_rows.is_empty();
+        let total_speed: u64 = self
+            .queue
+            .all_rows()
+            .iter()
+            .filter(|r| r.state == DownloadState::Active)
+            .map(|r| r.bytes_per_sec)
+            .sum();
+        let active_slots = self
+            .queue
+            .all_rows()
+            .iter()
+            .filter(|r| matches!(r.state, DownloadState::Active | DownloadState::Probing))
+            .count();
+        let is_empty_queue = self.queue.all_rows().is_empty();
 
         let selected_row = self
             .queue
             .selected_id
             .as_ref()
-            .and_then(|id| all_rows.iter().find(|r| &r.id == id));
+            .and_then(|id| self.queue.row_by_id(id));
         let selected_segments: Vec<SegmentProgress> = self
             .queue
             .selected_id
@@ -1660,7 +1730,7 @@ impl Render for PosthazeApp {
         });
 
         let context_menu_overlay = self.context_menu.as_ref().and_then(|menu| {
-            let row = all_rows.iter().find(|r| r.id == menu.download_id)?;
+            let row = self.queue.row_by_id(&menu.download_id)?;
             let e_close = cx.entity().clone();
             let e_action = cx.entity().clone();
             Some(render_context_menu(
@@ -1685,10 +1755,9 @@ impl Render for PosthazeApp {
         let resizing_sidebar = matches!(active_resize, Some(ActiveResize::Sidebar { .. }));
         let resizing_inspector = matches!(active_resize, Some(ActiveResize::Inspector { .. }));
 
-        let visible_ids: std::sync::Arc<Vec<DownloadId>> =
-            std::sync::Arc::new(visible_rows.iter().map(|r| r.id.clone()).collect());
+        let visible_ids = self.queue.visible_ids();
         let visible_ids_kbd = visible_ids.clone();
-        let total_count = all_rows.len();
+        let total_count = self.queue.all_rows().len();
 
         div()
             .relative()
@@ -1895,7 +1964,7 @@ impl Render for PosthazeApp {
                     .flex()
                     .overflow_hidden()
                     // Left Navigation & Filter Rail (52px icon rail when collapsed, 180-380px when expanded)
-                    .child(self.render_sidebar(&all_rows, total_speed, active_slots, cx))
+                    .child(self.render_sidebar(self.queue.all_rows(), total_speed, active_slots, cx))
                     .child(
                         div()
                             .id("sidebar-resize")
@@ -2052,7 +2121,6 @@ impl Render for PosthazeApp {
                                 )
                             })
                             .child(self.render_table(
-                                visible_rows,
                                 visible_ids,
                                 is_empty_queue,
                                 profile,

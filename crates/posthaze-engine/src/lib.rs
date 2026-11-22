@@ -73,10 +73,18 @@ impl DownloadHandle {
     }
 }
 
+#[derive(Debug, Clone)]
+struct HttpClientState {
+    client: reqwest::Client,
+    proxy_mode: ProxyMode,
+    proxy_url: String,
+    rebuilds: u64,
+}
+
 /// Headless HTTP/HTTPS download engine.
 #[derive(Debug, Clone)]
 pub struct DownloadEngine {
-    client: Arc<std::sync::RwLock<reqwest::Client>>,
+    client: Arc<std::sync::RwLock<HttpClientState>>,
     limiter: Arc<BandwidthLimiter>,
     store: Option<DownloadStore>,
     active: Arc<Mutex<HashMap<DownloadId, ActiveControl>>>,
@@ -93,11 +101,27 @@ impl Default for DownloadEngine {
 
 impl DownloadEngine {
     fn with_store(store: Option<DownloadStore>, settings: Settings) -> Self {
-        let (event_tx, _) = broadcast::channel(1024);
-        let client = build_http_client(settings.proxy_mode, &settings.proxy_url)
-            .unwrap_or_else(|_| build_http_client(ProxyMode::System, "").unwrap());
+        let (event_tx, _) = broadcast::channel(256);
+        let (client, proxy_mode, proxy_url) =
+            match build_http_client(settings.proxy_mode, &settings.proxy_url) {
+                Ok(client) => (
+                    client,
+                    settings.proxy_mode,
+                    settings.proxy_url.trim().to_string(),
+                ),
+                Err(_) => (
+                    build_http_client(ProxyMode::System, "").unwrap(),
+                    ProxyMode::System,
+                    String::new(),
+                ),
+            };
         Self {
-            client: Arc::new(std::sync::RwLock::new(client)),
+            client: Arc::new(std::sync::RwLock::new(HttpClientState {
+                client,
+                proxy_mode,
+                proxy_url,
+                rebuilds: 0,
+            })),
             limiter: Arc::new(BandwidthLimiter::new(settings.download_speed_limit_kib)),
             store,
             active: Arc::new(Mutex::new(HashMap::new())),
@@ -107,11 +131,22 @@ impl DownloadEngine {
         }
     }
 
-    fn http_client(&self) -> reqwest::Client {
+    /// Returns a clone of the engine's currently active, proxy-configured HTTP client.
+    pub fn http_client(&self) -> reqwest::Client {
         self.client
             .read()
             .expect("http client rwlock poisoned")
+            .client
             .clone()
+    }
+
+    /// Returns how many times the shared HTTP client has been rebuilt due to proxy changes.
+    #[doc(hidden)]
+    pub fn http_client_rebuild_count(&self) -> u64 {
+        self.client
+            .read()
+            .expect("http client rwlock poisoned")
+            .rebuilds
     }
 
     /// Constructs a new ephemeral [`DownloadEngine`] without SQLite persistence.
@@ -468,14 +503,29 @@ impl DownloadEngine {
     /// Validates and persists updated [`Settings`] for this engine.
     pub async fn update_settings(&self, settings: Settings) -> Result<(), EngineError> {
         settings.validate()?;
-        let rebuilt_client = build_http_client(settings.proxy_mode, &settings.proxy_url)?;
+        let normalized_proxy_url = settings.proxy_url.trim().to_string();
+        let proxy_changed = {
+            let state = self.client.read().expect("http client rwlock poisoned");
+            state.proxy_mode != settings.proxy_mode || state.proxy_url != normalized_proxy_url
+        };
+        let rebuilt_client = if proxy_changed {
+            Some(build_http_client(settings.proxy_mode, &normalized_proxy_url)?)
+        } else {
+            None
+        };
         match &self.store {
             Some(store) => store.update_settings(&settings).await?,
             None => {
                 *self.ephemeral_settings.lock().await = settings.clone();
             }
         }
-        *self.client.write().expect("http client rwlock poisoned") = rebuilt_client;
+        if let Some(new_client) = rebuilt_client {
+            let mut state = self.client.write().expect("http client rwlock poisoned");
+            state.client = new_client;
+            state.proxy_mode = settings.proxy_mode;
+            state.proxy_url = normalized_proxy_url;
+            state.rebuilds = state.rebuilds.saturating_add(1);
+        }
         self.limiter.set_limit_kib(settings.download_speed_limit_kib);
         self.queue.set_max_concurrent(settings.max_concurrent_downloads);
         let _ = self.event_tx.send(EngineEvent::SettingsUpdated(settings));
@@ -624,6 +674,8 @@ fn build_http_client(proxy_mode: ProxyMode, proxy_url: &str) -> Result<reqwest::
     let mut builder = reqwest::Client::builder()
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
         .connect_timeout(Duration::from_secs(15))
+        .pool_max_idle_per_host(6)
+        .pool_idle_timeout(Duration::from_secs(30))
         .tcp_nodelay(true);
 
     match proxy_mode {

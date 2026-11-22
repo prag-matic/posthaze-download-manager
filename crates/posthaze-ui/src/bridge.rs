@@ -72,7 +72,13 @@ pub struct EngineBridge {
 impl EngineBridge {
     /// Starts the dedicated Tokio runtime and opens [`DownloadEngine`] at `db_path`.
     pub fn open(db_path: PathBuf) -> Result<Self, EngineError> {
+        let worker_threads = std::thread::available_parallelism()
+            .map(|n| n.get().clamp(2, 4))
+            .unwrap_or(2);
         let runtime = Builder::new_multi_thread()
+            .worker_threads(worker_threads)
+            .max_blocking_threads(16)
+            .thread_keep_alive(std::time::Duration::from_secs(5))
             .enable_all()
             .thread_name("posthaze-engine-rt")
             .build()
@@ -92,6 +98,11 @@ impl EngineBridge {
     /// Returns a handle to the background Tokio runtime.
     pub fn runtime(&self) -> &Arc<Runtime> {
         &self.runtime
+    }
+
+    /// Returns a clone of the engine's proxy-configured HTTP client.
+    pub fn http_client(&self) -> reqwest::Client {
+        self.engine.http_client()
     }
 
     /// Reads persisted [`Settings`] synchronously on the engine Tokio runtime.

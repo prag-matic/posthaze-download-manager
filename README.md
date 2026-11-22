@@ -18,6 +18,7 @@ A Windows-native, multi-connection HTTP/HTTPS download manager built with a deco
 - [Domain Glossary](GLOSSARY.md)
 - [Product Context](PRODUCT.md)
 - [Benchmarking & Stress-Testing Guide](docs/benchmarking.md)
+- [RAM Usage & Performance Optimization Results](docs/benchmarks/ram-and-performance-optimization.md) — Bounded `Chunk` buffer pool, capped Tokio runtime, zero-render tray mode, memoized `Queue` table, and verified benchmarks
 
 ## Quick Start
 

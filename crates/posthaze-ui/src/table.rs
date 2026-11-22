@@ -504,13 +504,13 @@ impl PosthazeApp {
 
     pub(crate) fn render_table(
         &self,
-        rows: Vec<DownloadRowView>,
         visible_ids: Arc<Vec<DownloadId>>,
         is_empty_queue: bool,
         profile: LayoutProfile,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        if rows.is_empty() {
+        let row_count = self.queue.visible_indices().len();
+        if row_count == 0 {
             return div()
                 .flex_1()
                 .flex()
@@ -604,12 +604,11 @@ impl PosthazeApp {
                 .into_any_element();
         }
 
-        let visible_rows = Arc::new(rows);
-        let row_count = visible_rows.len();
         let entity = cx.entity().clone();
         let scroll_handle = self.table_scroll_handle.clone();
         let scrubber = render_table_scrubber(
-            &visible_rows,
+            self.queue.all_rows(),
+            self.queue.visible_indices(),
             self.queue.selected_id.as_ref(),
             self.queue.settings.ui_show_scrollbar_minimap,
             &scroll_handle,
@@ -695,14 +694,12 @@ impl PosthazeApp {
                         uniform_list("downloads-table-scroll", row_count, move |range, _window, cx| {
                             entity.update(cx, |app, cx| {
                                 range
-                                    .map(|idx| {
-                                        app.render_row(
-                                            &visible_rows[idx],
-                                            visible_ids.clone(),
-                                            profile,
-                                            cx,
+                                    .filter_map(|idx| {
+                                        let row = app.queue.visible_row(idx)?;
+                                        Some(
+                                            app.render_row(row, visible_ids.clone(), profile, cx)
+                                                .into_any_element(),
                                         )
-                                        .into_any_element()
                                     })
                                     .collect::<Vec<_>>()
                             })
@@ -1231,17 +1228,19 @@ enum MinimapMark {
 }
 
 fn render_table_scrubber(
-    rows: &[DownloadRowView],
+    all_rows: &[DownloadRowView],
+    visible_indices: &[usize],
     selected_id: Option<&DownloadId>,
     show_minimap: bool,
     scroll_handle: &UniformListScrollHandle,
 ) -> impl IntoElement + use<> {
-    let row_count = rows.len();
+    let row_count = visible_indices.len();
     let mut buckets = [MinimapMark::None; MINIMAP_BUCKETS];
     let mut selected_ratio = None;
 
     if show_minimap && row_count > 0 {
-        for (idx, row) in rows.iter().enumerate() {
+        for (idx, &row_idx) in visible_indices.iter().enumerate() {
+            let row = &all_rows[row_idx];
             let bucket = (idx * MINIMAP_BUCKETS) / row_count;
             match row.state {
                 DownloadState::Failed => buckets[bucket] = MinimapMark::Failed,

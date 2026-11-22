@@ -2,7 +2,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use bytes::BytesMut;
 use futures_util::StreamExt;
 use reqwest::StatusCode;
 use reqwest::header::RANGE;
@@ -13,7 +12,7 @@ use crate::model::SegmentCheckpoint;
 use crate::probe::apply_custom_headers;
 use crate::store::DownloadStore;
 use crate::throttle::BandwidthLimiter;
-use crate::writer::PartFileWriter;
+use crate::writer::{PartFileWriter, PooledBuffer};
 use crate::{DownloadId, EngineError};
 
 pub const MIN_SEGMENT_SIZE: u64 = 2 * 1024 * 1024;
@@ -607,7 +606,7 @@ async fn run_segment_attempt(
 
     let mut cur = attempt_start;
     let mut write_offset = attempt_start;
-    let mut buffer = BytesMut::with_capacity(CHUNK_BUFFER_SIZE * 2);
+    let mut buffer: Option<PooledBuffer> = None;
     let mut stream = resp.bytes_stream();
     let mut stream_err: Option<EngineError> = None;
 
@@ -646,10 +645,13 @@ async fn run_segment_attempt(
         }
 
         let slice = if chunk.len() > remaining {
-            chunk.slice(..remaining)
+            &chunk[..remaining]
         } else {
-            chunk
+            &chunk[..]
         };
+        if slice.is_empty() {
+            continue;
+        }
 
         let len = slice.len() as u64;
         if let Some(lim) = tctx.limiter {
@@ -658,25 +660,14 @@ async fn run_segment_attempt(
         cur += len;
         seg.cursor.store(cur, Ordering::Release);
         downloaded.fetch_add(len, Ordering::Relaxed);
-        buffer.extend_from_slice(&slice);
-
-        if buffer.len() >= CHUNK_BUFFER_SIZE {
-            let block = buffer.split().freeze();
-            buffer.reserve(CHUNK_BUFFER_SIZE);
-            let block_len = block.len() as u64;
-            writer.write_segment_at(seg.id, write_offset, block).await?;
-            write_offset += block_len;
-        }
+        append_and_flush_chunks(writer, seg.id, &mut write_offset, &mut buffer, slice).await?;
 
         if cur >= seg.end.load(Ordering::Acquire) {
             break;
         }
     }
 
-    if !buffer.is_empty() {
-        let tail = buffer.freeze();
-        writer.write_segment_at(seg.id, write_offset, tail).await?;
-    }
+    flush_tail_chunk(writer, seg.id, write_offset, &mut buffer).await?;
 
     if let Some(err) = stream_err {
         return Err(err);
@@ -739,6 +730,49 @@ fn backoff_with_jitter(retry_index: u32) -> Duration {
     Duration::from_millis(exp_ms + jitter_ms)
 }
 
+async fn append_and_flush_chunks(
+    writer: &PartFileWriter,
+    segment_index: usize,
+    write_offset: &mut u64,
+    buffer: &mut Option<PooledBuffer>,
+    data: &[u8],
+) -> Result<(), EngineError> {
+    let mut offset_in_slice = 0;
+    while offset_in_slice < data.len() {
+        let active = buffer.get_or_insert_with(|| writer.acquire_buffer());
+        let space = CHUNK_BUFFER_SIZE - active.len();
+        let take = (data.len() - offset_in_slice).min(space);
+        active.extend_from_slice(&data[offset_in_slice..offset_in_slice + take]);
+        offset_in_slice += take;
+
+        if active.len() == CHUNK_BUFFER_SIZE {
+            let full = buffer.take().expect("buffer just populated");
+            let block_len = full.len() as u64;
+            writer
+                .write_segment_pooled(segment_index, *write_offset, full)
+                .await?;
+            *write_offset += block_len;
+        }
+    }
+    Ok(())
+}
+
+async fn flush_tail_chunk(
+    writer: &PartFileWriter,
+    segment_index: usize,
+    write_offset: u64,
+    buffer: &mut Option<PooledBuffer>,
+) -> Result<(), EngineError> {
+    if let Some(tail) = buffer.take()
+        && !tail.is_empty()
+    {
+        writer
+            .write_segment_pooled(segment_index, write_offset, tail)
+            .await?;
+    }
+    Ok(())
+}
+
 async fn stream_unbounded_to_writer(
     resp: reqwest::Response,
     limiter: Option<&BandwidthLimiter>,
@@ -748,7 +782,7 @@ async fn stream_unbounded_to_writer(
 ) -> Result<u64, EngineError> {
     let mut written = 0u64;
     let mut write_offset = 0u64;
-    let mut buffer = BytesMut::with_capacity(CHUNK_BUFFER_SIZE * 2);
+    let mut buffer: Option<PooledBuffer> = None;
     let mut stream = resp.bytes_stream();
     let mut interrupted: Option<EngineError> = None;
 
@@ -773,31 +807,86 @@ async fn stream_unbounded_to_writer(
         };
 
         let chunk = item?;
+        if chunk.is_empty() {
+            continue;
+        }
         let len = chunk.len() as u64;
         if let Some(lim) = limiter {
             lim.acquire(len).await;
         }
         written += len;
         downloaded.fetch_add(len, Ordering::Relaxed);
-        buffer.extend_from_slice(&chunk);
-
-        if buffer.len() >= CHUNK_BUFFER_SIZE {
-            let block = buffer.split().freeze();
-            buffer.reserve(CHUNK_BUFFER_SIZE);
-            let block_len = block.len() as u64;
-            writer.write_at(write_offset, block).await?;
-            write_offset += block_len;
-        }
+        append_and_flush_chunks(writer, 0, &mut write_offset, &mut buffer, &chunk).await?;
     }
 
-    if !buffer.is_empty() {
-        let tail = buffer.freeze();
-        writer.write_at(write_offset, tail).await?;
-    }
+    flush_tail_chunk(writer, 0, write_offset, &mut buffer).await?;
 
     if let Some(err) = interrupted {
         return Err(err);
     }
 
     Ok(written)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn append_and_flush_chunks_caps_buffer_capacity_and_writes_exact_bytes() {
+        let dir = TempDir::new().unwrap();
+        let part_path = dir.path().join("chunk_cap.bin.part");
+        let final_path = dir.path().join("chunk_cap.bin");
+
+        // Construct odd-sized slices including empty slices and an oversized (> CHUNK_BUFFER_SIZE) slice.
+        let total = CHUNK_BUFFER_SIZE * 3 + 77_777;
+        let payload: Vec<u8> = (0..total).map(|i| ((i * 17 + 3) % 251) as u8).collect();
+        let expected_hash = blake3::hash(&payload);
+
+        let writer = PartFileWriter::spawn(part_path, Some(payload.len() as u64)).unwrap();
+        let mut buffer: Option<PooledBuffer> = None;
+        let mut write_offset = 0u64;
+
+        let slice_sizes = [
+            0usize,
+            1,
+            19_999,
+            CHUNK_BUFFER_SIZE - 10_000,
+            0,
+            CHUNK_BUFFER_SIZE + 123_456, // oversized single HTTP frame
+            333_333,
+        ];
+        let mut pos = 0usize;
+        let mut idx = 0usize;
+        while pos < payload.len() {
+            let step = slice_sizes[idx % slice_sizes.len()].min(payload.len() - pos);
+            idx += 1;
+            let slice = &payload[pos..pos + step];
+            pos += step;
+
+            append_and_flush_chunks(&writer, 0, &mut write_offset, &mut buffer, slice)
+                .await
+                .unwrap();
+
+            if let Some(active) = &buffer {
+                assert!(
+                    active.capacity() <= CHUNK_BUFFER_SIZE,
+                    "pooled buffer capacity {} exceeded CHUNK_BUFFER_SIZE {}",
+                    active.capacity(),
+                    CHUNK_BUFFER_SIZE
+                );
+                assert!(active.len() < CHUNK_BUFFER_SIZE);
+            }
+        }
+
+        flush_tail_chunk(&writer, 0, write_offset, &mut buffer)
+            .await
+            .unwrap();
+        assert!(buffer.is_none());
+
+        writer.finish(&final_path).await.unwrap();
+        let actual = std::fs::read(&final_path).unwrap();
+        assert_eq!(blake3::hash(&actual), expected_hash);
+    }
 }

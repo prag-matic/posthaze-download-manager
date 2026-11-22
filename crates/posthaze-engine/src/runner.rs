@@ -23,7 +23,7 @@ use crate::transfer::{
 use crate::writer::PartFileWriter;
 use crate::{DownloadHandle, disambiguate_output_path, make_part_path, remove_file_if_exists};
 
-const PROGRESS_EMIT_INTERVAL: Duration = Duration::from_millis(50);
+const PROGRESS_EMIT_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Control handle stored in `DownloadEngine::active` for a queued or active `Download`.
 #[derive(Debug, Clone)]
@@ -132,6 +132,7 @@ pub(crate) async fn spawn_queued_download(
 
     let join_handle = tokio::spawn(async move {
         let mut control_rx = control_rx;
+        let store_for_shrink = ctx.store.clone();
         let res = match ctx.queue.wait_for_slot(&task_id, &mut control_rx).await {
             Ok(_slot) => {
                 let res = execute_download(
@@ -144,12 +145,23 @@ pub(crate) async fn spawn_queued_download(
                     control_rx,
                 )
                 .await;
-                ctx.active.lock().await.remove(&task_id);
+                let now_idle = {
+                    let mut active = ctx.active.lock().await;
+                    active.remove(&task_id);
+                    active.is_empty()
+                };
+                if now_idle && let Some(store) = &store_for_shrink {
+                    store.shrink_memory().await;
+                }
                 res
             }
             Err(err) => {
-                ctx.active.lock().await.remove(&task_id);
-                finalize_queued_interruption(
+                let now_idle = {
+                    let mut active = ctx.active.lock().await;
+                    active.remove(&task_id);
+                    active.is_empty()
+                };
+                let res = finalize_queued_interruption(
                     ctx.store.as_ref(),
                     &task_id,
                     queued_part_path.as_deref(),
@@ -158,7 +170,11 @@ pub(crate) async fn spawn_queued_download(
                     &sink,
                     err,
                 )
-                .await
+                .await;
+                if now_idle && let Some(store) = &store_for_shrink {
+                    store.shrink_memory().await;
+                }
+                res
             }
         };
         let _ = ctx.event_tx.send(EngineEvent::QueueUpdated);
@@ -938,6 +954,7 @@ fn spawn_progress_reporter(
         let mut last_sample_time = Instant::now();
         let mut last_sample_bytes = initial_bytes;
         let mut ema_bps: f64 = 0.0;
+        let mut last_emitted: Option<(u64, usize, u64)> = None;
 
         loop {
             interval.tick().await;
@@ -956,6 +973,18 @@ fn spawn_progress_reporter(
                 last_sample_bytes = bytes;
             }
             let bytes_per_sec = ema_bps.round() as u64;
+            let seg_count = {
+                let live_arc = live_segments_slot.lock().unwrap().clone();
+                live_arc
+                    .map(|live| live.lock().unwrap().len())
+                    .unwrap_or(1)
+            };
+            let current_key = (bytes, seg_count, bytes_per_sec);
+            if last_emitted == Some(current_key) {
+                continue;
+            }
+            last_emitted = Some(current_key);
+
             let eta_secs = total_bytes.and_then(|total| {
                 if bytes >= total {
                     Some(0)

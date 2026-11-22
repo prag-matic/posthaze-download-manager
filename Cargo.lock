@@ -5641,7 +5641,7 @@ dependencies = [
 
 [[package]]
 name = "posthaze-cli"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "clap",
  "posthaze-engine",
@@ -5653,7 +5653,7 @@ dependencies = [
 
 [[package]]
 name = "posthaze-engine"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "bytes",
@@ -5671,7 +5671,7 @@ dependencies = [
 
 [[package]]
 name = "posthaze-keytool"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
@@ -5680,9 +5680,10 @@ dependencies = [
 
 [[package]]
 name = "posthaze-ui"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
+ "bytes",
  "ed25519-dalek",
  "futures-util",
  "gpui-kit",
@@ -7727,7 +7728,6 @@ dependencies = [
  "bytes",
  "libc",
  "mio",
- "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
  "socket2",

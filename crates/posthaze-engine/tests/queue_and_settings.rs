@@ -386,3 +386,39 @@ async fn open_reconciles_stale_queued_downloads_to_paused() {
     let outcome = resumed.wait().await.unwrap();
     assert_eq!(std::fs::read(&outcome.final_path).unwrap(), payload);
 }
+
+#[tokio::test]
+async fn update_settings_rebuilds_http_client_only_when_proxy_changes() {
+    let engine = DownloadEngine::in_memory().await.unwrap();
+    assert_eq!(engine.http_client_rebuild_count(), 0);
+
+    let mut settings = engine.get_settings().await.unwrap();
+    settings.ui_theme = "dark".to_string();
+    settings.download_speed_limit_kib = 512;
+    engine.update_settings(settings.clone()).await.unwrap();
+    assert_eq!(
+        engine.http_client_rebuild_count(),
+        0,
+        "non-proxy settings update must not rebuild reqwest::Client"
+    );
+
+    settings.proxy_mode = posthaze_engine::ProxyMode::None;
+    engine.update_settings(settings.clone()).await.unwrap();
+    assert_eq!(engine.http_client_rebuild_count(), 1);
+
+    // Repeating same proxy mode with unrelated changes must not rebuild again.
+    settings.ui_zoom_percent = 110;
+    engine.update_settings(settings.clone()).await.unwrap();
+    assert_eq!(engine.http_client_rebuild_count(), 1);
+
+    // Switching to Manual proxy with valid URL triggers hot-swap rebuild.
+    settings.proxy_mode = posthaze_engine::ProxyMode::Manual;
+    settings.proxy_url = "http://127.0.0.1:8888".to_string();
+    engine.update_settings(settings.clone()).await.unwrap();
+    assert_eq!(engine.http_client_rebuild_count(), 2);
+
+    // Whitespace-equivalent proxy URL does not rebuild.
+    settings.proxy_url = "  http://127.0.0.1:8888  ".to_string();
+    engine.update_settings(settings).await.unwrap();
+    assert_eq!(engine.http_client_rebuild_count(), 2);
+}

@@ -72,43 +72,31 @@ pub(crate) fn init_tray() -> Option<(TrayHandle, mpsc::UnboundedReceiver<TrayAct
     let (tx, rx) = mpsc::unbounded_channel();
 
     let tx_menu = tx.clone();
-    std::thread::Builder::new()
-        .name("posthaze-tray-events".to_string())
-        .spawn(move || {
-            let menu_rx = MenuEvent::receiver();
-            let tray_rx = TrayIconEvent::receiver();
-            loop {
-                while let Ok(ev) = menu_rx.try_recv() {
-                    let action = if ev.id == show_id {
-                        Some(TrayAction::ToggleShowHide)
-                    } else if ev.id == pause_id {
-                        Some(TrayAction::PauseAll)
-                    } else if ev.id == quit_id {
-                        Some(TrayAction::Quit)
-                    } else {
-                        None
-                    };
-                    if let Some(act) = action
-                        && tx_menu.send(act).is_err()
-                    {
-                        return;
-                    }
-                }
-                while let Ok(ev) = tray_rx.try_recv() {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = ev
-                        && tx_menu.send(TrayAction::ToggleShowHide).is_err()
-                    {
-                        return;
-                    }
-                }
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-        })
-        .ok();
+    MenuEvent::set_event_handler(Some(move |ev: MenuEvent| {
+        let action = if ev.id == show_id {
+            Some(TrayAction::ToggleShowHide)
+        } else if ev.id == pause_id {
+            Some(TrayAction::PauseAll)
+        } else if ev.id == quit_id {
+            Some(TrayAction::Quit)
+        } else {
+            None
+        };
+        if let Some(act) = action {
+            let _ = tx_menu.send(act);
+        }
+    }));
+
+    TrayIconEvent::set_event_handler(Some(move |ev: TrayIconEvent| {
+        if let TrayIconEvent::Click {
+            button: MouseButton::Left,
+            button_state: MouseButtonState::Up,
+            ..
+        } = ev
+        {
+            let _ = tx.send(TrayAction::ToggleShowHide);
+        }
+    }));
 
     Some((TrayHandle { _tray: tray }, rx))
 }

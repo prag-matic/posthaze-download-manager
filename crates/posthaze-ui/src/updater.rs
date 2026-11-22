@@ -202,32 +202,15 @@ pub(crate) fn parse_release(
     }))
 }
 
-/// Verifies a downloaded installer against both `SHA256SUMS.txt` and an Ed25519 signature.
-pub(crate) fn verify_download(
+/// Verifies an Ed25519 signature over `setup_path` against any key in `keys`.
+fn verify_ed25519_file(
     setup_path: &Path,
-    setup_name: &str,
     sig_b64: &str,
-    sums_text: &str,
     keys: &[VerifyingKey],
 ) -> Result<(), String> {
     if keys.is_empty() {
         return Err("No update verification keys configured".to_string());
     }
-
-    let payload = std::fs::read(setup_path)
-        .map_err(|err| format!("Could not read downloaded installer: {err}"))?;
-
-    // 1. Verify SHA-256 against SHA256SUMS.txt
-    let expected_hash = extract_expected_sha256(sums_text, setup_name)
-        .ok_or_else(|| format!("SHA256SUMS.txt does not list '{setup_name}'"))?;
-    let actual_hash = format!("{:x}", Sha256::digest(&payload));
-    if actual_hash != expected_hash {
-        return Err(format!(
-            "SHA-256 mismatch for {setup_name} (expected {expected_hash}, got {actual_hash})"
-        ));
-    }
-
-    // 2. Verify Ed25519 signature against any accepted public key
     let sig_bytes = BASE64
         .decode(sig_b64.trim())
         .map_err(|err| format!("Invalid base64 signature: {err}"))?;
@@ -236,12 +219,66 @@ pub(crate) fn verify_download(
         .map_err(|_| "Ed25519 signature must be 64 bytes".to_string())?;
     let signature = Signature::from_bytes(&sig_arr);
 
+    let payload = std::fs::read(setup_path)
+        .map_err(|err| format!("Could not read downloaded installer: {err}"))?;
     let verified = keys.iter().any(|k| k.verify(&payload, &signature).is_ok());
     if !verified {
         return Err("Ed25519 signature verification failed for downloaded installer".to_string());
     }
-
     Ok(())
+}
+
+/// Verifies a pre-hashed downloaded installer against `SHA256SUMS.txt` and an Ed25519 signature.
+fn verify_prehashed_download(
+    setup_path: &Path,
+    setup_name: &str,
+    actual_sha256: &str,
+    sig_b64: &str,
+    sums_text: &str,
+    keys: &[VerifyingKey],
+) -> Result<(), String> {
+    if keys.is_empty() {
+        return Err("No update verification keys configured".to_string());
+    }
+    let expected_hash = extract_expected_sha256(sums_text, setup_name)
+        .ok_or_else(|| format!("SHA256SUMS.txt does not list '{setup_name}'"))?;
+    if actual_sha256 != expected_hash {
+        return Err(format!(
+            "SHA-256 mismatch for {setup_name} (expected {expected_hash}, got {actual_sha256})"
+        ));
+    }
+    verify_ed25519_file(setup_path, sig_b64, keys)
+}
+
+/// Verifies a downloaded installer against both `SHA256SUMS.txt` and an Ed25519 signature.
+#[cfg(test)]
+pub(crate) fn verify_download(
+    setup_path: &Path,
+    setup_name: &str,
+    sig_b64: &str,
+    sums_text: &str,
+    keys: &[VerifyingKey],
+) -> Result<(), String> {
+    use std::io::Read as _;
+
+    if keys.is_empty() {
+        return Err("No update verification keys configured".to_string());
+    }
+    let mut file = std::fs::File::open(setup_path)
+        .map_err(|err| format!("Could not read downloaded installer: {err}"))?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = file
+            .read(&mut buf)
+            .map_err(|err| format!("Could not read downloaded installer: {err}"))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    let actual_hash = format!("{:x}", hasher.finalize());
+    verify_prehashed_download(setup_path, setup_name, &actual_hash, sig_b64, sums_text, keys)
 }
 
 fn extract_expected_sha256(sums_text: &str, filename: &str) -> Option<String> {
@@ -260,13 +297,7 @@ fn extract_expected_sha256(sums_text: &str, filename: &str) -> Option<String> {
     None
 }
 
-fn build_http_client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
-        .user_agent(concat!("posthaze-updater/", env!("CARGO_PKG_VERSION")))
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|err| format!("Could not initialize HTTP client: {err}"))
-}
+const UPDATER_USER_AGENT: &str = concat!("posthaze-updater/", env!("CARGO_PKG_VERSION"));
 
 fn resolve_release_endpoint() -> (String, bool) {
     #[cfg(debug_assertions)]
@@ -279,23 +310,26 @@ fn resolve_release_endpoint() -> (String, bool) {
     (GITHUB_LATEST_RELEASE_URL.to_string(), true)
 }
 
-/// Checks GitHub Releases for a version newer than `current_version`.
+/// Checks GitHub Releases for a version newer than `current_version` using the shared HTTP client.
 pub(crate) async fn check_latest_release(
+    client: &reqwest::Client,
     current_version: &str,
 ) -> Result<Option<ReleaseInfo>, String> {
     let (url, enforce_prefix) = resolve_release_endpoint();
-    check_release_from_url(&url, current_version, enforce_prefix).await
+    check_release_from_url(client, &url, current_version, enforce_prefix).await
 }
 
 async fn check_release_from_url(
+    client: &reqwest::Client,
     url: &str,
     current_version: &str,
     enforce_prefix: bool,
 ) -> Result<Option<ReleaseInfo>, String> {
-    let client = build_http_client()?;
     let resp = client
         .get(url)
+        .header(reqwest::header::USER_AGENT, UPDATER_USER_AGENT)
         .header("Accept", "application/vnd.github+json")
+        .timeout(Duration::from_secs(30))
         .send()
         .await
         .map_err(|err| format!("Update check failed: {err}"))?;
@@ -321,9 +355,11 @@ async fn check_release_from_url(
     }
 }
 
-/// Downloads the installer, `.sig`, and `SHA256SUMS.txt` into a fresh temp directory,
-/// verifies both SHA-256 and Ed25519 signature, and returns the verified installer path.
+/// Downloads the installer, `.sig`, and `SHA256SUMS.txt` into a fresh temp directory using the
+/// shared proxy-aware HTTP client, streams writes + SHA-256 hashing on a blocking thread, verifies
+/// the Ed25519 signature off async workers, and returns the verified installer path.
 pub(crate) async fn download_and_verify_update<F>(
+    client: &reqwest::Client,
     info: &ReleaseInfo,
     keys: &[VerifyingKey],
     on_progress: F,
@@ -331,28 +367,29 @@ pub(crate) async fn download_and_verify_update<F>(
 where
     F: Fn(u8),
 {
-    let client = reqwest::Client::builder()
-        .user_agent(concat!("posthaze-updater/", env!("CARGO_PKG_VERSION")))
-        .connect_timeout(Duration::from_secs(20))
-        .build()
-        .map_err(|err| format!("Could not initialize download client: {err}"))?;
-
-    let update_dir = std::env::temp_dir().join("posthaze-update");
-    if update_dir.exists() {
-        let _ = std::fs::remove_dir_all(&update_dir);
-    }
-    std::fs::create_dir_all(&update_dir)
+    let update_dir = std::env::temp_dir().join(format!(
+        "posthaze-update-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let dir_for_create = update_dir.clone();
+    tokio::task::spawn_blocking(move || std::fs::create_dir_all(&dir_for_create))
+        .await
+        .map_err(|err| format!("Update folder task failed: {err}"))?
         .map_err(|err| format!("Could not create temp update folder: {err}"))?;
     let setup_path = update_dir.join(&info.setup_name);
 
     let result = async {
         // 1. Download metadata (.sig and SHA256SUMS.txt)
-        let sig_text = fetch_small_text(&client, &info.sig_url, "signature").await?;
-        let sums_text = fetch_small_text(&client, &info.sums_url, "SHA256SUMS.txt").await?;
+        let sig_text = fetch_small_text(client, &info.sig_url, "signature").await?;
+        let sums_text = fetch_small_text(client, &info.sums_url, "SHA256SUMS.txt").await?;
 
-        // 2. Stream installer with size cap and progress reporting
+        // 2. Stream installer to a blocking buffered writer while computing SHA-256 incrementally.
         let resp = client
             .get(&info.setup_url)
+            .header(reqwest::header::USER_AGENT, UPDATER_USER_AGENT)
             .send()
             .await
             .map_err(|err| format!("Failed to download installer: {err}"))?;
@@ -366,8 +403,25 @@ where
             return Err(format!("Installer exceeds {MAX_INSTALLER_BYTES} byte limit"));
         }
 
-        let mut file = std::fs::File::create(&setup_path)
-            .map_err(|err| format!("Could not create temp installer file: {err}"))?;
+        let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::channel::<bytes::Bytes>(16);
+        let writer_path = setup_path.clone();
+        let writer_handle = tokio::task::spawn_blocking(move || -> Result<String, String> {
+            let file = std::fs::File::create(&writer_path)
+                .map_err(|err| format!("Could not create temp installer file: {err}"))?;
+            let mut writer = std::io::BufWriter::with_capacity(64 * 1024, file);
+            let mut hasher = Sha256::new();
+            while let Some(bytes) = chunk_rx.blocking_recv() {
+                hasher.update(&bytes);
+                writer
+                    .write_all(&bytes)
+                    .map_err(|err| format!("Could not write installer bytes: {err}"))?;
+            }
+            writer
+                .flush()
+                .map_err(|err| format!("Could not flush installer file: {err}"))?;
+            Ok(format!("{:x}", hasher.finalize()))
+        });
+
         let mut downloaded: u64 = 0;
         let mut last_pct: u8 = 0;
         let mut stream = resp.bytes_stream();
@@ -375,10 +429,13 @@ where
             let bytes = chunk.map_err(|err| format!("Download interrupted: {err}"))?;
             downloaded = downloaded.saturating_add(bytes.len() as u64);
             if downloaded > MAX_INSTALLER_BYTES {
+                drop(chunk_tx);
+                let _ = writer_handle.await;
                 return Err(format!("Installer exceeds {MAX_INSTALLER_BYTES} byte limit"));
             }
-            file.write_all(&bytes)
-                .map_err(|err| format!("Could not write installer bytes: {err}"))?;
+            if chunk_tx.send(bytes).await.is_err() {
+                break;
+            }
             if let Some(len) = total
                 && len > 0
             {
@@ -389,19 +446,35 @@ where
                 }
             }
         }
-        file.flush()
-            .map_err(|err| format!("Could not flush installer file: {err}"))?;
-        drop(file);
+        drop(chunk_tx);
+        let actual_sha256 = writer_handle
+            .await
+            .map_err(|err| format!("Installer writer task panicked: {err}"))??;
         on_progress(100);
 
-        // 3. Verify SHA-256 + Ed25519 signature before allowing execution
-        verify_download(&setup_path, &info.setup_name, &sig_text, &sums_text, keys)?;
+        // 3. Verify incremental SHA-256 + Ed25519 signature on a blocking thread.
+        let verify_path = setup_path.clone();
+        let setup_name = info.setup_name.clone();
+        let keys_owned = keys.to_vec();
+        tokio::task::spawn_blocking(move || {
+            verify_prehashed_download(
+                &verify_path,
+                &setup_name,
+                &actual_sha256,
+                &sig_text,
+                &sums_text,
+                &keys_owned,
+            )
+        })
+        .await
+        .map_err(|err| format!("Verification task failed: {err}"))??;
         Ok(setup_path.clone())
     }
     .await;
 
     if result.is_err() {
-        let _ = std::fs::remove_dir_all(&update_dir);
+        let dir_for_cleanup = update_dir.clone();
+        let _ = tokio::task::spawn_blocking(move || std::fs::remove_dir_all(&dir_for_cleanup)).await;
     }
     result
 }
@@ -413,6 +486,8 @@ async fn fetch_small_text(
 ) -> Result<String, String> {
     let resp = client
         .get(url)
+        .header(reqwest::header::USER_AGENT, UPDATER_USER_AGENT)
+        .timeout(Duration::from_secs(30))
         .send()
         .await
         .map_err(|err| format!("Failed to fetch {label}: {err}"))?;
@@ -614,27 +689,33 @@ mod tests {
             }
         });
 
+        let client = reqwest::Client::new();
+
         // GitHub returns 404 on /releases/latest when no stable release exists yet.
-        let missing = check_release_from_url(&format!("{base}/no-stable-release"), "0.1.1", false)
-            .await
-            .expect("HTTP 404 should resolve cleanly to Ok(None)");
+        let missing =
+            check_release_from_url(&client, &format!("{base}/no-stable-release"), "0.1.1", false)
+                .await
+                .expect("HTTP 404 should resolve cleanly to Ok(None)");
         assert!(missing.is_none());
 
-        let found = check_release_from_url(&format!("{base}/latest"), "0.1.1", false)
+        let found = check_release_from_url(&client, &format!("{base}/latest"), "0.1.1", false)
             .await
             .unwrap()
             .expect("should detect v9.9.9");
         assert_eq!(found.version, Version::new(9, 9, 9));
 
-        let verified_path = download_and_verify_update(&found, &[vk], |_| {})
+        let verified_path = download_and_verify_update(&client, &found, &[vk], |_| {})
             .await
             .expect("valid signed release should verify");
         assert_eq!(std::fs::read(&verified_path).unwrap(), payload);
+        if let Some(parent) = verified_path.parent() {
+            let _ = std::fs::remove_dir_all(parent);
+        }
 
         // Wrong key must reject and clean up.
         let wrong_vk = SigningKey::from_bytes(&[1_u8; 32]).verifying_key();
         assert!(
-            download_and_verify_update(&found, &[wrong_vk], |_| {})
+            download_and_verify_update(&client, &found, &[wrong_vk], |_| {})
                 .await
                 .is_err()
         );

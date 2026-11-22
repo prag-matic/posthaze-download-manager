@@ -277,6 +277,32 @@ impl DownloadRowView {
         }
     }
 
+    /// Updates live progress metrics on this row in place without reallocating metadata strings.
+    ///
+    /// Returns `true` if `state` changed (which may affect active filter membership or State sort).
+    pub fn apply_live_snapshot(&mut self, live: &ProgressSnapshot) -> bool {
+        let state_changed = self.state != live.state;
+        self.state = live.state;
+        self.bytes_downloaded = live.bytes_downloaded;
+        if live.total_bytes.is_some() {
+            self.total_bytes = live.total_bytes;
+        }
+        self.bytes_per_sec = live.bytes_per_sec;
+        self.eta_secs = live.eta_secs;
+        self.active_workers = live.active_workers;
+        if live.state == DownloadState::Completed {
+            self.checkpointed_bytes = live.bytes_downloaded;
+        } else if !live.segments.is_empty() {
+            self.checkpointed_bytes = live
+                .segments
+                .iter()
+                .map(|s| s.checkpointed_cursor.saturating_sub(s.start))
+                .sum();
+            self.segment_count = live.segments.len();
+        }
+        state_changed
+    }
+
     /// Fraction `[0.0, 1.0]` of writer-acknowledged `Checkpoint` bytes.
     pub fn checkpoint_ratio(&self) -> f32 {
         match self.total_bytes {
@@ -439,7 +465,30 @@ fn cmp_ascii_case_insensitive(a: &str, b: &str) -> std::cmp::Ordering {
     a.len().cmp(&b.len())
 }
 
+fn compare_rows(
+    a: &DownloadRowView,
+    b: &DownloadRowView,
+    sort_col: SortColumn,
+    sort_dir: SortDirection,
+) -> std::cmp::Ordering {
+    let ord = match sort_col {
+        SortColumn::State => a.state.as_str().cmp(b.state.as_str()),
+        SortColumn::Filename => cmp_ascii_case_insensitive(&a.filename, &b.filename),
+        SortColumn::Progress => a
+            .total_ratio()
+            .partial_cmp(&b.total_ratio())
+            .unwrap_or(std::cmp::Ordering::Equal),
+        SortColumn::Speed => a.bytes_per_sec.cmp(&b.bytes_per_sec),
+        SortColumn::CreatedAt => a.created_at.cmp(&b.created_at),
+    };
+    match sort_dir {
+        SortDirection::Ascending => ord,
+        SortDirection::Descending => ord.reverse(),
+    }
+}
+
 /// Filters `rows` by tab and optional search `query` (matching filename or URL), then sorts.
+#[cfg(test)]
 pub fn filter_and_sort_rows_with_query(
     rows: &[DownloadRowView],
     filter: FilterTab,
@@ -458,22 +507,7 @@ pub fn filter_and_sort_rows_with_query(
         })
         .cloned()
         .collect();
-    out.sort_by(|a, b| {
-        let ord = match sort_col {
-            SortColumn::State => a.state.as_str().cmp(b.state.as_str()),
-            SortColumn::Filename => cmp_ascii_case_insensitive(&a.filename, &b.filename),
-            SortColumn::Progress => a
-                .total_ratio()
-                .partial_cmp(&b.total_ratio())
-                .unwrap_or(std::cmp::Ordering::Equal),
-            SortColumn::Speed => a.bytes_per_sec.cmp(&b.bytes_per_sec),
-            SortColumn::CreatedAt => a.created_at.cmp(&b.created_at),
-        };
-        match sort_dir {
-            SortDirection::Ascending => ord,
-            SortDirection::Descending => ord.reverse(),
-        }
-    });
+    out.sort_by(|a, b| compare_rows(a, b, sort_col, sort_dir));
     out
 }
 
@@ -673,6 +707,42 @@ pub enum UiEffect {
     LoadSegments(DownloadId),
 }
 
+const MAX_PERSISTED_SEGMENT_CACHE: usize = 8;
+
+/// Memoized derived table rows and filtered/sorted indices for [`QueueController`].
+#[derive(Debug)]
+struct QueueProjectionCache {
+    all_rows: Vec<DownloadRowView>,
+    row_index: HashMap<DownloadId, usize>,
+    visible_indices: Vec<usize>,
+    visible_ids: std::sync::Arc<Vec<DownloadId>>,
+    filter: FilterTab,
+    search_query: String,
+    sort_col: SortColumn,
+    sort_dir: SortDirection,
+    rows_dirty: bool,
+    view_dirty: bool,
+    rebuild_count: u64,
+}
+
+impl Default for QueueProjectionCache {
+    fn default() -> Self {
+        Self {
+            all_rows: Vec::new(),
+            row_index: HashMap::new(),
+            visible_indices: Vec::new(),
+            visible_ids: std::sync::Arc::new(Vec::new()),
+            filter: FilterTab::All,
+            search_query: String::new(),
+            sort_col: SortColumn::CreatedAt,
+            sort_dir: SortDirection::Descending,
+            rows_dirty: true,
+            view_dirty: true,
+            rebuild_count: 0,
+        }
+    }
+}
+
 /// Headless state and decision controller for the `Download` `Queue` UI.
 #[derive(Debug, Default)]
 pub struct QueueController {
@@ -680,14 +750,24 @@ pub struct QueueController {
     pub live_map: HashMap<DownloadId, ProgressSnapshot>,
     pub segment_counts: HashMap<DownloadId, usize>,
     pub persisted_segments: HashMap<DownloadId, Vec<SegmentProgress>>,
+    persisted_segments_order: Vec<DownloadId>,
     pub settings: Settings,
     pub selected_id: Option<DownloadId>,
     pub selected_ids: HashSet<DownloadId>,
     pub selection_anchor: Option<DownloadId>,
     pub auto_retries_used: HashMap<DownloadId, u32>,
+    projection: QueueProjectionCache,
 }
 
 impl QueueController {
+    /// Creates a new [`QueueController`] seeded with initial [`Settings`].
+    pub fn with_settings(settings: Settings) -> Self {
+        Self {
+            settings,
+            ..Default::default()
+        }
+    }
+
     /// Applies a fresh [`EngineSnapshot`] and returns an optional segment-load effect.
     pub fn apply_snapshot(&mut self, snapshot: EngineSnapshot) -> Option<UiEffect> {
         self.records = snapshot.records;
@@ -695,6 +775,9 @@ impl QueueController {
         self.segment_counts = snapshot.segment_counts;
         let existing: HashSet<&DownloadId> = self.records.iter().map(|r| &r.id).collect();
         self.selected_ids.retain(|id| existing.contains(id));
+        self.persisted_segments.retain(|id, _| existing.contains(id));
+        self.persisted_segments_order
+            .retain(|id| existing.contains(id));
         if let Some(ref anchor) = self.selection_anchor
             && !existing.contains(anchor)
         {
@@ -708,7 +791,150 @@ impl QueueController {
         if let Some(ref sel) = self.selected_id {
             self.selected_ids.insert(sel.clone());
         }
+        self.projection.rows_dirty = true;
+        self.projection.view_dirty = true;
         self.selected_id.clone().map(UiEffect::LoadSegments)
+    }
+
+    /// Inserts persisted segments for `id` while bounding the cache to a small LRU.
+    pub fn insert_persisted_segments(&mut self, id: DownloadId, segs: Vec<SegmentProgress>) {
+        self.persisted_segments.insert(id.clone(), segs);
+        self.persisted_segments_order.retain(|existing| existing != &id);
+        self.persisted_segments_order.push(id);
+        while self.persisted_segments.len() > MAX_PERSISTED_SEGMENT_CACHE {
+            let evict_idx = self
+                .persisted_segments_order
+                .iter()
+                .position(|candidate| self.selected_id.as_ref() != Some(candidate));
+            match evict_idx {
+                Some(idx) => {
+                    let evicted = self.persisted_segments_order.remove(idx);
+                    self.persisted_segments.remove(&evicted);
+                }
+                None => break,
+            }
+        }
+    }
+
+    /// Updates live progress for `id`, mutating the cached row in place when already built.
+    pub fn on_progress_updated(&mut self, id: DownloadId, snapshot: ProgressSnapshot) {
+        if !self.projection.rows_dirty
+            && let Some(&idx) = self.projection.row_index.get(&id)
+            && let Some(row) = self.projection.all_rows.get_mut(idx)
+        {
+            let state_changed = row.apply_live_snapshot(&snapshot);
+            if state_changed
+                || matches!(
+                    self.projection.sort_col,
+                    SortColumn::Progress | SortColumn::Speed
+                )
+            {
+                self.projection.view_dirty = true;
+            }
+        }
+        self.live_map.insert(id, snapshot);
+    }
+
+    /// Ensures the memoized row projection and filtered/sorted indices are up to date.
+    pub fn ensure_projection(
+        &mut self,
+        filter: FilterTab,
+        search_query: &str,
+        sort_col: SortColumn,
+        sort_dir: SortDirection,
+    ) {
+        if self.projection.rows_dirty {
+            let ranks = compute_fifo_ranks(&self.records, &self.live_map);
+            self.projection.all_rows.clear();
+            self.projection.all_rows.reserve(self.records.len());
+            self.projection.row_index.clear();
+            self.projection.row_index.reserve(self.records.len());
+            for (idx, rec) in self.records.iter().enumerate() {
+                let row = DownloadRowView::from_record(
+                    rec,
+                    self.live_map.get(&rec.id),
+                    self.segment_counts.get(&rec.id).copied().unwrap_or(0),
+                    ranks.get(&rec.id).copied(),
+                );
+                self.projection.row_index.insert(rec.id.clone(), idx);
+                self.projection.all_rows.push(row);
+            }
+            self.projection.rows_dirty = false;
+            self.projection.view_dirty = true;
+            self.projection.rebuild_count = self.projection.rebuild_count.saturating_add(1);
+        }
+
+        let query_changed = self.projection.filter != filter
+            || self.projection.search_query != search_query
+            || self.projection.sort_col != sort_col
+            || self.projection.sort_dir != sort_dir;
+
+        if self.projection.view_dirty || query_changed {
+            self.projection.filter = filter;
+            if self.projection.search_query != search_query {
+                self.projection.search_query.clear();
+                self.projection.search_query.push_str(search_query);
+            }
+            self.projection.sort_col = sort_col;
+            self.projection.sort_dir = sort_dir;
+
+            let q = search_query.trim().to_ascii_lowercase();
+            self.projection.visible_indices.clear();
+            for (idx, row) in self.projection.all_rows.iter().enumerate() {
+                if filter.matches(row.state)
+                    && (q.is_empty()
+                        || contains_ascii_case_insensitive(&row.filename, &q)
+                        || contains_ascii_case_insensitive(&row.url, &q))
+                {
+                    self.projection.visible_indices.push(idx);
+                }
+            }
+            let rows = &self.projection.all_rows;
+            self.projection
+                .visible_indices
+                .sort_by(|&a, &b| compare_rows(&rows[a], &rows[b], sort_col, sort_dir));
+            let ids: Vec<DownloadId> = self
+                .projection
+                .visible_indices
+                .iter()
+                .map(|&idx| rows[idx].id.clone())
+                .collect();
+            self.projection.visible_ids = std::sync::Arc::new(ids);
+            self.projection.view_dirty = false;
+        }
+    }
+
+    /// Returns all cached [`DownloadRowView`]s (call [`Self::ensure_projection`] first).
+    pub fn all_rows(&self) -> &[DownloadRowView] {
+        &self.projection.all_rows
+    }
+
+    /// Returns the cached visible row indices into [`Self::all_rows`].
+    pub fn visible_indices(&self) -> &[usize] {
+        &self.projection.visible_indices
+    }
+
+    /// Returns the visible [`DownloadRowView`] at `visible_idx`, if in bounds.
+    pub fn visible_row(&self, visible_idx: usize) -> Option<&DownloadRowView> {
+        let &row_idx = self.projection.visible_indices.get(visible_idx)?;
+        self.projection.all_rows.get(row_idx)
+    }
+
+    /// Returns the cached visible [`DownloadId`] list.
+    pub fn visible_ids(&self) -> std::sync::Arc<Vec<DownloadId>> {
+        std::sync::Arc::clone(&self.projection.visible_ids)
+    }
+
+    /// Looks up a cached [`DownloadRowView`] by [`DownloadId`] in O(1).
+    pub fn row_by_id(&self, id: &DownloadId) -> Option<&DownloadRowView> {
+        let &idx = self.projection.row_index.get(id)?;
+        self.projection.all_rows.get(idx)
+    }
+
+    /// Returns how many times the full row projection was rebuilt (used in tests).
+    #[cfg(test)]
+    pub fn projection_rebuild_count(&self) -> u64 {
+        self.projection.rebuild_count
     }
 
     /// Processes an [`EngineEvent`] and returns any side effects for the UI shell.
@@ -716,7 +942,7 @@ impl QueueController {
         let mut effects = Vec::new();
         match event {
             EngineEvent::ProgressUpdated { id, snapshot } => {
-                self.live_map.insert(id, snapshot);
+                self.on_progress_updated(id, snapshot);
             }
             EngineEvent::StateChanged {
                 id,
@@ -727,6 +953,8 @@ impl QueueController {
                 if state != DownloadState::Active {
                     self.live_map.remove(&id);
                 }
+                self.projection.rows_dirty = true;
+                self.projection.view_dirty = true;
                 let rec = self.records.iter().find(|r| r.id == id).cloned();
                 if state == DownloadState::Completed {
                     self.auto_retries_used.remove(&id);
@@ -1569,5 +1797,62 @@ mod tests {
         );
         assert_eq!(by_url.len(), 1);
         assert_eq!(by_url[0].id, DownloadId::from("2".to_string()));
+    }
+
+    #[test]
+    fn memoized_projection_updates_in_place_and_bounds_persisted_segments() {
+        let mut ctrl = QueueController::default();
+        let rec1 = make_record("1", "https://example.com/a.bin", DownloadState::Active, 10);
+        let rec2 = make_record("2", "https://example.com/b.bin", DownloadState::Completed, 20);
+        let id1 = rec1.id.clone();
+
+        let snap = EngineSnapshot {
+            records: vec![rec1, rec2],
+            settings: Settings::default(),
+            segment_counts: HashMap::new(),
+        };
+        ctrl.apply_snapshot(snap);
+        ctrl.ensure_projection(FilterTab::All, "", SortColumn::CreatedAt, SortDirection::Descending);
+        assert_eq!(ctrl.projection_rebuild_count(), 1);
+        assert_eq!(ctrl.visible_indices().len(), 2);
+
+        // Repeated ensure_projection with unchanged inputs does not rebuild rows.
+        ctrl.ensure_projection(FilterTab::All, "", SortColumn::CreatedAt, SortDirection::Descending);
+        assert_eq!(ctrl.projection_rebuild_count(), 1);
+
+        // ProgressUpdated mutates the single active row in place without rebuilding all_rows.
+        ctrl.on_progress_updated(
+            id1.clone(),
+            ProgressSnapshot {
+                state: DownloadState::Active,
+                bytes_downloaded: 4096,
+                total_bytes: Some(8192),
+                active_workers: 4,
+                bytes_per_sec: 123_456,
+                eta_secs: Some(1),
+                segments: vec![],
+            },
+        );
+        ctrl.ensure_projection(FilterTab::All, "", SortColumn::CreatedAt, SortDirection::Descending);
+        assert_eq!(ctrl.projection_rebuild_count(), 1);
+        let updated = ctrl.row_by_id(&id1).unwrap();
+        assert_eq!(updated.bytes_downloaded, 4096);
+        assert_eq!(updated.bytes_per_sec, 123_456);
+
+        // Bounded persisted_segments cache evicts oldest non-selected entries beyond capacity.
+        ctrl.selected_id = Some(id1.clone());
+        for i in 0..12 {
+            let id = if i == 0 {
+                id1.clone()
+            } else {
+                DownloadId::from(format!("seg-{i}"))
+            };
+            ctrl.insert_persisted_segments(id, vec![]);
+        }
+        assert!(ctrl.persisted_segments.len() <= MAX_PERSISTED_SEGMENT_CACHE);
+        assert!(
+            ctrl.persisted_segments.contains_key(&id1),
+            "selected download segments must not be evicted"
+        );
     }
 }

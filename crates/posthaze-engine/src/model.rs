@@ -4,18 +4,19 @@ use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use thiserror::Error;
 
 /// Persistent identifier for a `Download` (UUID v4).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct DownloadId(pub(crate) String);
+pub struct DownloadId(pub(crate) Arc<str>);
 
 impl DownloadId {
     /// Generates a new random UUID v4 [`DownloadId`].
     pub fn new() -> Self {
-        Self(uuid::Uuid::new_v4().to_string())
+        Self(Arc::from(uuid::Uuid::new_v4().to_string()))
     }
 
     /// Returns the string representation of this [`DownloadId`].
@@ -44,7 +45,13 @@ impl AsRef<str> for DownloadId {
 
 impl From<String> for DownloadId {
     fn from(value: String) -> Self {
-        Self(value)
+        Self(Arc::from(value))
+    }
+}
+
+impl From<&str> for DownloadId {
+    fn from(value: &str) -> Self {
+        Self(Arc::from(value))
     }
 }
 
