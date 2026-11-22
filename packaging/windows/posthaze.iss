@@ -1,7 +1,7 @@
 #define MyAppName "Posthaze"
 #define MyAppDisplayName "Posthaze Download Manager"
 #ifndef MyAppVersion
-  #define MyAppVersion "0.2.0"
+  #define MyAppVersion "0.2.1"
 #endif
 #define MyAppPublisher "Posthaze Download Manager"
 #define MyAppURL "https://github.com/prag-matic/posthaze-download-manager"
