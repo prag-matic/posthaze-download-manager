@@ -546,7 +546,15 @@ impl DownloadEngine {
         })?;
         tokio::task::spawn_blocking(move || -> Result<String, EngineError> {
             use std::io::Read as _;
-            let mut file = std::fs::File::open(&path)?;
+            let mut opts = std::fs::OpenOptions::new();
+            opts.read(true);
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::fs::OpenOptionsExt as _;
+                const FILE_FLAG_SEQUENTIAL_SCAN: u32 = 0x0800_0000;
+                opts.custom_flags(FILE_FLAG_SEQUENTIAL_SCAN);
+            }
+            let mut file = opts.open(&path)?;
             let mut hasher = blake3::Hasher::new();
             let mut buf = [0u8; 64 * 1024];
             loop {

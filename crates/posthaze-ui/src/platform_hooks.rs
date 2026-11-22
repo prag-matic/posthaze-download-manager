@@ -657,6 +657,43 @@ pub(crate) fn is_window_visible(window: &gpui_kit::Window) -> bool {
     true
 }
 
+/// Toggles Windows 11 EcoQoS (`PROCESS_POWER_THROTTLING_EXECUTION_SPEED`) for the process.
+///
+/// Intended to be enabled only while hidden in the System Tray with zero active downloads.
+pub(crate) fn set_process_eco_qos(enabled: bool) {
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::System::Threading::{
+            GetCurrentProcess, PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+            PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE,
+            ProcessPowerThrottling, SetProcessInformation,
+        };
+
+        let state = PROCESS_POWER_THROTTLING_STATE {
+            Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+            ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+            StateMask: if enabled {
+                PROCESS_POWER_THROTTLING_EXECUTION_SPEED
+            } else {
+                0
+            },
+        };
+        // SAFETY: `state` is a valid initialized `PROCESS_POWER_THROTTLING_STATE` for the current process.
+        unsafe {
+            let _ = SetProcessInformation(
+                GetCurrentProcess(),
+                ProcessPowerThrottling,
+                (&raw const state).cast(),
+                std::mem::size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32,
+            );
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = enabled;
+    }
+}
+
 /// Synchronizes `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Posthaze` with `enabled`.
 pub(crate) fn sync_windows_startup_registry(enabled: bool) -> Result<(), String> {
     #[cfg(target_os = "windows")]
@@ -741,6 +778,39 @@ pub(crate) fn sync_windows_startup_registry(enabled: bool) -> Result<(), String>
     }
 }
 
+/// Runs `ShellExecuteW` inside a COM STA apartment so shell extensions (e.g. `.zip` folders)
+/// work reliably when invoked off the GPUI main thread.
+#[cfg(target_os = "windows")]
+fn shell_execute_open(target_wide: &[u16]) -> isize {
+    use windows_sys::Win32::System::Com::{
+        COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize,
+    };
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let verb: Vec<u16> = "open\0".encode_utf16().collect();
+    // SAFETY: `CoInitializeEx` initializes COM on the current worker thread; if it succeeds
+    // (`S_OK` or `S_FALSE`), we pair it with `CoUninitialize` after `ShellExecuteW`.
+    unsafe {
+        let hr = CoInitializeEx(
+            std::ptr::null(),
+            (COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) as u32,
+        );
+        let res = ShellExecuteW(
+            std::ptr::null_mut(),
+            verb.as_ptr(),
+            target_wide.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        );
+        if hr >= 0 {
+            CoUninitialize();
+        }
+        res as isize
+    }
+}
+
 /// Opens a downloaded file using the OS default application (`ShellExecuteW` on Windows).
 pub(crate) fn open_file_in_shell(path: &Path) -> Result<(), String> {
     if !path.exists() {
@@ -749,30 +819,15 @@ pub(crate) fn open_file_in_shell(path: &Path) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::ffi::OsStrExt as _;
-        use windows_sys::Win32::UI::Shell::ShellExecuteW;
-        use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
-        let verb: Vec<u16> = "open\0".encode_utf16().collect();
         let file: Vec<u16> = path
             .as_os_str()
             .encode_wide()
             .chain(std::iter::once(0))
             .collect();
-        let res = unsafe {
-            ShellExecuteW(
-                std::ptr::null_mut(),
-                verb.as_ptr(),
-                file.as_ptr(),
-                std::ptr::null(),
-                std::ptr::null(),
-                SW_SHOWNORMAL,
-            )
-        };
-        if (res as isize) <= 32 {
-            return Err(format!(
-                "Could not open file (ShellExecuteW error {})",
-                res as isize
-            ));
+        let code = shell_execute_open(&file);
+        if code <= 32 {
+            return Err(format!("Could not open file (ShellExecuteW error {code})"));
         }
         Ok(())
     }
@@ -791,29 +846,14 @@ pub(crate) fn open_url_in_browser(url: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::ffi::OsStrExt as _;
-        use windows_sys::Win32::UI::Shell::ShellExecuteW;
-        use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
-        let verb: Vec<u16> = "open\0".encode_utf16().collect();
         let target: Vec<u16> = std::ffi::OsStr::new(url)
             .encode_wide()
             .chain(std::iter::once(0))
             .collect();
-        let res = unsafe {
-            ShellExecuteW(
-                std::ptr::null_mut(),
-                verb.as_ptr(),
-                target.as_ptr(),
-                std::ptr::null(),
-                std::ptr::null(),
-                SW_SHOWNORMAL,
-            )
-        };
-        if (res as isize) <= 32 {
-            return Err(format!(
-                "Could not open URL (ShellExecuteW error {})",
-                res as isize
-            ));
+        let code = shell_execute_open(&target);
+        if code <= 32 {
+            return Err(format!("Could not open URL (ShellExecuteW error {code})"));
         }
         Ok(())
     }

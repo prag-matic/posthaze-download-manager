@@ -815,6 +815,23 @@ impl PosthazeApp {
             })
             .hover(|s| s.bg(paper_hover()))
             .cursor_pointer()
+            .when(row_state == DownloadState::Completed, |el| {
+                let id_drag = row.id.clone();
+                el.on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |app, ev: &MouseDownEvent, _, _| {
+                        let paths = app.collect_drag_paths(&id_drag);
+                        if paths.is_empty() {
+                            app.pending_file_drag = None;
+                        } else {
+                            app.pending_file_drag = Some(crate::PendingFileDrag {
+                                start_pos: ev.position,
+                                paths,
+                            });
+                        }
+                    }),
+                )
+            })
             .on_click(cx.listener(move |app, ev: &ClickEvent, window, cx| {
                 app.focus_handle.focus(window, cx);
                 let mods = ev.modifiers();

@@ -16,6 +16,9 @@ tokio.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = ["Win32_System_Com", "Win32_UI_Shell"] }
+
 [dev-dependencies]
 criterion = { version = "0.5", features = ["async_tokio"] }
 tempfile = "3"

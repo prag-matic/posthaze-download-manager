@@ -179,7 +179,27 @@ function consumeBypassedUrl(url) {
   return Date.now() <= expiresAt;
 }
 
+const STALE_DOWNLOAD_AGE_MS = 60 * 1000;
+
+function isFreshActiveDownload(item) {
+  // Chrome fires downloads.onCreated for historical/restored DownloadItems when the
+  // downloads manager initializes. Only intercept brand-new, active downloads.
+  if (!item || item.state !== "in_progress" || item.paused || item.endTime) {
+    return false;
+  }
+  if (item.startTime) {
+    const startedAt = Date.parse(item.startTime);
+    if (Number.isFinite(startedAt) && Date.now() - startedAt > STALE_DOWNLOAD_AGE_MS) {
+      return false;
+    }
+  }
+  return true;
+}
+
 chrome.downloads.onCreated.addListener(async (item) => {
+  if (!isFreshActiveDownload(item)) {
+    return;
+  }
   const settings = await chrome.storage.local.get(DEFAULT_SETTINGS);
   if (!settings.interceptEnabled) {
     return;
@@ -192,6 +212,13 @@ chrome.downloads.onCreated.addListener(async (item) => {
     return;
   }
   if (shouldSkipDownload(item, url, settings)) {
+    return;
+  }
+
+  // Only intercept automatic browser downloads when Posthaze UI is actually running
+  // (tray or foreground). If Posthaze is closed, let the browser handle the download.
+  const ping = await sendToPosthaze({ type: "ping" }, false);
+  if (!ping || !ping.ok || ping.mode !== "pong") {
     return;
   }
 

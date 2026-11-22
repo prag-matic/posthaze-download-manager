@@ -135,7 +135,13 @@ fn push_filtered_header(headers: &mut Vec<(String, String)>, name: &str, value: 
     let lower = clean_name.to_ascii_lowercase();
     if matches!(
         lower.as_str(),
-        "range" | "host" | "content-length" | "accept-encoding" | "connection"
+        "range"
+            | "host"
+            | "content-length"
+            | "accept-encoding"
+            | "connection"
+            | "if-modified-since"
+            | "if-none-match"
     ) {
         return;
     }
@@ -153,7 +159,7 @@ fn tokenize_curl(raw: &str) -> Vec<String> {
 
     let mut tokens = Vec::new();
     let mut current = String::new();
-    let mut chars = normalized.chars().peekable();
+    let mut chars = normalized.chars();
     let mut in_single = false;
     let mut in_double = false;
     let mut token_started = false;
@@ -172,7 +178,7 @@ fn tokenize_curl(raw: &str) -> Vec<String> {
             if ch == '"' {
                 in_double = false;
             } else if ch == '\\' {
-                if let Some(&next) = chars.peek()
+                if let Some(next) = chars.as_str().chars().next()
                     && matches!(next, '"' | '\\' | '$' | '`')
                 {
                     current.push(chars.next().unwrap());
@@ -180,12 +186,22 @@ fn tokenize_curl(raw: &str) -> Vec<String> {
                     current.push(ch);
                 }
             } else if ch == '^' {
-                if let Some(&next) = chars.peek() {
+                let rest = chars.as_str();
+                if rest.starts_with("\\^\"") {
+                    // Windows cmd Copy-as-cURL escaped inner quote: `^\^"` -> `"`
+                    chars.next();
+                    chars.next();
+                    chars.next();
+                    current.push('"');
+                } else if rest.starts_with("\\\"") {
+                    chars.next();
+                    chars.next();
+                    current.push('"');
+                } else if let Some(next) = chars.next() {
                     if next == '"' {
-                        chars.next();
                         in_double = false;
                     } else {
-                        current.push(chars.next().unwrap());
+                        current.push(next);
                     }
                 }
             } else {
@@ -277,15 +293,27 @@ mod tests {
 
     #[test]
     fn parses_windows_cmd_caret_escaped_curl() {
-        let cmd = r#"curl ^"https://cdn.example.com/file.zip^" ^
-  -H ^"User-Agent: WinEdge/131^" ^
-  -H ^"Cookie: token=hello^""#;
+        let cmd = r#"curl --url ^"https://cdn.example.com/file.zip^" ^
+  -H ^"sec-ch-ua-platform: ^\^"Windows^\^"^" ^
+  -H ^"sec-ch-ua: ^\^"Chromium^\^";v=^\^"158^\^", ^\^"Not.A/Brand^\^";v=^\^"24^\^"^" ^
+  -H ^"if-modified-since: Sun, 22 Nov 2026 12:03:23 GMT^" ^
+  -H ^"if-none-match: ^\^"abc123^\^"^" ^
+  -H ^"User-Agent: Mozilla/5.0 ^(Windows NT 10.0; Win64; x64^) Chrome/158^" ^
+  -b ^"token=hello^""#;
         let parsed = parse_url_or_curl(cmd);
         assert_eq!(parsed.url, "https://cdn.example.com/file.zip");
         assert_eq!(
             parsed.headers,
             vec![
-                ("User-Agent".to_string(), "WinEdge/131".to_string()),
+                ("sec-ch-ua-platform".to_string(), "\"Windows\"".to_string()),
+                (
+                    "sec-ch-ua".to_string(),
+                    "\"Chromium\";v=\"158\", \"Not.A/Brand\";v=\"24\"".to_string()
+                ),
+                (
+                    "User-Agent".to_string(),
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/158".to_string()
+                ),
                 ("Cookie".to_string(), "token=hello".to_string()),
             ]
         );

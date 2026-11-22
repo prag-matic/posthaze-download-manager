@@ -9,7 +9,8 @@ use reqwest::header::{
 
 use crate::EngineError;
 
-/// Applies validated custom HTTP headers to `req`, skipping `Range`/`Host`/`Content-Length`.
+/// Applies validated custom HTTP headers to `req`, skipping `Range`/`Host`/`Content-Length`
+/// and conditional cache validators (`If-Modified-Since`/`If-None-Match`).
 pub(crate) fn apply_custom_headers(
     mut req: reqwest::RequestBuilder,
     headers: &[(String, String)],
@@ -19,6 +20,8 @@ pub(crate) fn apply_custom_headers(
         if trimmed.eq_ignore_ascii_case("range")
             || trimmed.eq_ignore_ascii_case("host")
             || trimmed.eq_ignore_ascii_case("content-length")
+            || trimmed.eq_ignore_ascii_case("if-modified-since")
+            || trimmed.eq_ignore_ascii_case("if-none-match")
         {
             continue;
         }

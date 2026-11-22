@@ -24,12 +24,12 @@ impl BrowserKind {
         }
     }
 
-    pub(crate) fn hkcu_key(self) -> &'static str {
+    pub(crate) fn hkcu_subkey(self) -> &'static str {
         match self {
-            Self::Chrome => r"HKCU\Software\Google\Chrome\NativeMessagingHosts\com.posthaze.host",
-            Self::Edge => r"HKCU\Software\Microsoft\Edge\NativeMessagingHosts\com.posthaze.host",
+            Self::Chrome => r"Software\Google\Chrome\NativeMessagingHosts\com.posthaze.host",
+            Self::Edge => r"Software\Microsoft\Edge\NativeMessagingHosts\com.posthaze.host",
             Self::Brave => {
-                r"HKCU\Software\BraveSoftware\Brave-Browser\NativeMessagingHosts\com.posthaze.host"
+                r"Software\BraveSoftware\Brave-Browser\NativeMessagingHosts\com.posthaze.host"
             }
         }
     }
@@ -108,13 +108,27 @@ pub(crate) fn query_browser_statuses() -> Vec<(&'static str, bool)> {
 fn is_browser_registered(browser: BrowserKind) -> bool {
     #[cfg(target_os = "windows")]
     {
-        use std::os::windows::process::CommandExt as _;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        std::process::Command::new("reg.exe")
-            .creation_flags(CREATE_NO_WINDOW)
-            .args(["query", browser.hkcu_key(), "/ve"])
-            .output()
-            .is_ok_and(|out| out.status.success())
+        use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_SZ, RegGetValueW};
+
+        let subkey: Vec<u16> = browser
+            .hkcu_subkey()
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let mut size: u32 = 0;
+        // SAFETY: Querying the `(Default)` `REG_SZ` value length with a null output buffer.
+        let status = unsafe {
+            RegGetValueW(
+                HKEY_CURRENT_USER,
+                subkey.as_ptr(),
+                std::ptr::null(),
+                RRF_RT_REG_SZ,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut size,
+            )
+        };
+        status == 0 && size > std::mem::size_of::<u16>() as u32
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -145,27 +159,49 @@ pub(crate) fn register_native_host(
 
     #[cfg(target_os = "windows")]
     {
-        use std::os::windows::process::CommandExt as _;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        let manifest_str = manifest_path.to_string_lossy().into_owned();
+        use std::os::windows::ffi::OsStrExt as _;
+        use windows_sys::Win32::System::Registry::{
+            HKEY, HKEY_CURRENT_USER, REG_SZ, RegCloseKey, RegCreateKeyW, RegSetValueExW,
+        };
+
+        let wide_val: Vec<u16> = manifest_path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let byte_len = u32::try_from(wide_val.len() * std::mem::size_of::<u16>())
+            .map_err(|_| "Manifest path is too long".to_string())?;
+
         for browser in BrowserKind::ALL {
-            let status = std::process::Command::new("reg.exe")
-                .creation_flags(CREATE_NO_WINDOW)
-                .args([
-                    "add",
-                    browser.hkcu_key(),
-                    "/ve",
-                    "/t",
-                    "REG_SZ",
-                    "/d",
-                    &manifest_str,
-                    "/f",
-                ])
-                .status()
-                .map_err(|err| format!("Could not register {}: {err}", browser.label()))?;
-            if !status.success() {
+            let subkey: Vec<u16> = browser
+                .hkcu_subkey()
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+            let mut hkey: HKEY = std::ptr::null_mut();
+            // SAFETY: `subkey` is null-terminated UTF-16 and `hkey` is closed before returning.
+            let create_status =
+                unsafe { RegCreateKeyW(HKEY_CURRENT_USER, subkey.as_ptr(), &mut hkey) };
+            if create_status != 0 {
                 return Err(format!(
-                    "reg.exe failed for {} with status {status}",
+                    "Could not create {} registry key (Win32 error {create_status})",
+                    browser.label()
+                ));
+            }
+            let set_status = unsafe {
+                RegSetValueExW(
+                    hkey,
+                    std::ptr::null(),
+                    0,
+                    REG_SZ,
+                    wide_val.as_ptr().cast::<u8>(),
+                    byte_len,
+                )
+            };
+            unsafe { RegCloseKey(hkey) };
+            if set_status != 0 {
+                return Err(format!(
+                    "Could not write {} registry value (Win32 error {set_status})",
                     browser.label()
                 ));
             }

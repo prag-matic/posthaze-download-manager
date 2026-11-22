@@ -655,7 +655,17 @@ pub fn resolve_target_path(
     }
 }
 
-fn default_downloads_dir() -> PathBuf {
+/// Resolves the user's default Downloads folder.
+///
+/// On Windows, queries `SHGetKnownFolderPath(FOLDERID_Downloads)` so custom or relocated
+/// Downloads folders (e.g. another drive or OneDrive) are honored, falling back to
+/// `%USERPROFILE%\Downloads` (or `$HOME/Downloads`).
+pub fn default_downloads_dir() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    if let Some(known) = windows_known_downloads_dir() {
+        return known;
+    }
+
     if let Some(profile) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
         let downloads = PathBuf::from(&profile).join("Downloads");
         if downloads.is_dir() {
@@ -664,6 +674,39 @@ fn default_downloads_dir() -> PathBuf {
         return PathBuf::from(profile);
     }
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_known_downloads_dir() -> Option<PathBuf> {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt as _;
+    use windows_sys::Win32::System::Com::CoTaskMemFree;
+    use windows_sys::Win32::UI::Shell::{FOLDERID_Downloads, SHGetKnownFolderPath};
+
+    let mut raw_ptr: *mut u16 = std::ptr::null_mut();
+    // SAFETY: `FOLDERID_Downloads` is a static GUID and `raw_ptr` is freed via `CoTaskMemFree`
+    // regardless of whether `SHGetKnownFolderPath` succeeded or allocated a buffer.
+    let hr = unsafe { SHGetKnownFolderPath(&FOLDERID_Downloads, 0, std::ptr::null_mut(), &mut raw_ptr) };
+    if raw_ptr.is_null() {
+        return None;
+    }
+    let result = if hr >= 0 {
+        let mut len = 0usize;
+        // SAFETY: `SHGetKnownFolderPath` returns a null-terminated UTF-16 string on success.
+        unsafe {
+            while *raw_ptr.add(len) != 0 {
+                len += 1;
+            }
+            let slice = std::slice::from_raw_parts(raw_ptr, len);
+            let path = PathBuf::from(OsString::from_wide(slice));
+            (!path.as_os_str().is_empty()).then_some(path)
+        }
+    } else {
+        None
+    };
+    // SAFETY: `raw_ptr` was allocated by `SHGetKnownFolderPath`'s task allocator.
+    unsafe { CoTaskMemFree(raw_ptr.cast()) };
+    result
 }
 
 /// Non-mutating metadata returned by [`DownloadEngine::probe`](crate::DownloadEngine::probe) before starting a `Download`.
@@ -922,6 +965,8 @@ mod tests {
             FailureKind::Resumable
         );
         assert!(default_db_path().ends_with("state.db") || default_db_path().ends_with("posthaze-state.db"));
+        assert_eq!(Settings::default().default_output_dir, default_downloads_dir());
+        assert!(!default_downloads_dir().as_os_str().is_empty());
     }
 
     #[test]

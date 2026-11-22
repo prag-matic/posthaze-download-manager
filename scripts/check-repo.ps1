@@ -24,7 +24,7 @@ Get-ChildItem crates -Recurse -Filter *.rs | Where-Object { $_.FullName -notmatc
     $text = Get-Content $_.FullName -Raw
     # explorer.exe is legitimate only for revealing folders (`/select,`), which lives in platform_hooks.rs.
     if ($text -match 'Command::new\("explorer(\.exe)?"\)' -and $_.Name -ne "platform_hooks.rs") { $failures += "$($_.Name): use ShellExecuteW instead of explorer.exe" }
-    if ($text -match 'Command::new\("reg(\.exe)?"\)' -and $_.Name -ne "browser_integration.rs") {
+    if ($text -match 'Command::new\("reg(\.exe)?"\)') {
         $failures += "$($_.Name): use the Win32 Registry API instead of reg.exe"
     }
 }

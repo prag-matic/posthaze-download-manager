@@ -8,6 +8,7 @@ mod browser_integration;
 mod context_menu;
 mod curl_parser;
 mod diagnostics;
+mod drag_drop;
 mod grid_cells;
 mod inspector;
 mod ipc;
@@ -48,8 +49,8 @@ use crate::modals::{
 use crate::motion::MotionState;
 use crate::platform_hooks::{
     hide_window_to_tray, is_window_visible, open_directory_in_shell, open_file_in_shell,
-    open_folder_in_shell, open_url_in_browser, show_window_from_tray, spawn_completion_hook,
-    spawn_windows_toast, sync_windows_startup_registry,
+    open_folder_in_shell, open_url_in_browser, set_process_eco_qos, show_window_from_tray,
+    spawn_completion_hook, spawn_windows_toast, sync_windows_startup_registry,
 };
 use crate::preflight_window::PreflightWindow;
 use crate::settings_modal::{
@@ -242,6 +243,11 @@ enum ActiveResize {
     Inspector { start_y: Pixels, start_height: f32 },
 }
 
+pub(crate) struct PendingFileDrag {
+    pub(crate) start_pos: Point<Pixels>,
+    pub(crate) paths: Vec<PathBuf>,
+}
+
 pub(crate) struct PosthazeApp {
     bridge: EngineBridge,
     window_handle: AnyWindowHandle,
@@ -263,6 +269,7 @@ pub(crate) struct PosthazeApp {
     pub(crate) inspector_height: f32,
     pub(crate) inspector_collapsed: bool,
     active_resize: Option<ActiveResize>,
+    pub(crate) pending_file_drag: Option<PendingFileDrag>,
     pub(crate) motion: MotionState,
     motion_loop_running: bool,
     startup_layout_applied: bool,
@@ -272,6 +279,7 @@ pub(crate) struct PosthazeApp {
     last_progress_notify: Instant,
     quitting: bool,
     window_hidden: bool,
+    eco_qos_active: bool,
     last_applied_theme: Option<(String, Option<String>)>,
     last_zoom_percent: Option<u16>,
     _tray_handle: Option<tray::TrayHandle>,
@@ -370,6 +378,7 @@ impl PosthazeApp {
             inspector_height: DEFAULT_INSPECTOR_HEIGHT,
             inspector_collapsed: true,
             active_resize: None,
+            pending_file_drag: None,
             motion: MotionState::default(),
             motion_loop_running: false,
             startup_layout_applied: false,
@@ -379,6 +388,7 @@ impl PosthazeApp {
             last_progress_notify: Instant::now(),
             quitting: false,
             window_hidden: start_minimized,
+            eco_qos_active: false,
             last_applied_theme: Some(initial_theme_key),
             last_zoom_percent: None,
             _tray_handle: None,
@@ -409,6 +419,7 @@ impl PosthazeApp {
             true
         });
 
+        drag_drop::install_drag_subclass(window);
         app.refresh_from_engine(cx);
         app.start_event_listener(cx);
         app.start_ipc_listener(cx);
@@ -448,11 +459,32 @@ impl PosthazeApp {
         .detach();
     }
 
+    fn sync_eco_qos(&mut self) {
+        let has_active_transfers = self.queue.records.iter().any(|r| {
+            let state = self
+                .queue
+                .live_map
+                .get(&r.id)
+                .map_or(r.state, |s| s.state);
+            matches!(state, DownloadState::Active | DownloadState::Probing)
+        }) || self
+            .queue
+            .live_map
+            .values()
+            .any(|s| matches!(s.state, DownloadState::Active | DownloadState::Probing));
+        let want_eco = self.window_hidden && !has_active_transfers;
+        if self.eco_qos_active != want_eco {
+            self.eco_qos_active = want_eco;
+            set_process_eco_qos(want_eco);
+        }
+    }
+
     fn set_window_hidden(&mut self, hidden: bool, cx: &mut Context<Self>) {
         if self.window_hidden == hidden {
             return;
         }
         self.window_hidden = hidden;
+        self.sync_eco_qos();
         if !hidden {
             self.motion.snap_to_live(&self.queue.live_map);
             cx.notify();
@@ -461,6 +493,7 @@ impl PosthazeApp {
 
     fn apply_snapshot(&mut self, snapshot: EngineSnapshot, cx: &mut Context<Self>) {
         let effect = self.queue.apply_snapshot(snapshot);
+        self.sync_eco_qos();
         let existing: std::collections::HashSet<&DownloadId> =
             self.queue.records.iter().map(|r| &r.id).collect();
         self.motion.prune_missing(&existing);
@@ -700,6 +733,14 @@ impl PosthazeApp {
                                 },
                                 win_active,
                             );
+                            if matches!(state, DownloadState::Active | DownloadState::Probing) {
+                                if app.eco_qos_active {
+                                    app.eco_qos_active = false;
+                                    set_process_eco_qos(false);
+                                }
+                            } else {
+                                app.sync_eco_qos();
+                            }
                             app.execute_ui_effects(effects, cx);
                         });
                     }
@@ -1095,10 +1136,7 @@ impl PosthazeApp {
             return;
         }
         if let SettingsAction::OpenReleaseNotes(url) = action {
-            if let Err(err) = open_url_in_browser(&url) {
-                self.status_banner = Some(err);
-                cx.notify();
-            }
+            self.run_shell_open(move || open_url_in_browser(&url), cx);
             return;
         }
         if matches!(action, SettingsAction::RefreshBrowserStatus) {
@@ -1122,10 +1160,7 @@ impl PosthazeApp {
             return;
         }
         if matches!(action, SettingsAction::OpenLogsFolder) {
-            if let Err(err) = open_directory_in_shell(&default_logs_dir()) {
-                self.status_banner = Some(err);
-                cx.notify();
-            }
+            self.run_shell_open(|| open_directory_in_shell(&default_logs_dir()), cx);
             return;
         }
         if matches!(action, SettingsAction::BrowseSaveFolder) {
@@ -1289,16 +1324,51 @@ impl PosthazeApp {
         }
     }
 
+    /// Runs an OS shell-open operation off the GPUI UI thread so Win32 `ShellExecuteW`
+    /// never pumps nested window messages while `App` is mutably borrowed.
+    fn run_shell_open(
+        &self,
+        op: impl FnOnce() -> Result<(), String> + Send + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        let handle = self.bridge.runtime().spawn_blocking(op);
+        cx.spawn(async move |this, cx| {
+            if let Ok(Err(err)) = handle.await {
+                let _ = this.update(cx, |app, cx| {
+                    app.status_banner = Some(err);
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
+    pub(crate) fn collect_drag_paths(&self, row_id: &DownloadId) -> Vec<PathBuf> {
+        let selected = self.queue.selected_list();
+        let target_ids: Vec<&DownloadId> =
+            if self.queue.is_selected(row_id) && selected.len() > 1 {
+                selected.iter().collect()
+            } else {
+                vec![row_id]
+            };
+
+        target_ids
+            .into_iter()
+            .filter_map(|id| self.queue.records.iter().find(|r| &r.id == id))
+            .filter(|r| r.state == DownloadState::Completed)
+            .filter_map(|r| r.output_path.as_ref())
+            .filter(|path| path.is_file())
+            .cloned()
+            .collect()
+    }
+
     fn open_downloaded_file(&mut self, output_path: Option<PathBuf>, cx: &mut Context<Self>) {
         let Some(path) = output_path else {
             self.status_banner = Some("No output path recorded for this download.".to_string());
             cx.notify();
             return;
         };
-        if let Err(err) = open_file_in_shell(&path) {
-            self.status_banner = Some(err);
-            cx.notify();
-        }
+        self.run_shell_open(move || open_file_in_shell(&path), cx);
     }
 
     fn execute_context_menu_action(
@@ -1465,10 +1535,7 @@ impl PosthazeApp {
             cx.notify();
             return;
         };
-        if let Err(err) = open_folder_in_shell(&path) {
-            self.status_banner = Some(err);
-            cx.notify();
-        }
+        self.run_shell_open(move || open_folder_in_shell(&path), cx);
     }
 
     fn resume_all(&mut self, cx: &mut Context<Self>) {
@@ -1891,66 +1958,80 @@ impl Render for PosthazeApp {
             }))
             .when(resizing_sidebar, |el| el.cursor_col_resize())
             .when(resizing_inspector, |el| el.cursor_row_resize())
-            .on_mouse_move(cx.listener(|app, event: &MouseMoveEvent, _, cx| {
-                let Some(resize) = app.active_resize else {
-                    return;
-                };
-                if event.pressed_button != Some(MouseButton::Left) {
-                    app.active_resize = None;
+            .on_mouse_move(cx.listener(|app, event: &MouseMoveEvent, window, cx| {
+                if let Some(resize) = app.active_resize {
+                    if event.pressed_button != Some(MouseButton::Left) {
+                        app.active_resize = None;
+                        cx.notify();
+                        return;
+                    }
+                    match resize {
+                        ActiveResize::Sidebar {
+                            start_x,
+                            start_width,
+                        } => {
+                            let delta = f32::from(event.position.x - start_x);
+                            let (detented, did_snap) = apply_magnetic_detent(
+                                start_width + delta,
+                                DEFAULT_SIDEBAR_WIDTH,
+                                SIDEBAR_MAGNETIC_SNAP_RADIUS,
+                            );
+                            let (collapsed, expanded_width) =
+                                resolve_sidebar_drag(detented, app.sidebar_width);
+                            let was_collapsed = app.sidebar_collapsed;
+                            let width_changed = (expanded_width - app.sidebar_width).abs() > 0.5;
+                            app.sidebar_collapsed = collapsed;
+                            app.sidebar_width = expanded_width;
+                            app.motion.set_sidebar_immediate();
+                            if (did_snap && width_changed) || (collapsed != was_collapsed) {
+                                app.motion.trigger_sash_detent(Instant::now());
+                                app.ensure_motion_loop(cx);
+                            }
+                        }
+                        ActiveResize::Inspector {
+                            start_y,
+                            start_height,
+                        } => {
+                            let delta = f32::from(start_y - event.position.y);
+                            let (detented, did_snap) = apply_magnetic_detent(
+                                start_height + delta,
+                                DEFAULT_INSPECTOR_HEIGHT,
+                                INSPECTOR_MAGNETIC_SNAP_RADIUS,
+                            );
+                            let (collapsed, expanded_height) =
+                                resolve_inspector_drag(detented, app.inspector_height);
+                            let was_collapsed = app.inspector_collapsed;
+                            let height_changed =
+                                (expanded_height - app.inspector_height).abs() > 0.5;
+                            app.inspector_collapsed = collapsed;
+                            app.inspector_height = expanded_height;
+                            app.motion.set_inspector_immediate();
+                            if (did_snap && height_changed) || (collapsed != was_collapsed) {
+                                app.motion.trigger_sash_detent(Instant::now());
+                                app.ensure_motion_loop(cx);
+                            }
+                        }
+                    }
                     cx.notify();
                     return;
                 }
-                match resize {
-                    ActiveResize::Sidebar {
-                        start_x,
-                        start_width,
-                    } => {
-                        let delta = f32::from(event.position.x - start_x);
-                        let (detented, did_snap) = apply_magnetic_detent(
-                            start_width + delta,
-                            DEFAULT_SIDEBAR_WIDTH,
-                            SIDEBAR_MAGNETIC_SNAP_RADIUS,
-                        );
-                        let (collapsed, expanded_width) =
-                            resolve_sidebar_drag(detented, app.sidebar_width);
-                        let was_collapsed = app.sidebar_collapsed;
-                        let width_changed = (expanded_width - app.sidebar_width).abs() > 0.5;
-                        app.sidebar_collapsed = collapsed;
-                        app.sidebar_width = expanded_width;
-                        app.motion.set_sidebar_immediate();
-                        if (did_snap && width_changed) || (collapsed != was_collapsed) {
-                            app.motion.trigger_sash_detent(Instant::now());
-                            app.ensure_motion_loop(cx);
-                        }
+
+                if let Some(pending) = app.pending_file_drag.as_ref() {
+                    if event.pressed_button != Some(MouseButton::Left) {
+                        app.pending_file_drag = None;
+                        return;
                     }
-                    ActiveResize::Inspector {
-                        start_y,
-                        start_height,
-                    } => {
-                        let delta = f32::from(start_y - event.position.y);
-                        let (detented, did_snap) = apply_magnetic_detent(
-                            start_height + delta,
-                            DEFAULT_INSPECTOR_HEIGHT,
-                            INSPECTOR_MAGNETIC_SNAP_RADIUS,
-                        );
-                        let (collapsed, expanded_height) =
-                            resolve_inspector_drag(detented, app.inspector_height);
-                        let was_collapsed = app.inspector_collapsed;
-                        let height_changed = (expanded_height - app.inspector_height).abs() > 0.5;
-                        app.inspector_collapsed = collapsed;
-                        app.inspector_height = expanded_height;
-                        app.motion.set_inspector_immediate();
-                        if (did_snap && height_changed) || (collapsed != was_collapsed) {
-                            app.motion.trigger_sash_detent(Instant::now());
-                            app.ensure_motion_loop(cx);
-                        }
+                    if drag_drop::exceeds_drag_threshold(pending.start_pos, event.position)
+                        && let Some(drag) = app.pending_file_drag.take()
+                    {
+                        drag_drop::request_file_drag(window, drag.paths);
                     }
                 }
-                cx.notify();
             }))
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|app, _, _, cx| {
+                    app.pending_file_drag = None;
                     if app.active_resize.take().is_some() {
                         cx.notify();
                     }

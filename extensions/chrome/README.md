@@ -12,7 +12,7 @@ Manifest V3 extension for **Browser Capture**, forwarding intercepted downloads 
 
 ## Features & Safety
 
-- **Instant Cancel-and-Erase Handoff:** Intercepted downloads are cancelled and erased immediately in the browser so Chrome's download bubble animation does not linger. If the Native Messaging Host is unreachable or returns an error, the extension falls back to `chrome.downloads.download` with a one-shot bypass so the transfer is not lost.
+- **Instant Cancel-and-Erase Handoff:** When Posthaze is running (open or minimized to the System Tray), intercepted downloads are cancelled and erased immediately in the browser and handed off to Posthaze. When Posthaze is closed, the browser keeps and downloads the file normally. If a handoff fails unexpectedly, the extension falls back to `chrome.downloads.download` with a one-shot bypass so the transfer is not lost.
 - **Capture Filters:** Open **CAPTURE FILTERS** in the toolbar popup to configure minimum file size (MiB), excluded extensions (default `svg`), and excluded domains (default `localhost, 127.0.0.1`).
 - **Context Menu:** Right-click any link, video, audio, or image and choose **Download with Posthaze**.
 - **Toolbar Badge:** Shows `OFF` when interception is paused, `!` if the last handoff failed, or stays clear when healthy.
