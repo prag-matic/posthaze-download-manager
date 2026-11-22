@@ -1,0 +1,27 @@
+changelog:
+  exclude:
+    labels:
+      - ignore-for-release
+    authors:
+      - dependabot
+  categories:
+    - title: Features
+      labels:
+        - enhancement
+        - feature
+    - title: Performance & Reliability
+      labels:
+        - performance
+    - title: Bug Fixes
+      labels:
+        - bug
+    - title: Installer & Packaging
+      labels:
+        - packaging
+        - release
+    - title: Documentation
+      labels:
+        - documentation
+    - title: Other Changes
+      labels:
+        - "*"
