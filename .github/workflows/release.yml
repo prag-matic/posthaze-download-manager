@@ -155,20 +155,20 @@ jobs:
             }
           }
 
-          $footer = @"
----
-
-### Downloads
-- **Installer (``posthaze-$ver-windows-x64-setup.exe``):** Per-user Windows installer (no admin required) with the desktop app, CLI, and Chrome extension.
-- **Portable (``posthaze-$ver-windows-x64-portable.zip``):** Extract and run anywhere; keeps all data and logs in ``./data/``.
-
-### SmartScreen Note
-Binaries are currently unsigned. If Windows SmartScreen warns you, click **More info** -> **Run anyway** after checking the file hash against ``SHA256SUMS.txt``:
-
-``````powershell
-Get-FileHash .\posthaze-$ver-windows-x64-setup.exe -Algorithm SHA256
-``````
-"@
+          $footer = @(
+            '---',
+            '',
+            '### Downloads',
+            "- **Installer (``posthaze-$ver-windows-x64-setup.exe``):** Per-user Windows installer (no admin required) with the desktop app, CLI, and Chrome extension.",
+            "- **Portable (``posthaze-$ver-windows-x64-portable.zip``):** Extract and run anywhere; keeps all data and logs in ``./data/``.",
+            '',
+            '### SmartScreen Note',
+            'Binaries are currently unsigned. If Windows SmartScreen warns you, click **More info** -> **Run anyway** after checking the file hash against `SHA256SUMS.txt`:',
+            '',
+            '```powershell',
+            "Get-FileHash .\posthaze-$ver-windows-x64-setup.exe -Algorithm SHA256",
+            '```'
+          ) -join "`n"
 
           if ($hasChangelogSection) {
             $notes = "## Posthaze Download Manager v$ver (Windows x64)`n`n$sectionBody`n`n$footer"
