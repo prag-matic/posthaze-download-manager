@@ -446,6 +446,8 @@ impl DownloadEngine {
             max_workers: record.max_workers,
             sync_on_complete: record.sync_on_complete,
             headers: record.headers,
+            known_content_length: record.content_length,
+            skip_probe: false,
         };
 
         Ok(self.spawn_fresh_download(id.clone(), req).await)

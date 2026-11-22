@@ -21,6 +21,12 @@ pub struct BrowserDownloadRequest {
     pub filename: Option<String>,
     #[serde(default)]
     pub headers: Vec<(String, String)>,
+    #[serde(rename = "totalBytes", default)]
+    pub total_bytes: Option<u64>,
+    #[serde(rename = "singleStream", default)]
+    pub single_stream: bool,
+    #[serde(rename = "skipProbe", default)]
+    pub skip_probe: bool,
 }
 
 fn default_req_type() -> String {
@@ -208,13 +214,16 @@ mod tests {
         assert_eq!(parse_pipe_command(r#"{"type":"ping"}"#).unwrap(), None);
 
         let Some(PipeCommand::Enqueue(req)) = parse_pipe_command(
-            r#"{"type":"enqueue","url":"https://example.com/a.zip","headers":[["Cookie","a=1"]]}"#,
+            r#"{"type":"enqueue","url":"https://example.com/a.zip","headers":[["Cookie","a=1"]],"totalBytes":4096,"singleStream":true,"skipProbe":true}"#,
         )
         .unwrap() else {
             panic!("expected Enqueue command");
         };
         assert_eq!(req.url, "https://example.com/a.zip");
         assert_eq!(req.headers, vec![("Cookie".to_string(), "a=1".to_string())]);
+        assert_eq!(req.total_bytes, Some(4096));
+        assert!(req.single_stream);
+        assert!(req.skip_probe);
 
         assert!(parse_pipe_command(r#"{"type":"enqueue","url":"ftp://example.com/a.zip"}"#).is_err());
         assert!(parse_pipe_command("not json").is_err());

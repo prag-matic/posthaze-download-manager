@@ -88,3 +88,34 @@ export async function buildHeaders(url, referrer, options = {}) {
 
   return headers;
 }
+
+/**
+ * Computes optional `totalBytes` and `singleStream` / `skipProbe` hints from a Chrome
+ * `DownloadItem` and extension settings.
+ */
+export function buildEnqueueHints(url, item, settings = {}) {
+  const totalBytes =
+    item && Number.isFinite(item.totalBytes) && item.totalBytes > 0 ? item.totalBytes : null;
+
+  let singleStream = false;
+  try {
+    const parsed = new URL(url);
+    const params = parsed.searchParams;
+    const hasExpiryMac = params.has("expiry") && params.has("mac");
+    const host = parsed.hostname.toLowerCase();
+    const configured = String(settings?.singleStreamDomains || "")
+      .split(",")
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+    const matchesDomain = configured.some((d) => host === d || host.endsWith(`.${d}`));
+    singleStream = hasExpiryMac || matchesDomain;
+  } catch {
+    singleStream = false;
+  }
+
+  return {
+    totalBytes,
+    singleStream,
+    skipProbe: singleStream,
+  };
+}

@@ -4,7 +4,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures_util::StreamExt;
 use reqwest::StatusCode;
-use reqwest::header::RANGE;
+use reqwest::header::{CONTENT_TYPE, HeaderMap, RANGE};
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 
@@ -122,6 +122,7 @@ pub(crate) async fn execute_single_stream(
     url: &str,
     headers: &[(String, String)],
     limiter: Option<&BandwidthLimiter>,
+    expected_content_length: Option<u64>,
     writer: &PartFileWriter,
     downloaded: &AtomicU64,
     active_workers: &AtomicUsize,
@@ -147,6 +148,15 @@ pub(crate) async fn execute_single_stream(
             status: status.as_u16(),
             url: resp.url().to_string(),
         });
+    }
+
+    if status == StatusCode::OK
+        && is_html_content_type(resp.headers())
+        && expected_content_length.is_some()
+        && resp.content_length() != expected_content_length
+    {
+        active_workers.store(0, Ordering::Relaxed);
+        return Err(build_html_error(resp).await);
     }
 
     let result = stream_unbounded_to_writer(resp, limiter, writer, downloaded, control_rx).await;
@@ -598,6 +608,9 @@ async fn run_segment_attempt(
     if !(status == StatusCode::PARTIAL_CONTENT
         || (allow_full_200 && attempt_start == 0 && status == StatusCode::OK))
     {
+        if status == StatusCode::OK && is_html_content_type(resp.headers()) {
+            return Err(build_html_error(resp).await);
+        }
         return Err(EngineError::HttpStatus {
             status: status.as_u16(),
             url: resp.url().to_string(),
@@ -700,7 +713,8 @@ fn is_transient_error(err: &EngineError) -> bool {
         | EngineError::ResourceChanged(_)
         | EngineError::Paused
         | EngineError::Cancelled
-        | EngineError::TaskJoin(_) => false,
+        | EngineError::TaskJoin(_)
+        | EngineError::UnexpectedHtmlResponse { .. } => false,
     }
 }
 
@@ -826,6 +840,66 @@ async fn stream_unbounded_to_writer(
     }
 
     Ok(written)
+}
+
+fn is_html_content_type(headers: &HeaderMap) -> bool {
+    headers
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.split(';').next().unwrap_or("").trim())
+        .is_some_and(|mime| {
+            mime.eq_ignore_ascii_case("text/html")
+                || mime.eq_ignore_ascii_case("application/xhtml+xml")
+        })
+}
+
+async fn build_html_error(resp: reqwest::Response) -> EngineError {
+    let url = resp.url().to_string();
+    let content_type = resp
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("text/html")
+        .to_string();
+
+    let mut body_bytes = Vec::new();
+    let mut stream = resp.bytes_stream();
+    while let Some(Ok(chunk)) = stream.next().await {
+        let remaining = 4096usize.saturating_sub(body_bytes.len());
+        if remaining == 0 {
+            break;
+        }
+        let take = chunk.len().min(remaining);
+        body_bytes.extend_from_slice(&chunk[..take]);
+        if body_bytes.len() >= 4096 {
+            break;
+        }
+    }
+
+    let text = String::from_utf8_lossy(&body_bytes);
+    let title = extract_html_title(&text);
+    let detail = match title {
+        Some(t) if !t.is_empty() => format!("Content-Type {content_type}; title: \"{t}\""),
+        _ => format!("Content-Type {content_type}"),
+    };
+
+    EngineError::UnexpectedHtmlResponse { url, detail }
+}
+
+fn extract_html_title(html: &str) -> Option<String> {
+    let lower = html.to_ascii_lowercase();
+    let start_tag = lower.find("<title")?;
+    let after_open = &lower[start_tag..];
+    let gt = after_open.find('>')?;
+    let content_start = start_tag + gt + 1;
+    let end_rel = lower[content_start..].find("</title>")?;
+    let raw = &html[content_start..content_start + end_rel];
+    let collapsed: String = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        None
+    } else {
+        Some(collapsed.chars().take(120).collect())
+    }
 }
 
 #[cfg(test)]

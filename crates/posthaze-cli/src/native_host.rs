@@ -29,6 +29,12 @@ pub struct NativeRequest {
     pub filename: Option<String>,
     #[serde(default)]
     pub headers: Vec<(String, String)>,
+    #[serde(rename = "totalBytes", default)]
+    pub total_bytes: Option<u64>,
+    #[serde(rename = "singleStream", default)]
+    pub single_stream: bool,
+    #[serde(rename = "skipProbe", default)]
+    pub skip_probe: bool,
 }
 
 fn default_req_type() -> String {
@@ -177,6 +183,13 @@ async fn handle_request(req: NativeRequest, db_path: &PathBuf) -> NativeResponse
             if !req.headers.is_empty() {
                 download_req.headers = req.headers;
             }
+            if req.total_bytes.is_some_and(|b| b > 0) {
+                download_req.known_content_length = req.total_bytes;
+            }
+            if req.single_stream || req.skip_probe {
+                download_req.max_workers = 1;
+            }
+            download_req.skip_probe = req.skip_probe;
             match engine.enqueue_paused(download_req).await {
                 Ok(id) => NativeResponse::success(
                     "queued-headless",
@@ -270,6 +283,9 @@ mod tests {
             url: "https://example.com/archive.zip".to_string(),
             filename: Some("archive.zip".to_string()),
             headers: vec![("Referer".to_string(), "https://example.com/".to_string())],
+            total_bytes: Some(1024),
+            single_stream: true,
+            skip_probe: true,
         };
         let encoded = serde_json::to_vec(&req).unwrap();
 

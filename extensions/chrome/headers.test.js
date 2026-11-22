@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildHeaders } from "./headers.js";
+import { buildEnqueueHints, buildHeaders } from "./headers.js";
 
 test("merges unpartitioned and CHIPS-partitioned cookies without duplicates", async () => {
   const calls = [];
@@ -148,4 +148,28 @@ test("degrades gracefully when partitioned cookie lookup throws", async () => {
     ["User-Agent", "TestAgent/1.0"],
     ["Cookie", "sid=abc"],
   ]);
+});
+
+test("buildEnqueueHints forwards totalBytes and sets singleStream/skipProbe for signed expiry+mac URLs", () => {
+  const hints = buildEnqueueHints(
+    "https://drive.kayoani.online/download.aspx?file=abc&expiry=12345&mac=deadbeef",
+    { totalBytes: 52428800 },
+    {},
+  );
+  assert.deepEqual(hints, {
+    totalBytes: 52428800,
+    singleStream: true,
+    skipProbe: true,
+  });
+
+  const normalHints = buildEnqueueHints(
+    "https://cdn.example.com/archive.zip",
+    { totalBytes: -1 },
+    {},
+  );
+  assert.deepEqual(normalHints, {
+    totalBytes: null,
+    singleStream: false,
+    skipProbe: false,
+  });
 });

@@ -645,11 +645,18 @@ impl PosthazeApp {
                                     (app.queue.settings.clone(), idx)
                                 })
                                 .unwrap_or_default();
+                            let hints = preflight_window::PreflightHints {
+                                filename: req.filename,
+                                total_bytes: req.total_bytes.filter(|b| *b > 0),
+                                single_stream: req.single_stream,
+                                skip_probe: req.skip_probe,
+                            };
                             PreflightWindow::open(
                                 bridge_for_win,
                                 settings,
                                 req.url,
                                 req.headers,
+                                hints,
                                 window_handle,
                                 main_app,
                                 cascade,
@@ -868,6 +875,7 @@ impl PosthazeApp {
             settings,
             url,
             headers,
+            preflight_window::PreflightHints::default(),
             main_window,
             main_app,
             cascade_idx,

@@ -202,28 +202,48 @@ async fn execute_download(
     let total_start = Instant::now();
     let probe_start = Instant::now();
 
-    let (probe_url, probe_headers, prior_progress, resume_prev_state) = match &mode {
-        TransferMode::Fresh(request) => (request.url.as_str(), request.headers.as_slice(), (0, None), None),
-        TransferMode::Resume { record, .. } => (
-            record.url.as_str(),
-            record.headers.as_slice(),
-            (record.bytes_downloaded, record.content_length),
-            Some(record.state),
-        ),
-    };
+    let mut probe = match &mode {
+        TransferMode::Fresh(request) if request.skip_probe => ProbeResult {
+            final_url: request.url.clone(),
+            content_length: request.known_content_length,
+            supports_ranges: false,
+            etag: None,
+            last_modified: None,
+            suggested_filename: request
+                .output_path
+                .as_deref()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                .map(ToString::to_string)
+                .unwrap_or_else(|| crate::probe::fallback_filename_from_url(&request.url)),
+        },
+        _ => {
+            let (probe_url, probe_headers, prior_progress, resume_prev_state) = match &mode {
+                TransferMode::Fresh(request) => {
+                    (request.url.as_str(), request.headers.as_slice(), (0, None), None)
+                }
+                TransferMode::Resume { record, .. } => (
+                    record.url.as_str(),
+                    record.headers.as_slice(),
+                    (record.bytes_downloaded, record.content_length),
+                    Some(record.state),
+                ),
+            };
 
-    let probe = probe_with_control(
-        &client,
-        &store,
-        &sink,
-        &mut control_rx,
-        &id,
-        probe_url,
-        probe_headers,
-        prior_progress,
-        resume_prev_state,
-    )
-    .await?;
+            probe_with_control(
+                &client,
+                &store,
+                &sink,
+                &mut control_rx,
+                &id,
+                probe_url,
+                probe_headers,
+                prior_progress,
+                resume_prev_state,
+            )
+            .await?
+        }
+    };
     let probe_duration = probe_start.elapsed();
 
     if let TransferMode::Resume { record, .. } = &mode
@@ -369,7 +389,7 @@ async fn execute_download(
     } else {
         match select_transfer_strategy(&probe) {
             TransferStrategy::MultiSegment(total_bytes) => {
-                execute_multi_segment(
+                let multi_res = execute_multi_segment(
                     &client,
                     &probe.final_url,
                     &headers,
@@ -379,17 +399,66 @@ async fn execute_download(
                     &writer,
                     &downloaded,
                     &active_workers,
-                    control_rx,
+                    control_rx.clone(),
                     persist,
                     Some(&live_segments_slot),
                 )
-                .await
+                .await;
+
+                match multi_res {
+                    Err(EngineError::HttpStatus { status: 200, .. }) => {
+                        tracing::warn!(
+                            download_id = %id,
+                            url = %probe.final_url,
+                            "server returned HTTP 200 to Range request; falling back to single-stream transfer"
+                        );
+                        *live_segments_slot.lock().unwrap() = None;
+                        probe.supports_ranges = false;
+                        downloaded.store(0, Ordering::Relaxed);
+                        if let Some(store) = &store
+                            && let Err(err) = store
+                                .downgrade_to_single_stream(&id, probe.content_length)
+                                .await
+                        {
+                            reporter.abort();
+                            return Err(fail_download(
+                                &Some(store.clone()),
+                                &sink,
+                                &id,
+                                0,
+                                probe.content_length,
+                                err,
+                            )
+                            .await);
+                        }
+                        execute_single_stream(
+                            &client,
+                            &probe.final_url,
+                            &headers,
+                            Some(limiter.as_ref()),
+                            probe.content_length,
+                            &writer,
+                            &downloaded,
+                            &active_workers,
+                            control_rx,
+                        )
+                        .await
+                        .map(|bytes| MultiSegmentResult {
+                            bytes_written: bytes,
+                            workers_used: 1,
+                            splits_performed: 0,
+                            retries_performed: 0,
+                        })
+                    }
+                    other => other,
+                }
             }
             TransferStrategy::SingleStream => execute_single_stream(
                 &client,
                 &probe.final_url,
                 &headers,
                 Some(limiter.as_ref()),
+                probe.content_length,
                 &writer,
                 &downloaded,
                 &active_workers,
@@ -442,6 +511,8 @@ pub(crate) fn resolve_resume_mode(
             max_workers: record.max_workers,
             sync_on_complete: record.sync_on_complete,
             headers: record.headers,
+            known_content_length: record.content_length,
+            skip_probe: false,
         }));
     }
 

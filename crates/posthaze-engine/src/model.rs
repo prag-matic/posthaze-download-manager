@@ -122,6 +122,15 @@ pub enum EngineError {
         url: String,
     },
 
+    /// Server returned an HTML page (e.g. expired token, login gate, or error page) instead of file bytes.
+    #[error("server returned HTML instead of file for {url}: {detail}")]
+    UnexpectedHtmlResponse {
+        /// Effective URL that returned HTML.
+        url: String,
+        /// Diagnostic summary (e.g. `Content-Type` and page title/snippet).
+        detail: String,
+    },
+
     /// Local filesystem or OS I/O error.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
@@ -179,7 +188,9 @@ impl EngineError {
     pub fn failure_kind(&self) -> FailureKind {
         match self {
             Self::ResourceChanged(_) => FailureKind::ResourceChanged,
-            Self::InvalidState(_) => FailureKind::NonResumable,
+            Self::InvalidState(_) | Self::UnexpectedHtmlResponse { .. } => {
+                FailureKind::NonResumable
+            }
             Self::HttpStatus { status, .. }
                 if *status != 408 && *status != 429 && !(500..=599).contains(status) =>
             {
@@ -205,6 +216,10 @@ pub struct DownloadRequest {
     pub sync_on_complete: bool,
     /// Custom HTTP request headers (`(name, value)`) sent on probe, transfer, and resume.
     pub headers: Vec<(String, String)>,
+    /// Optional known `Content-Length` (e.g., `totalBytes` from `Browser Capture`).
+    pub known_content_length: Option<u64>,
+    /// Skip `Probing` (`HEAD` / `Range: bytes=0-0` `GET`) and start a single-stream `Download` directly.
+    pub skip_probe: bool,
 }
 
 impl DownloadRequest {
@@ -217,6 +232,8 @@ impl DownloadRequest {
             max_workers: 8,
             sync_on_complete: false,
             headers: Vec::new(),
+            known_content_length: None,
+            skip_probe: false,
         }
     }
 }

@@ -179,6 +179,13 @@ fn resolve_filename(headers: &reqwest::header::HeaderMap, url: &reqwest::Url) ->
         .unwrap_or_else(|| "download.bin".to_string())
 }
 
+pub(crate) fn fallback_filename_from_url(raw_url: &str) -> String {
+    reqwest::Url::parse(raw_url)
+        .ok()
+        .and_then(|u| filename_from_url(&u))
+        .unwrap_or_else(|| "download.bin".to_string())
+}
+
 fn header_string(
     headers: &reqwest::header::HeaderMap,
     name: reqwest::header::HeaderName,

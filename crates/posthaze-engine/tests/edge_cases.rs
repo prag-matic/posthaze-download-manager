@@ -206,3 +206,159 @@ async fn chaos_high_concurrency_with_drops_503s_and_work_stealing() {
     let disk_bytes = std::fs::read(&outcome.final_path).unwrap();
     assert_eq!(blake3::hash(&disk_bytes), expected_hash);
 }
+
+#[tokio::test]
+async fn falls_back_to_single_stream_when_range_get_returns_200_ok() {
+    let payload: Vec<u8> = (0..(4 * 1024 * 1024 + 123))
+        .map(|i| ((i * 31 + 7) % 251) as u8)
+        .collect();
+    let expected_hash = blake3::hash(&payload);
+    let payload_clone = payload.clone();
+
+    let base_url = spawn_mock_server(move |method, path, _range| match (method, path) {
+        ("HEAD", "/ignore-range.bin") => MockResponse {
+            status: "200 OK",
+            headers: vec![
+                ("Content-Length".into(), payload_clone.len().to_string()),
+                ("Accept-Ranges".into(), "bytes".into()),
+                ("Content-Type".into(), "application/octet-stream".into()),
+            ],
+            body: Vec::new(),
+        },
+        ("GET", "/ignore-range.bin") => MockResponse {
+            status: "200 OK",
+            headers: vec![
+                ("Content-Length".into(), payload_clone.len().to_string()),
+                ("Content-Type".into(), "application/octet-stream".into()),
+            ],
+            body: payload_clone.clone(),
+        },
+        _ => MockResponse {
+            status: "404 Not Found",
+            headers: vec![("Content-Length".into(), "0".into())],
+            body: Vec::new(),
+        },
+    })
+    .await;
+
+    let temp_dir = TempDir::new().unwrap();
+    let mut req = DownloadRequest::new(format!("{base_url}/ignore-range.bin"), temp_dir.path());
+    req.max_workers = 4;
+
+    let engine = DownloadEngine::new();
+    let outcome = engine
+        .download(req, None)
+        .await
+        .expect("download should fall back to single-stream and succeed");
+
+    assert!(!outcome.supports_ranges);
+    assert_eq!(outcome.workers_used, 1);
+    assert_eq!(outcome.bytes_downloaded, payload.len() as u64);
+    let disk_bytes = std::fs::read(&outcome.final_path).unwrap();
+    assert_eq!(blake3::hash(&disk_bytes), expected_hash);
+}
+
+#[tokio::test]
+async fn rejects_html_200_response_instead_of_file_bytes() {
+    let html_body =
+        b"<html><head><title>Link Expired</title></head><body>Please refresh</body></html>"
+            .to_vec();
+    let html_clone = html_body.clone();
+
+    let base_url = spawn_mock_server(move |method, path, _range| match (method, path) {
+        ("HEAD", "/download.aspx") => MockResponse {
+            status: "200 OK",
+            headers: vec![
+                ("Content-Length".into(), (5 * 1024 * 1024).to_string()),
+                ("Accept-Ranges".into(), "bytes".into()),
+                ("Content-Type".into(), "application/octet-stream".into()),
+            ],
+            body: Vec::new(),
+        },
+        ("GET", "/download.aspx") => MockResponse {
+            status: "200 OK",
+            headers: vec![
+                ("Content-Length".into(), html_clone.len().to_string()),
+                ("Content-Type".into(), "text/html; charset=utf-8".into()),
+            ],
+            body: html_clone.clone(),
+        },
+        _ => MockResponse {
+            status: "404 Not Found",
+            headers: vec![("Content-Length".into(), "0".into())],
+            body: Vec::new(),
+        },
+    })
+    .await;
+
+    let temp_dir = TempDir::new().unwrap();
+    let mut req = DownloadRequest::new(format!("{base_url}/download.aspx"), temp_dir.path());
+    req.max_workers = 4;
+
+    let engine = DownloadEngine::new();
+    let err = engine
+        .download(req, None)
+        .await
+        .expect_err("HTML 200 response should fail with diagnostic error");
+
+    match err {
+        EngineError::UnexpectedHtmlResponse { detail, .. } => {
+            assert!(
+                detail.contains("Link Expired"),
+                "expected HTML title in detail, got: {detail}"
+            );
+        }
+        other => panic!("expected UnexpectedHtmlResponse, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn skip_probe_downloads_single_use_endpoint_with_one_request() {
+    let payload = b"single-use-signed-token-payload-bytes".to_vec();
+    let expected_hash = blake3::hash(&payload);
+    let payload_clone = payload.clone();
+    let request_count = Arc::new(AtomicUsize::new(0));
+    let request_count_srv = Arc::clone(&request_count);
+
+    let base_url = spawn_mock_server(move |method, path, range| {
+        let n = request_count_srv.fetch_add(1, Ordering::SeqCst) + 1;
+        if method == "GET" && path == "/once.aspx" && n == 1 && range.is_none() {
+            MockResponse {
+                status: "200 OK",
+                headers: vec![
+                    ("Content-Length".into(), payload_clone.len().to_string()),
+                    ("Content-Type".into(), "application/octet-stream".into()),
+                ],
+                body: payload_clone.clone(),
+            }
+        } else {
+            MockResponse {
+                status: "410 Gone",
+                headers: vec![("Content-Length".into(), "0".into())],
+                body: Vec::new(),
+            }
+        }
+    })
+    .await;
+
+    let temp_dir = TempDir::new().unwrap();
+    let mut req = DownloadRequest::new(format!("{base_url}/once.aspx"), temp_dir.path());
+    req.output_path = Some(temp_dir.path().join("episode.mkv"));
+    req.known_content_length = Some(payload.len() as u64);
+    req.max_workers = 1;
+    req.skip_probe = true;
+
+    let engine = DownloadEngine::new();
+    let outcome = engine
+        .download(req, None)
+        .await
+        .expect("skip_probe should complete single-use URL in one GET");
+
+    assert_eq!(request_count.load(Ordering::SeqCst), 1);
+    assert_eq!(outcome.bytes_downloaded, payload.len() as u64);
+    assert_eq!(outcome.workers_used, 1);
+    assert_eq!(
+        blake3::hash(&std::fs::read(&outcome.final_path).unwrap()),
+        expected_hash
+    );
+}

@@ -292,6 +292,46 @@ impl DownloadStore {
         Ok(())
     }
 
+    /// Downgrades a `Download` from multi-`Segment` to single-stream after a server ignores `Range`.
+    pub(crate) async fn downgrade_to_single_stream(
+        &self,
+        id: &DownloadId,
+        content_length: Option<u64>,
+    ) -> Result<(), EngineError> {
+        let mut tx = self.pool.begin().await?;
+        let now = unix_now();
+
+        sqlx::query(
+            "UPDATE downloads SET
+                supports_ranges = 0,
+                bytes_downloaded = 0,
+                updated_at = ?
+             WHERE id = ?",
+        )
+        .bind(now)
+        .bind(id.as_str())
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query("DELETE FROM segments WHERE download_id = ?")
+            .bind(id.as_str())
+            .execute(&mut *tx)
+            .await?;
+
+        sqlx::query(
+            "INSERT INTO segments (
+                download_id, segment_index, start_offset, cursor_offset, end_offset, completed
+             ) VALUES (?, 0, 0, 0, ?, 0)",
+        )
+        .bind(id.as_str())
+        .bind(content_length.map(|v| v as i64))
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Marks a `Download` as `Completed` and marks all its `Segment`s completed.
     pub(crate) async fn mark_completed(
         &self,

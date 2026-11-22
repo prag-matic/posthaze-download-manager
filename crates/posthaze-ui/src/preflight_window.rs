@@ -7,7 +7,7 @@ use gpui_kit::component::input::InputState;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use posthaze_engine::{
-    CollisionPolicy, DownloadRequest, Settings, resolve_target_path,
+    CollisionPolicy, DownloadRequest, PreflightInfo, Settings, resolve_target_path,
 };
 
 use crate::PosthazeApp;
@@ -21,10 +21,20 @@ use crate::modals::{
 use crate::platform_hooks::spawn_windows_toast;
 use crate::theme::*;
 
+/// Optional browser-capture metadata and transfer hints for [`PreflightWindow`].
+#[derive(Default, Clone)]
+pub(crate) struct PreflightHints {
+    pub(crate) filename: Option<String>,
+    pub(crate) total_bytes: Option<u64>,
+    pub(crate) single_stream: bool,
+    pub(crate) skip_probe: bool,
+}
+
 /// Standalone pre-flight probe & confirmation window for a single `Download` URL.
 pub(crate) struct PreflightWindow {
     bridge: EngineBridge,
     settings: Settings,
+    hints: PreflightHints,
     state: PreflightModalState,
     overwrite_confirm: Option<ConfirmAction>,
     focus_handle: FocusHandle,
@@ -42,6 +52,7 @@ impl PreflightWindow {
         settings: Settings,
         url: String,
         headers: Vec<(String, String)>,
+        hints: PreflightHints,
         main_window: AnyWindowHandle,
         main_app: WeakEntity<PosthazeApp>,
         cascade_idx: usize,
@@ -74,6 +85,7 @@ impl PreflightWindow {
                     settings,
                     url,
                     headers,
+                    hints,
                     main_window,
                     main_app,
                     window,
@@ -113,6 +125,7 @@ impl PreflightWindow {
         settings: Settings,
         url: String,
         headers: Vec<(String, String)>,
+        hints: PreflightHints,
         main_window: AnyWindowHandle,
         main_app: WeakEntity<PosthazeApp>,
         window: &mut Window,
@@ -137,6 +150,7 @@ impl PreflightWindow {
         let mut this = Self {
             bridge,
             settings,
+            hints,
             state: PreflightModalState::Probing {
                 url: url.clone(),
                 headers: headers.clone(),
@@ -148,8 +162,110 @@ impl PreflightWindow {
             _appearance_subscription,
             probe_generation: 0,
         };
-        this.begin_probe(url, headers, window, cx);
+        if this.hints.skip_probe {
+            let suggested_filename = this
+                .hints
+                .filename
+                .as_deref()
+                .and_then(|s| std::path::Path::new(s).file_name())
+                .and_then(|n| n.to_str())
+                .filter(|s| !s.trim().is_empty())
+                .map(ToString::to_string)
+                .unwrap_or_else(|| fallback_filename_from_url_str(&url));
+            let disambiguated_output_path = resolve_target_path(
+                &this.settings.default_output_dir,
+                &suggested_filename,
+                this.settings.collision_policy,
+            )
+            .path;
+            let info = PreflightInfo {
+                original_url: url.clone(),
+                final_url: url,
+                suggested_filename,
+                disambiguated_output_path,
+                content_length: this.hints.total_bytes,
+                supports_ranges: false,
+                etag: None,
+                last_modified: None,
+            };
+            this.apply_probe_info(info, headers, window, cx);
+        } else {
+            this.begin_probe(url, headers, window, cx);
+        }
         this
+    }
+
+    fn apply_probe_info(
+        &mut self,
+        info: PreflightInfo,
+        headers: Vec<(String, String)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let default_workers = self.settings.max_workers.clamp(1, 32);
+        let initial_name = if self.settings.collision_policy == CollisionPolicy::Rename {
+            info.disambiguated_output_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(&info.suggested_filename)
+                .to_string()
+        } else {
+            info.suggested_filename.clone()
+        };
+        let base_dir = info
+            .disambiguated_output_path
+            .parent()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.settings.default_output_dir.clone());
+        let (stem, probed_ext) = split_filename_extension(&initial_name);
+        let extension_locked = self.settings.ui_lock_file_extension && probed_ext.is_some();
+        let display_name = if extension_locked { stem } else { initial_name };
+        let filename_input = cx.new(|cx| {
+            let mut st = InputState::new(window, cx).placeholder("Filename");
+            st.set_value(display_name, window, cx);
+            st
+        });
+        let dir_input = cx.new(|cx| {
+            let mut st = InputState::new(window, cx).placeholder("Output directory");
+            st.set_value(base_dir.to_string_lossy().to_string(), window, cx);
+            st
+        });
+        let init_cookie = find_header_value(&headers, "Cookie").to_string();
+        let init_referer = find_header_value(&headers, "Referer").to_string();
+        let init_ua = find_header_value(&headers, "User-Agent").to_string();
+        let cookie_input = cx.new(|cx| {
+            let mut st = InputState::new(window, cx).placeholder("session=...; token=...");
+            st.set_value(init_cookie, window, cx);
+            st
+        });
+        let referer_input = cx.new(|cx| {
+            let mut st = InputState::new(window, cx).placeholder("https://...");
+            st.set_value(init_referer, window, cx);
+            st
+        });
+        let user_agent_input = cx.new(|cx| {
+            let mut st = InputState::new(window, cx).placeholder("Mozilla/5.0 ...");
+            st.set_value(init_ua, window, cx);
+            st
+        });
+        let workers = if info.supports_ranges && !self.hints.single_stream && !self.hints.skip_probe {
+            default_workers
+        } else {
+            1
+        };
+        self.state = PreflightModalState::Resolved {
+            info: Box::new(info),
+            filename_input,
+            dir_input,
+            cookie_input,
+            referer_input,
+            user_agent_input,
+            headers,
+            active_tab: PreflightTab::General,
+            extension_locked,
+            locked_extension: probed_ext,
+            workers,
+        };
     }
 
     fn begin_probe(
@@ -168,7 +284,6 @@ impl PreflightWindow {
         cx.notify();
 
         let out_dir = self.settings.default_output_dir.clone();
-        let default_workers = self.settings.max_workers.clamp(1, 32);
         let window_handle = window.window_handle();
         let probe_headers = headers.clone();
         let rx = self.bridge.probe(url.clone(), out_dir, probe_headers);
@@ -182,82 +297,7 @@ impl PreflightWindow {
                     }
                     match res {
                         Ok(Ok(info)) => {
-                            let initial_name =
-                                if win.settings.collision_policy == CollisionPolicy::Rename {
-                                    info.disambiguated_output_path
-                                        .file_name()
-                                        .and_then(|n| n.to_str())
-                                        .unwrap_or(&info.suggested_filename)
-                                        .to_string()
-                                } else {
-                                    info.suggested_filename.clone()
-                                };
-                            let base_dir = info
-                                .disambiguated_output_path
-                                .parent()
-                                .map(PathBuf::from)
-                                .unwrap_or_else(|| win.settings.default_output_dir.clone());
-                            let (stem, probed_ext) = split_filename_extension(&initial_name);
-                            let extension_locked =
-                                win.settings.ui_lock_file_extension && probed_ext.is_some();
-                            let display_name = if extension_locked {
-                                stem
-                            } else {
-                                initial_name
-                            };
-                            let filename_input = cx.new(|cx| {
-                                let mut st = InputState::new(window, cx).placeholder("Filename");
-                                st.set_value(display_name, window, cx);
-                                st
-                            });
-                            let dir_input = cx.new(|cx| {
-                                let mut st =
-                                    InputState::new(window, cx).placeholder("Output directory");
-                                st.set_value(base_dir.to_string_lossy().to_string(), window, cx);
-                                st
-                            });
-                            let init_cookie =
-                                find_header_value(&headers, "Cookie").to_string();
-                            let init_referer =
-                                find_header_value(&headers, "Referer").to_string();
-                            let init_ua =
-                                find_header_value(&headers, "User-Agent").to_string();
-                            let cookie_input = cx.new(|cx| {
-                                let mut st =
-                                    InputState::new(window, cx).placeholder("session=...; token=...");
-                                st.set_value(init_cookie, window, cx);
-                                st
-                            });
-                            let referer_input = cx.new(|cx| {
-                                let mut st =
-                                    InputState::new(window, cx).placeholder("https://...");
-                                st.set_value(init_referer, window, cx);
-                                st
-                            });
-                            let user_agent_input = cx.new(|cx| {
-                                let mut st =
-                                    InputState::new(window, cx).placeholder("Mozilla/5.0 ...");
-                                st.set_value(init_ua, window, cx);
-                                st
-                            });
-                            let workers = if info.supports_ranges {
-                                default_workers
-                            } else {
-                                1
-                            };
-                            win.state = PreflightModalState::Resolved {
-                                info: Box::new(info),
-                                filename_input,
-                                dir_input,
-                                cookie_input,
-                                referer_input,
-                                user_agent_input,
-                                headers,
-                                active_tab: PreflightTab::General,
-                                extension_locked,
-                                locked_extension: probed_ext,
-                                workers,
-                            };
+                            win.apply_probe_info(info, headers, window, cx);
                         }
                         Ok(Err(err)) => {
                             win.state = PreflightModalState::Error {
@@ -337,9 +377,15 @@ impl PreflightWindow {
             }
             req.output_path = Some(resolution.path);
         }
-        req.max_workers = if info.supports_ranges { *workers } else { 1 };
+        req.max_workers = if info.supports_ranges && !self.hints.single_stream && !self.hints.skip_probe {
+            *workers
+        } else {
+            1
+        };
         req.sync_on_complete = self.settings.sync_on_complete;
         req.headers = final_headers;
+        req.known_content_length = info.content_length;
+        req.skip_probe = self.hints.skip_probe;
 
         if let Some(collision_name) = ask_overwrite_name {
             self.overwrite_confirm = Some(ConfirmAction::OverwriteCollision {
@@ -748,4 +794,14 @@ impl Render for PreflightWindow {
             .child(card)
             .when_some(overwrite_overlay, |el, overlay| el.child(overlay))
     }
+}
+
+fn fallback_filename_from_url_str(raw_url: &str) -> String {
+    raw_url
+        .split('?')
+        .next()
+        .and_then(|path| path.rsplit('/').next())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("download.bin")
+        .to_string()
 }

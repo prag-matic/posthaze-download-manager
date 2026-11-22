@@ -1,4 +1,4 @@
-import { buildHeaders } from "./headers.js";
+import { buildEnqueueHints, buildHeaders } from "./headers.js";
 
 const HOST_NAME = "com.posthaze.host";
 const CONTEXT_MENU_ID = "posthaze-download-link";
@@ -215,11 +215,15 @@ chrome.downloads.onCreated.addListener(async (item) => {
   }
 
   const headers = await buildHeaders(url, item.referrer || "");
+  const hints = buildEnqueueHints(url, item, settings);
   const resp = await sendToPosthaze({
     type: "enqueue",
     url,
     filename: item.filename || null,
-    headers
+    headers,
+    totalBytes: hints.totalBytes,
+    singleStream: hints.singleStream,
+    skipProbe: hints.skipProbe
   });
 
   // Fall back to Chrome's own downloader only if the native host handoff failed.
