@@ -1,3 +1,5 @@
+import { buildHeaders } from "./headers.js";
+
 const HOST_NAME = "com.posthaze.host";
 const CONTEXT_MENU_ID = "posthaze-download-link";
 
@@ -51,26 +53,6 @@ chrome.runtime.onStartup.addListener(async () => {
   ensureContextMenus();
   await refreshActionBadge();
 });
-
-async function buildHeaders(url, referrer) {
-  const headers = [];
-  if (referrer && (referrer.startsWith("http://") || referrer.startsWith("https://"))) {
-    headers.push(["Referer", referrer]);
-  }
-  if (navigator.userAgent) {
-    headers.push(["User-Agent", navigator.userAgent]);
-  }
-  try {
-    const cookies = await chrome.cookies.getAll({ url });
-    if (cookies.length > 0) {
-      const cookieHeader = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
-      headers.push(["Cookie", cookieHeader]);
-    }
-  } catch {
-    // Cookie access may be restricted on special origins; proceed without cookies.
-  }
-  return headers;
-}
 
 function parseCsvList(raw) {
   return String(raw || "")
@@ -155,7 +137,9 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     return;
   }
   const referrer = info.pageUrl || (tab && tab.url) || "";
-  const headers = await buildHeaders(url, referrer);
+  const headers = await buildHeaders(url, referrer, {
+    topLevelUrl: (tab && tab.url) || info.pageUrl || ""
+  });
   await sendToPosthaze({
     type: "enqueue",
     url,
