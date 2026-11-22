@@ -85,9 +85,36 @@ test("resolves topLevelSite from active tab when referrer is empty", async () =>
     partitionKey: { topLevelSite: "https://kayoani.online" },
   });
   assert.deepEqual(headers, [
+    ["Referer", "https://kayoani.online/episode/5"],
     ["User-Agent", "TestAgent/1.0"],
     ["Cookie", "chips_tok=xyz"],
   ]);
+});
+
+test("never sends non-HTTP(S) active tab URL as Referer", async () => {
+  const fakeChrome = {
+    cookies: {
+      async getAll() {
+        return [];
+      },
+    },
+    tabs: {
+      async query() {
+        return [{ url: "chrome://downloads/" }];
+      },
+    },
+  };
+
+  const headers = await buildHeaders(
+    "https://drive.kayoani.online/download.aspx",
+    "",
+    {
+      chromeApi: fakeChrome,
+      userAgent: "TestAgent/1.0",
+    },
+  );
+
+  assert.deepEqual(headers, [["User-Agent", "TestAgent/1.0"]]);
 });
 
 test("degrades gracefully when partitioned cookie lookup throws", async () => {

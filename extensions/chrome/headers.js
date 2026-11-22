@@ -13,19 +13,15 @@ function toOrigin(raw) {
   }
 }
 
-async function resolveTopLevelSite(referrer, topLevelUrl, chromeApi) {
-  const fromExplicit = toOrigin(topLevelUrl) || toOrigin(referrer);
-  if (fromExplicit) {
-    return fromExplicit;
-  }
-
+async function resolveActiveTabUrl(chromeApi) {
   if (!chromeApi?.tabs?.query) {
     return null;
   }
 
   try {
     const tabs = await chromeApi.tabs.query({ active: true, lastFocusedWindow: true });
-    return toOrigin(tabs?.[0]?.url);
+    const tabUrl = tabs?.[0]?.url;
+    return isHttpUrl(tabUrl) ? tabUrl : null;
   } catch {
     return null;
   }
@@ -70,16 +66,19 @@ export async function buildHeaders(url, referrer, options = {}) {
   const userAgent =
     options.userAgent !== undefined ? options.userAgent : globalThis.navigator?.userAgent;
 
+  const activeTabUrl = isHttpUrl(referrer) ? null : await resolveActiveTabUrl(chromeApi);
+  const effectiveReferrer = isHttpUrl(referrer) ? referrer : activeTabUrl;
+
   const headers = [];
-  if (isHttpUrl(referrer)) {
-    headers.push(["Referer", referrer]);
+  if (effectiveReferrer) {
+    headers.push(["Referer", effectiveReferrer]);
   }
   if (userAgent) {
     headers.push(["User-Agent", userAgent]);
   }
 
   if (chromeApi?.cookies?.getAll) {
-    const topLevelSite = await resolveTopLevelSite(referrer, options.topLevelUrl, chromeApi);
+    const topLevelSite = toOrigin(options.topLevelUrl) || toOrigin(effectiveReferrer);
     const cookies = await collectCookiesForUrl(url, topLevelSite, chromeApi.cookies);
     if (cookies.length > 0) {
       const cookieHeader = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
