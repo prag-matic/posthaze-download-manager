@@ -113,7 +113,7 @@ jobs:
           if ($updaterSrc -notmatch '(?ms)ACCEPTED_PUBLIC_KEYS:\s*&\[&str\]\s*=\s*&\[([^\]]+)\]') {
             throw "Could not parse ACCEPTED_PUBLIC_KEYS from updater.rs"
           }
-          $pubKeys = [regex]::Matches($Matches[1], '"([^"]+)"') | ForEach-Object { $_.Groups[1].Value }
+          [string[]]$pubKeys = @([regex]::Matches($Matches[1], '"([^"]+)"') | ForEach-Object { $_.Groups[1].Value })
           if (-not $pubKeys) { throw "No public keys found in ACCEPTED_PUBLIC_KEYS" }
 
           cargo run --release -p posthaze-keytool -- verify $setup "$setup.sig" @pubKeys
