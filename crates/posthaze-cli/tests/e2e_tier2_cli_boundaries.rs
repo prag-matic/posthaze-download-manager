@@ -203,12 +203,12 @@ fn ea8_boundary_bench_invalid_size_exits_1() {
 }
 
 #[test]
-fn ea8_boundary_native_host_zero_byte_frame_length_exits_1() {
+fn ea8_boundary_native_host_zero_byte_frame_length_returns_json_error() {
     let dir = TempDir::new().unwrap();
     let db_path = dir.path().join("state.db");
 
     let (status, stdout, _stderr) = run_native_host_raw(&db_path, &0_u32.to_le_bytes());
-    assert_eq!(status.code(), Some(1));
+    assert_eq!(status.code(), Some(0));
     let reply = e2e_common::decode_native_frame(&stdout).expect("expected error reply frame");
     assert_eq!(reply["ok"], false);
     assert!(
@@ -220,13 +220,13 @@ fn ea8_boundary_native_host_zero_byte_frame_length_exits_1() {
 }
 
 #[test]
-fn ea8_boundary_native_host_oversized_frame_length_exits_1() {
+fn ea8_boundary_native_host_oversized_frame_length_returns_json_error() {
     let dir = TempDir::new().unwrap();
     let db_path = dir.path().join("state.db");
     let oversized_len = (1024_u32 * 1024_u32) + 1;
 
     let (status, stdout, _stderr) = run_native_host_raw(&db_path, &oversized_len.to_le_bytes());
-    assert_eq!(status.code(), Some(1));
+    assert_eq!(status.code(), Some(0));
     let reply = e2e_common::decode_native_frame(&stdout).expect("expected error reply frame");
     assert_eq!(reply["ok"], false);
     assert!(
@@ -248,7 +248,7 @@ fn ea8_boundary_native_host_clean_eof_exits_0_with_empty_stdout() {
 }
 
 #[test]
-fn ea8_boundary_native_host_non_http_url_and_invalid_json_exit_1() {
+fn ea8_boundary_native_host_non_http_url_and_invalid_json_return_json_error() {
     let dir = TempDir::new().unwrap();
     let db_path = dir.path().join("state.db");
 
@@ -259,7 +259,7 @@ fn ea8_boundary_native_host_non_http_url_and_invalid_json_exit_1() {
             "url": "ftp://example.com/file.bin"
         }),
     );
-    assert_eq!(status.code(), Some(1));
+    assert_eq!(status.code(), Some(0));
     assert_eq!(reply["ok"], false);
     assert!(
         reply["error"]
@@ -270,7 +270,7 @@ fn ea8_boundary_native_host_non_http_url_and_invalid_json_exit_1() {
 
     let bad_json_frame = encode_native_frame(b"{not valid json");
     let (status2, stdout2, _) = run_native_host_raw(&db_path, &bad_json_frame);
-    assert_eq!(status2.code(), Some(1));
+    assert_eq!(status2.code(), Some(0));
     let reply2 = e2e_common::decode_native_frame(&stdout2).unwrap();
     assert_eq!(reply2["ok"], false);
     assert!(

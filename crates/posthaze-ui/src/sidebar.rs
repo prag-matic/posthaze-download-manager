@@ -147,8 +147,11 @@ impl PosthazeApp {
                                     GridTone::Graphite,
                                     CellBorder::None,
                                     true,
-                                    cx.listener(|app, _, window, cx| {
-                                        app.open_settings_modal(window, cx);
+                                    cx.listener(|app, _, _, cx| {
+                                        app.open_settings_window(
+                                            crate::settings_modal::SettingsTab::General,
+                                            cx,
+                                        );
                                     }),
                                 )),
                         )
@@ -356,8 +359,11 @@ impl PosthazeApp {
                                     GridTone::Graphite,
                                     CellBorder::Right,
                                     false,
-                                    cx.listener(|app, _, window, cx| {
-                                        app.open_settings_modal(window, cx);
+                                    cx.listener(|app, _, _, cx| {
+                                        app.open_settings_window(
+                                            crate::settings_modal::SettingsTab::General,
+                                            cx,
+                                        );
                                     }),
                                 )),
                             )

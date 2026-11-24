@@ -122,6 +122,39 @@ pub enum EngineError {
         url: String,
     },
 
+    /// Server rate-limited or temporarily rejected the request with a `Retry-After` delay.
+    #[error("HTTP {status} throttled for {url}; retry after {}s", retry_after.as_secs())]
+    Throttled {
+        /// HTTP status code (`429` or `503`).
+        status: u16,
+        /// Parsed server-requested retry delay.
+        retry_after: Duration,
+        /// Effective URL that returned the status.
+        url: String,
+    },
+
+    /// Target volume does not have enough free space for the `Download`.
+    #[error("insufficient disk space in {}: need {required_bytes} bytes, only {available_bytes} bytes available", path.display())]
+    InsufficientDiskSpace {
+        /// Directory or target file path checked before transfer.
+        path: PathBuf,
+        /// Required space in bytes (including safety margin).
+        required_bytes: u64,
+        /// Available bytes reported by the operating system.
+        available_bytes: u64,
+    },
+
+    /// Target volume filesystem cannot store a file of this size (e.g. > 4 GiB - 1 on FAT32).
+    #[error("file size ({size_bytes} bytes) exceeds filesystem limit ({max_bytes} bytes) at {}", path.display())]
+    FileTooLargeForFilesystem {
+        /// Directory or target file path checked before transfer.
+        path: PathBuf,
+        /// Requested file size in bytes.
+        size_bytes: u64,
+        /// Maximum supported file size on the target filesystem.
+        max_bytes: u64,
+    },
+
     /// Server returned an HTML page (e.g. expired token, login gate, or error page) instead of file bytes.
     #[error("server returned HTML instead of file for {url}: {detail}")]
     UnexpectedHtmlResponse {
@@ -188,9 +221,11 @@ impl EngineError {
     pub fn failure_kind(&self) -> FailureKind {
         match self {
             Self::ResourceChanged(_) => FailureKind::ResourceChanged,
-            Self::InvalidState(_) | Self::UnexpectedHtmlResponse { .. } => {
-                FailureKind::NonResumable
-            }
+            Self::InvalidState(_)
+            | Self::UnexpectedHtmlResponse { .. }
+            | Self::InsufficientDiskSpace { .. }
+            | Self::FileTooLargeForFilesystem { .. } => FailureKind::NonResumable,
+            Self::Throttled { .. } => FailureKind::Resumable,
             Self::HttpStatus { status, .. }
                 if *status != 408 && *status != 429 && !(500..=599).contains(status) =>
             {
@@ -220,6 +255,11 @@ pub struct DownloadRequest {
     pub known_content_length: Option<u64>,
     /// Skip `Probing` (`HEAD` / `Range: bytes=0-0` `GET`) and start a single-stream `Download` directly.
     pub skip_probe: bool,
+    /// Use a single initial `Range: bytes=0-` `GET` request as the probe and reuse its live stream
+    /// for Worker `0` (saving 1 RTT when `HEAD` metadata/HTML-mismatch pre-checks are unnecessary).
+    pub probe_via_get: bool,
+    /// Optional pre-resolved [`PreflightInfo`] from [`DownloadEngine::probe_with_headers`](crate::DownloadEngine::probe_with_headers) to avoid re-probing.
+    pub preflight_probe: Option<PreflightInfo>,
 }
 
 impl DownloadRequest {
@@ -234,6 +274,8 @@ impl DownloadRequest {
             headers: Vec::new(),
             known_content_length: None,
             skip_probe: false,
+            probe_via_get: false,
+            preflight_probe: None,
         }
     }
 }
@@ -436,6 +478,8 @@ pub struct Settings {
     pub completion_cmd_args: String,
     /// Show a Windows notification when a `Download` is added.
     pub notify_on_added: bool,
+    /// Show a Windows notification when a new `Download` starts transferring.
+    pub notify_on_started: bool,
     /// Show a Windows notification when a `Download` completes.
     pub notify_on_completed: bool,
     /// Show a Windows notification when a `Download` fails.
@@ -496,6 +540,7 @@ impl Default for Settings {
             completion_cmd_path: String::new(),
             completion_cmd_args: "%path%".to_string(),
             notify_on_added: false,
+            notify_on_started: false,
             notify_on_completed: true,
             notify_on_failed: true,
             notify_only_inactive: true,
@@ -615,19 +660,89 @@ pub(crate) fn make_part_path(final_path: &Path) -> PathBuf {
     PathBuf::from(os)
 }
 
+/// Checks whether `candidate` matches any path in `reserved` (ignoring trailing separators and
+/// ASCII/Unicode case on Windows).
+pub(crate) fn path_conflicts_with_reserved(candidate: &Path, reserved: &[PathBuf]) -> bool {
+    let norm_cand = normalize_cmp_path(candidate);
+    reserved
+        .iter()
+        .any(|r| normalize_cmp_path(r) == norm_cand)
+}
+
+fn normalize_cmp_path(path: &Path) -> String {
+    let s = path.to_string_lossy();
+    let trimmed = s.trim_end_matches(['/', '\\']);
+    let base = if trimmed.is_empty() { s.as_ref() } else { trimmed };
+    if cfg!(windows) {
+        base.to_ascii_lowercase()
+    } else {
+        base.to_string()
+    }
+}
+
 /// Returns a collision-free file path in `output_dir`, checking both target and `.part` paths.
 pub fn disambiguate_output_path(output_dir: &Path, filename: &str) -> PathBuf {
-    let initial = output_dir.join(filename);
-    if !initial.exists() && !make_part_path(&initial).exists() {
-        return initial;
-    }
+    disambiguate_output_path_with_reserved(output_dir, filename, &[])
+}
 
-    let file_path = Path::new(filename);
+/// Strips a trailing ` (N)` collision-counter suffix (1+ ASCII digits) from a filename stem.
+pub(crate) fn strip_disambiguation_suffix(stem: &str) -> &str {
+    let trimmed = stem.trim_end();
+    if let Some(open) = trimmed.rfind(" (")
+        && trimmed.ends_with(')')
+    {
+        let inner = &trimmed[open + 2..trimmed.len() - 1];
+        if !inner.is_empty() && inner.bytes().all(|b| b.is_ascii_digit()) {
+            return trimmed[..open].trim_end();
+        }
+    }
+    trimmed
+}
+
+/// Returns a lowercased canonical filename with any trailing ` (N)` disambiguation counter removed
+/// (for duplicate detection across auto-renamed `(1)`/`(2)` copies).
+pub fn canonical_filename_key(filename: &str) -> String {
+    let trimmed = filename.trim();
+    let file_path = Path::new(trimmed);
     let stem = file_path
         .file_stem()
         .and_then(|s| s.to_str())
         .filter(|s| !s.is_empty())
+        .unwrap_or(trimmed);
+    let base_stem = strip_disambiguation_suffix(stem);
+    match file_path.extension().and_then(|e| e.to_str()) {
+        Some(ext) if !ext.is_empty() => {
+            format!("{}.{ext}", base_stem).to_ascii_lowercase()
+        }
+        _ => base_stem.to_ascii_lowercase(),
+    }
+}
+
+/// Returns a collision-free file path in `output_dir`, avoiding existing files on disk, `.part`
+/// files, and active/paused DB `reserved_paths`.
+pub fn disambiguate_output_path_with_reserved(
+    output_dir: &Path,
+    filename: &str,
+    reserved_paths: &[PathBuf],
+) -> PathBuf {
+    let is_free = |candidate: &Path| {
+        !candidate.exists()
+            && !make_part_path(candidate).exists()
+            && !path_conflicts_with_reserved(candidate, reserved_paths)
+    };
+    let initial = output_dir.join(filename);
+    if is_free(&initial) {
+        return initial;
+    }
+
+    let file_path = Path::new(filename);
+    let raw_stem = file_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
         .unwrap_or(filename);
+    let stem = strip_disambiguation_suffix(raw_stem);
+    let stem = if stem.is_empty() { raw_stem } else { stem };
     let ext = file_path.extension().and_then(|e| e.to_str());
 
     let mut counter: usize = 1;
@@ -637,7 +752,7 @@ pub fn disambiguate_output_path(output_dir: &Path, filename: &str) -> PathBuf {
             _ => format!("{stem} ({counter})"),
         };
         let candidate = output_dir.join(numbered);
-        if !candidate.exists() && !make_part_path(&candidate).exists() {
+        if is_free(&candidate) {
             return candidate;
         }
         counter += 1;
@@ -650,7 +765,24 @@ pub fn resolve_target_path(
     filename: &str,
     policy: CollisionPolicy,
 ) -> TargetPathResolution {
+    resolve_target_path_with_reserved(output_dir, filename, policy, &[])
+}
+
+/// Resolves a target path in `output_dir` for `filename` according to `policy`, while never
+/// overwriting a path claimed by another ongoing/paused transfer in `reserved_paths`.
+pub fn resolve_target_path_with_reserved(
+    output_dir: &Path,
+    filename: &str,
+    policy: CollisionPolicy,
+    reserved_paths: &[PathBuf],
+) -> TargetPathResolution {
     let target = output_dir.join(filename);
+    if path_conflicts_with_reserved(&target, reserved_paths) {
+        return TargetPathResolution {
+            path: disambiguate_output_path_with_reserved(output_dir, filename, reserved_paths),
+            needs_overwrite_prompt: false,
+        };
+    }
     let collides = target.exists() || make_part_path(&target).exists();
     match policy {
         CollisionPolicy::Overwrite => TargetPathResolution {
@@ -659,7 +791,7 @@ pub fn resolve_target_path(
         },
         CollisionPolicy::Rename => TargetPathResolution {
             path: if collides {
-                disambiguate_output_path(output_dir, filename)
+                disambiguate_output_path_with_reserved(output_dir, filename, reserved_paths)
             } else {
                 target
             },
@@ -745,6 +877,173 @@ pub struct PreflightInfo {
     pub etag: Option<String>,
     /// Server `Last-Modified` `Validator`, if present.
     pub last_modified: Option<String>,
+    /// Server-advertised representation digest (`Repr-Digest` or `Content-MD5`), if present.
+    pub server_digest: Option<(ChecksumAlgorithm, String)>,
+}
+
+/// Supported file integrity checksum algorithms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChecksumAlgorithm {
+    /// BLAKE3 (64 hex chars).
+    Blake3,
+    /// SHA-256 (64 hex chars).
+    Sha256,
+    /// SHA-512 (128 hex chars).
+    Sha512,
+    /// SHA-1 (40 hex chars).
+    Sha1,
+    /// MD5 (32 hex chars).
+    Md5,
+    /// CRC-32 IEEE (8 hex chars).
+    Crc32,
+}
+
+impl ChecksumAlgorithm {
+    /// Returns the human-readable uppercase label for this algorithm.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Blake3 => "BLAKE3",
+            Self::Sha256 => "SHA-256",
+            Self::Sha512 => "SHA-512",
+            Self::Sha1 => "SHA-1",
+            Self::Md5 => "MD5",
+            Self::Crc32 => "CRC32",
+        }
+    }
+}
+
+/// Multi-algorithm checksums computed in a single sequential read over a completed file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileChecksums {
+    /// Lowercase hex `BLAKE3` digest.
+    pub blake3: String,
+    /// Lowercase hex `SHA-256` digest.
+    pub sha256: String,
+    /// Lowercase hex `SHA-512` digest.
+    pub sha512: String,
+    /// Lowercase hex `SHA-1` digest.
+    pub sha1: String,
+    /// Lowercase hex `MD5` digest.
+    pub md5: String,
+    /// Lowercase hex `CRC32` digest (8 hex chars).
+    pub crc32: String,
+}
+
+impl FileChecksums {
+    /// Checks whether `expected` matches any computed digest (or the explicit `algo` if given),
+    /// returning the matched [`ChecksumAlgorithm`] on match.
+    pub fn match_expected(
+        &self,
+        algo: Option<ChecksumAlgorithm>,
+        expected_hex: &str,
+    ) -> Option<ChecksumAlgorithm> {
+        let needle = expected_hex.trim().to_ascii_lowercase();
+        match algo {
+            Some(a) => (self.digest_for(a) == needle).then_some(a),
+            None => [
+                ChecksumAlgorithm::Sha256,
+                ChecksumAlgorithm::Blake3,
+                ChecksumAlgorithm::Sha512,
+                ChecksumAlgorithm::Md5,
+                ChecksumAlgorithm::Sha1,
+                ChecksumAlgorithm::Crc32,
+            ]
+            .into_iter()
+            .find(|&a| self.digest_for(a) == needle),
+        }
+    }
+
+    /// Returns the lowercase hex digest string for `algo`.
+    pub fn digest_for(&self, algo: ChecksumAlgorithm) -> &str {
+        match algo {
+            ChecksumAlgorithm::Blake3 => &self.blake3,
+            ChecksumAlgorithm::Sha256 => &self.sha256,
+            ChecksumAlgorithm::Sha512 => &self.sha512,
+            ChecksumAlgorithm::Sha1 => &self.sha1,
+            ChecksumAlgorithm::Md5 => &self.md5,
+            ChecksumAlgorithm::Crc32 => &self.crc32,
+        }
+    }
+}
+
+/// Parses a user-pasted checksum string (`sha256:...`, `SHA256 (file) = ...`, `sha256sum` line,
+/// or bare hex) into an optional explicit [`ChecksumAlgorithm`] and normalized lowercase hex string.
+pub fn parse_expected_checksum(raw: &str) -> Option<(Option<ChecksumAlgorithm>, String)> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    // Check BSD-style: `SHA256 (filename) = <hex>`
+    if let Some((prefix, rhs)) = trimmed.split_once('=')
+        && let Some(algo_tok) = prefix.split_whitespace().next()
+        && let Some(algo) = parse_algo_token(algo_tok)
+        && let Some(hex) = clean_hex_token(rhs.split_whitespace().next()?)
+    {
+        return Some((Some(algo), hex));
+    }
+
+    // Check `algo:hex` or `algo=hex`
+    for sep in [':', '='] {
+        if let Some((algo_tok, rest)) = trimmed.split_once(sep)
+            && let Some(algo) = parse_algo_token(algo_tok.trim())
+            && let Some(hex) = clean_hex_token(rest.split_whitespace().next()?)
+        {
+            return Some((Some(algo), hex));
+        }
+    }
+
+    // Check bare hex or `sha256sum` `<hex>  <filename>` (take first token)
+    let first = trimmed.split_whitespace().next()?;
+    let hex = clean_hex_token(first)?;
+    let inferred = match hex.len() {
+        8 => Some(ChecksumAlgorithm::Crc32),
+        32 => Some(ChecksumAlgorithm::Md5),
+        40 => Some(ChecksumAlgorithm::Sha1),
+        128 => Some(ChecksumAlgorithm::Sha512),
+        // 64 hex chars can be either SHA-256 or BLAKE3; leave `None` so both are matched.
+        64 => None,
+        _ => return None,
+    };
+    Some((inferred, hex))
+}
+
+fn parse_algo_token(tok: &str) -> Option<ChecksumAlgorithm> {
+    let norm: String = tok
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    match norm.as_str() {
+        "blake3" | "b3" => Some(ChecksumAlgorithm::Blake3),
+        "sha256" => Some(ChecksumAlgorithm::Sha256),
+        "sha512" => Some(ChecksumAlgorithm::Sha512),
+        "sha1" => Some(ChecksumAlgorithm::Sha1),
+        "md5" => Some(ChecksumAlgorithm::Md5),
+        "crc32" | "crc" => Some(ChecksumAlgorithm::Crc32),
+        _ => None,
+    }
+}
+
+fn clean_hex_token(tok: &str) -> Option<String> {
+    let clean: String = tok
+        .trim()
+        .trim_start_matches("0x")
+        .trim_start_matches("0X")
+        .to_ascii_lowercase();
+    if !matches!(clean.len(), 8 | 32 | 40 | 64 | 128) {
+        return None;
+    }
+    clean.bytes().all(|b| b.is_ascii_hexdigit()).then_some(clean)
+}
+
+/// Strategy for removing a `Completed` `Download`'s file on disk when deleting its entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeleteFileMode {
+    /// Send the completed output file to the OS Recycle Bin / Trash when supported.
+    RecycleBin,
+    /// Permanently unlink the output file from disk.
+    Permanent,
 }
 
 /// Live or persisted `Segment` progress.
@@ -1024,5 +1323,44 @@ mod tests {
         assert_eq!(portable.join("logs"), exe_dir.join("data").join("logs"));
 
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn parse_expected_checksum_handles_prefixed_bsd_and_bare_inputs() {
+        let sha256 = "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
+        assert_eq!(
+            parse_expected_checksum(&format!("sha256:{sha256}")),
+            Some((Some(ChecksumAlgorithm::Sha256), sha256.to_string()))
+        );
+        assert_eq!(
+            parse_expected_checksum(&format!("BLAKE3 (archive.zip) = {}", sha256.to_uppercase())),
+            Some((Some(ChecksumAlgorithm::Blake3), sha256.to_string()))
+        );
+        assert_eq!(
+            parse_expected_checksum(&format!("{sha256}  archive.zip")),
+            Some((None, sha256.to_string()))
+        );
+        assert_eq!(
+            parse_expected_checksum("0D4A1185"),
+            Some((Some(ChecksumAlgorithm::Crc32), "0d4a1185".to_string()))
+        );
+        assert_eq!(parse_expected_checksum("not-valid-hex"), None);
+    }
+
+    #[test]
+    fn canonical_filename_and_disambiguate_handle_numeric_suffixes_cleanly() {
+        assert_eq!(
+            canonical_filename_key("Mushoku Tensei - S03E14 (1).mkv"),
+            "mushoku tensei - s03e14.mkv"
+        );
+        assert_eq!(
+            canonical_filename_key("episode (1080p).mkv"),
+            "episode (1080p).mkv"
+        );
+
+        let dir = PathBuf::from(r"E:\__nonexistent_test_dir__");
+        let reserved = vec![dir.join("pack.zip"), dir.join("pack (1).zip")];
+        let next = disambiguate_output_path_with_reserved(&dir, "pack (1).zip", &reserved);
+        assert_eq!(next, dir.join("pack (2).zip"));
     }
 }

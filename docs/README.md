@@ -51,6 +51,9 @@ Documentation is a first-class part of Posthaze Download Manager.
 - [Milestone 02 SQLite `Checkpoint` Overhead — `posthaze` vs `posthaze (db)`](benchmarks/milestone-02-sqlite-checkpoint-overhead.md)
 - [RAM Usage & Performance Optimization Results (Tickets 01–08)](benchmarks/ram-and-performance-optimization.md)
 - [Research: RAM Usage & Performance Optimization Audit](research/ram-and-performance-optimization.md)
+- [Research: `misterdownloadmanager` (`mdm-engine`) vs. Posthaze Engine Comparison](research/misterdownloadmanager-engine-comparison.md)
+- [Research: `misterdownloadmanager` Quality-of-Life (QOL) & UX Improvements](research/misterdownloadmanager-qol-improvements.md)
+- [Research: `misterdownloadmanager` vs. Posthaze Browser Extension & Bridge Comparison](research/misterdownloadmanager-extension-comparison.md)
 
 ## Agent Workflow Configuration
 

@@ -5,6 +5,9 @@ use std::path::{Path, PathBuf};
 /// Registered Chromium Native Messaging host identifier.
 pub(crate) const NATIVE_HOST_NAME: &str = "com.posthaze.host";
 
+/// Deterministic Extension ID derived from the RSA public `"key"` in `extensions/chrome/manifest.json`.
+pub(crate) const DEFAULT_UNPACKED_EXTENSION_ID: &str = "eiophahfcjidkfgdddgejjglglaopahi";
+
 /// Supported Chromium-based browsers on Windows for HKCU Native Messaging registration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BrowserKind {
@@ -44,32 +47,32 @@ pub(crate) fn format_extension_origin(extension_id: &str) -> Result<String, Stri
     if trimmed.is_empty() {
         return Err("Extension ID cannot be empty.".to_string());
     }
-    if !trimmed
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
-    {
-        return Err("Extension ID contains invalid characters.".to_string());
+    if trimmed.len() != 32 || !trimmed.bytes().all(|b| matches!(b, b'a'..=b'p')) {
+        return Err("Extension ID must be 32 lowercase letters (a-p).".to_string());
     }
     Ok(format!("chrome-extension://{trimmed}/"))
 }
 
-/// Builds the `.cmd` shim contents invoking `posthaze-cli.exe native-host`.
-pub(crate) fn build_native_host_shim(cli_exe: &Path) -> String {
-    format!("@echo off\r\n\"{}\" native-host %*\r\n", cli_exe.display())
-}
-
-/// Builds the JSON manifest for Chromium Native Messaging pointing at `shim_path`.
+/// Builds the JSON manifest for Chromium Native Messaging pointing directly at `cli_exe`.
 pub(crate) fn build_native_host_manifest_json(
-    shim_path: &Path,
+    cli_exe: &Path,
     extension_id: &str,
 ) -> Result<String, String> {
-    let origin = format_extension_origin(extension_id)?;
+    let default_origin = format!("chrome-extension://{DEFAULT_UNPACKED_EXTENSION_ID}/");
+    let mut allowed_origins = Vec::new();
+    if !extension_id.trim().is_empty() {
+        allowed_origins.push(format_extension_origin(extension_id)?);
+    }
+    if !allowed_origins.contains(&default_origin) {
+        allowed_origins.push(default_origin);
+    }
+
     let payload = serde_json::json!({
         "name": NATIVE_HOST_NAME,
         "description": "Posthaze Download Manager Native Messaging Host",
-        "path": shim_path.to_string_lossy(),
+        "path": cli_exe.to_string_lossy(),
         "type": "stdio",
-        "allowed_origins": [origin],
+        "allowed_origins": allowed_origins,
     });
     serde_json::to_string_pretty(&payload)
         .map_err(|err| format!("Failed to serialize host manifest: {err}"))
@@ -137,8 +140,8 @@ fn is_browser_registered(browser: BrowserKind) -> bool {
     }
 }
 
-/// Writes the `.cmd` shim and `com.posthaze.host.json` manifest into `data_dir` and registers
-/// HKCU Native Messaging Host keys for Chrome, Edge, and Brave.
+/// Writes `com.posthaze.host.json` directly referencing `cli_exe` into `data_dir` and updates
+/// HKCU Native Messaging Host keys for Chrome, Edge, and Brave (removing any legacy `.cmd` shim).
 pub(crate) fn register_native_host(
     data_dir: &Path,
     cli_exe: &Path,
@@ -147,13 +150,11 @@ pub(crate) fn register_native_host(
     std::fs::create_dir_all(data_dir)
         .map_err(|err| format!("Could not create {}: {err}", data_dir.display()))?;
 
-    let shim_path = data_dir.join("posthaze-native-host.cmd");
-    let shim_body = build_native_host_shim(cli_exe);
-    std::fs::write(&shim_path, shim_body)
-        .map_err(|err| format!("Could not write {}: {err}", shim_path.display()))?;
+    // Clean up legacy batch shim written by versions <= 0.2.1.
+    let _ = std::fs::remove_file(data_dir.join("posthaze-native-host.cmd"));
 
     let manifest_path = data_dir.join("com.posthaze.host.json");
-    let manifest_json = build_native_host_manifest_json(&shim_path, extension_id)?;
+    let manifest_json = build_native_host_manifest_json(cli_exe, extension_id)?;
     std::fs::write(&manifest_path, manifest_json)
         .map_err(|err| format!("Could not write {}: {err}", manifest_path.display()))?;
 
@@ -216,39 +217,49 @@ mod tests {
     use std::path::Path;
 
     use super::{
-        build_native_host_manifest_json, build_native_host_shim, format_extension_origin,
+        DEFAULT_UNPACKED_EXTENSION_ID, build_native_host_manifest_json, format_extension_origin,
     };
 
     #[test]
-    fn formats_extension_origin_and_builds_escaped_manifest_json() {
+    fn formats_extension_origin_and_builds_direct_exe_manifest_json() {
         assert_eq!(
             format_extension_origin("abcdefghijklmnopabcdefghijklmnop").unwrap(),
             "chrome-extension://abcdefghijklmnopabcdefghijklmnop/"
         );
         assert_eq!(
-            format_extension_origin("chrome-extension://abcdefghijklmnopabcdefghijklmnop/").unwrap(),
-            "chrome-extension://abcdefghijklmnopabcdefghijklmnop/"
+            format_extension_origin(&format!(
+                "chrome-extension://{DEFAULT_UNPACKED_EXTENSION_ID}/"
+            ))
+            .unwrap(),
+            format!("chrome-extension://{DEFAULT_UNPACKED_EXTENSION_ID}/")
         );
         assert!(format_extension_origin("   ").is_err());
+        assert!(format_extension_origin("too-short").is_err());
+        assert!(format_extension_origin("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz").is_err());
 
-        let shim = build_native_host_shim(Path::new(r"C:\Program Files\Posthaze\posthaze-cli.exe"));
-        assert!(shim.contains("\"C:\\Program Files\\Posthaze\\posthaze-cli.exe\" native-host %*"));
-
-        let json_str = build_native_host_manifest_json(
-            Path::new(r"C:\Users\Test\AppData\Local\posthaze\posthaze-native-host.cmd"),
-            "abcdefghijklmnopabcdefghijklmnop",
-        )
-        .unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
-        assert_eq!(parsed["name"], "com.posthaze.host");
-        assert_eq!(parsed["type"], "stdio");
+        let cli_path = Path::new(r"C:\Program Files\Posthaze\posthaze-cli.exe");
+        let default_json = build_native_host_manifest_json(cli_path, "").unwrap();
+        let default_parsed: serde_json::Value = serde_json::from_str(&default_json).unwrap();
+        assert_eq!(default_parsed["name"], "com.posthaze.host");
+        assert_eq!(default_parsed["type"], "stdio");
         assert_eq!(
-            parsed["path"],
-            r"C:\Users\Test\AppData\Local\posthaze\posthaze-native-host.cmd"
+            default_parsed["path"],
+            r"C:\Program Files\Posthaze\posthaze-cli.exe"
         );
         assert_eq!(
-            parsed["allowed_origins"],
-            serde_json::json!(["chrome-extension://abcdefghijklmnopabcdefghijklmnop/"])
+            default_parsed["allowed_origins"],
+            serde_json::json!([format!("chrome-extension://{DEFAULT_UNPACKED_EXTENSION_ID}/")])
+        );
+
+        let custom_json =
+            build_native_host_manifest_json(cli_path, "abcdefghijklmnopabcdefghijklmnop").unwrap();
+        let custom_parsed: serde_json::Value = serde_json::from_str(&custom_json).unwrap();
+        assert_eq!(
+            custom_parsed["allowed_origins"],
+            serde_json::json!([
+                "chrome-extension://abcdefghijklmnopabcdefghijklmnop/",
+                format!("chrome-extension://{DEFAULT_UNPACKED_EXTENSION_ID}/")
+            ])
         );
     }
 }

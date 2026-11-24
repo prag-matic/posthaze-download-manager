@@ -8,11 +8,12 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::{Mutex, broadcast, mpsc, watch};
 
+use crate::disk::check_disk_preflight;
 use crate::model::{
     DownloadId, DownloadOutcome, DownloadRequest, DownloadState, EngineError, EngineEvent,
     FailureKind, PlannedSegment, ProgressSnapshot, SegmentCheckpoint, SegmentProgress,
 };
-use crate::probe::{ProbeResult, probe_url_with_headers};
+use crate::probe::{InitialStream, ProbeResult, probe_for_transfer_start, probe_url_with_headers};
 use crate::queue::QueueCoordinator;
 use crate::store::{DownloadRecord, DownloadStore};
 use crate::throttle::BandwidthLimiter;
@@ -21,7 +22,7 @@ use crate::transfer::{
     execute_multi_segment_from_checkpoints, execute_single_stream, plan_segments,
 };
 use crate::writer::PartFileWriter;
-use crate::{DownloadHandle, disambiguate_output_path, make_part_path, remove_file_if_exists};
+use crate::{DownloadHandle, make_part_path, remove_file_if_exists};
 
 const PROGRESS_EMIT_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -202,46 +203,84 @@ async fn execute_download(
     let total_start = Instant::now();
     let probe_start = Instant::now();
 
-    let mut probe = match &mode {
-        TransferMode::Fresh(request) if request.skip_probe => ProbeResult {
-            final_url: request.url.clone(),
-            content_length: request.known_content_length,
-            supports_ranges: false,
-            etag: None,
-            last_modified: None,
-            suggested_filename: request
-                .output_path
-                .as_deref()
-                .and_then(|p| p.file_name())
-                .and_then(|n| n.to_str())
-                .map(ToString::to_string)
-                .unwrap_or_else(|| crate::probe::fallback_filename_from_url(&request.url)),
-        },
-        _ => {
-            let (probe_url, probe_headers, prior_progress, resume_prev_state) = match &mode {
-                TransferMode::Fresh(request) => {
-                    (request.url.as_str(), request.headers.as_slice(), (0, None), None)
-                }
-                TransferMode::Resume { record, .. } => (
-                    record.url.as_str(),
-                    record.headers.as_slice(),
-                    (record.bytes_downloaded, record.content_length),
-                    Some(record.state),
-                ),
-            };
-
-            probe_with_control(
+    let (mut probe, initial_stream): (ProbeResult, Option<InitialStream>) = match &mode {
+        TransferMode::Fresh(request) if request.skip_probe => (
+            ProbeResult {
+                final_url: request.url.clone(),
+                content_length: request.known_content_length,
+                supports_ranges: false,
+                etag: None,
+                last_modified: None,
+                suggested_filename: request
+                    .output_path
+                    .as_deref()
+                    .and_then(|p| p.file_name())
+                    .and_then(|n| n.to_str())
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| crate::probe::fallback_filename_from_url(&request.url)),
+                server_digest: None,
+            },
+            None,
+        ),
+        TransferMode::Fresh(request) if request.preflight_probe.is_some() => {
+            let info = request
+                .preflight_probe
+                .as_ref()
+                .expect("checked is_some above");
+            (
+                ProbeResult {
+                    final_url: info.final_url.clone(),
+                    content_length: info.content_length,
+                    supports_ranges: info.supports_ranges,
+                    etag: info.etag.clone(),
+                    last_modified: info.last_modified.clone(),
+                    suggested_filename: info.suggested_filename.clone(),
+                    server_digest: info.server_digest.clone(),
+                },
+                None,
+            )
+        }
+        TransferMode::Fresh(request) if request.probe_via_get => {
+            probe_start_with_control(
                 &client,
                 &store,
                 &sink,
                 &mut control_rx,
                 &id,
-                probe_url,
-                probe_headers,
-                prior_progress,
-                resume_prev_state,
+                &request.url,
+                &request.headers,
             )
             .await?
+        }
+        TransferMode::Fresh(request) => {
+            let probe = probe_with_control(
+                &client,
+                &store,
+                &sink,
+                &mut control_rx,
+                &id,
+                request.url.as_str(),
+                request.headers.as_slice(),
+                (0, None),
+                None,
+            )
+            .await?;
+            (probe, None)
+        }
+        TransferMode::Resume { record, .. } => {
+            let probe = probe_with_control(
+                &client,
+                &store,
+                &sink,
+                &mut control_rx,
+                &id,
+                record.url.as_str(),
+                record.headers.as_slice(),
+                (record.bytes_downloaded, record.content_length),
+                Some(record.state),
+            )
+            .await?;
+            (probe, None)
         }
     };
     let probe_duration = probe_start.elapsed();
@@ -263,9 +302,30 @@ async fn execute_download(
     let (final_path, part_path, max_workers, sync_on_complete, headers, initial_cp_map, initial_bytes, resume_segments) =
         match mode {
             TransferMode::Fresh(request) => {
-                let final_path = request.output_path.unwrap_or_else(|| {
-                    disambiguate_output_path(&request.output_dir, &probe.suggested_filename)
-                });
+                let reserved = if let Some(store) = &store {
+                    store
+                        .list_reserved_output_paths(Some(&id))
+                        .await
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+                let final_path = match request.output_path {
+                    Some(explicit) if crate::model::path_conflicts_with_reserved(&explicit, &reserved) => {
+                        let parent = explicit.parent().unwrap_or(&request.output_dir);
+                        let name = explicit
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(&probe.suggested_filename);
+                        crate::model::disambiguate_output_path_with_reserved(parent, name, &reserved)
+                    }
+                    Some(explicit) => explicit,
+                    None => crate::model::disambiguate_output_path_with_reserved(
+                        &request.output_dir,
+                        &probe.suggested_filename,
+                        &reserved,
+                    ),
+                };
                 let part_path = make_part_path(&final_path);
                 (
                     final_path,
@@ -303,13 +363,31 @@ async fn execute_download(
             }
         };
 
+    if let Some(total_bytes) = probe.content_length {
+        let preflight_bytes = if resume_segments.is_some() {
+            total_bytes.saturating_sub(initial_bytes)
+        } else {
+            total_bytes
+        };
+        let target_dir = part_path.parent().unwrap_or_else(|| Path::new("."));
+        if let Err(err) = check_disk_preflight(target_dir, preflight_bytes) {
+            return Err(
+                fail_download(&store, &sink, &id, initial_bytes, probe.content_length, err).await,
+            );
+        }
+    }
+
     let checkpointed_cursors = Arc::new(std::sync::Mutex::new(initial_cp_map));
     let live_segments_slot: Arc<std::sync::Mutex<Option<LiveSegments>>> =
         Arc::new(std::sync::Mutex::new(None));
 
     let transfer_start = Instant::now();
-    let (cp_tx, cp_handle) =
-        spawn_checkpoint_task(&store, &id, Arc::clone(&checkpointed_cursors));
+    let (cp_tx, cp_handle) = spawn_checkpoint_task(
+        &store,
+        &id,
+        Arc::clone(&checkpointed_cursors),
+        Arc::clone(&live_segments_slot),
+    );
 
     let writer_res = if resume_segments.is_some() {
         PartFileWriter::spawn_existing_with_sync(part_path.clone(), sync_on_complete, Some(cp_tx))
@@ -369,7 +447,7 @@ async fn execute_download(
         initial_bytes,
     );
 
-    let persist = store.as_ref().map(|s| (id.clone(), s.clone()));
+    let initial_response = initial_stream.map(|s| s.response);
     let transfer_result = if let Some(segments) = resume_segments {
         execute_multi_segment_from_checkpoints(
             &client,
@@ -378,11 +456,11 @@ async fn execute_download(
             Some(&limiter),
             segments,
             max_workers,
+            None,
             &writer,
             &downloaded,
             &active_workers,
             control_rx,
-            persist,
             Some(&live_segments_slot),
         )
         .await
@@ -396,11 +474,11 @@ async fn execute_download(
                     Some(&limiter),
                     total_bytes,
                     max_workers,
+                    initial_response,
                     &writer,
                     &downloaded,
                     &active_workers,
                     control_rx.clone(),
-                    persist,
                     Some(&live_segments_slot),
                 )
                 .await;
@@ -437,6 +515,7 @@ async fn execute_download(
                             &headers,
                             Some(limiter.as_ref()),
                             probe.content_length,
+                            None,
                             &writer,
                             &downloaded,
                             &active_workers,
@@ -459,6 +538,7 @@ async fn execute_download(
                 &headers,
                 Some(limiter.as_ref()),
                 probe.content_length,
+                initial_response,
                 &writer,
                 &downloaded,
                 &active_workers,
@@ -484,6 +564,7 @@ async fn execute_download(
         final_path,
         &part_path,
         writer,
+        &live_segments_slot,
         &downloaded,
         transfer_result,
         probe_duration,
@@ -513,6 +594,8 @@ pub(crate) fn resolve_resume_mode(
             headers: record.headers,
             known_content_length: record.content_length,
             skip_probe: false,
+            probe_via_get: false,
+            preflight_probe: None,
         }));
     }
 
@@ -714,6 +797,58 @@ async fn cancel_download(
     EngineError::Cancelled
 }
 
+async fn probe_start_with_control(
+    client: &reqwest::Client,
+    store: &Option<DownloadStore>,
+    sink: &ProgressSink,
+    control_rx: &mut watch::Receiver<ControlSignal>,
+    id: &DownloadId,
+    url: &str,
+    headers: &[(String, String)],
+) -> Result<(ProbeResult, Option<InitialStream>), EngineError> {
+    if let Some(store) = store
+        && let Err(err) = store.set_state(id, DownloadState::Probing).await
+    {
+        return Err(fail_download(&None, sink, id, 0, None, err).await);
+    }
+    sink.emit_state(DownloadState::Probing, None, None);
+    sink.send(ProgressSnapshot::status(DownloadState::Probing, 0, None, 0));
+
+    if *control_rx.borrow() == ControlSignal::Cancel {
+        return Err(cancel_download(store.as_ref(), sink, id, None, 0, None).await);
+    }
+
+    tokio::select! {
+        biased;
+        _ = control_rx.changed() => {
+            let sig = *control_rx.borrow();
+            match sig {
+                ControlSignal::Cancel => {
+                    Err(cancel_download(store.as_ref(), sink, id, None, 0, None).await)
+                }
+                ControlSignal::Pause => {
+                    Err(fail_download(
+                        store,
+                        sink,
+                        id,
+                        0,
+                        None,
+                        EngineError::InvalidState(
+                            "cannot pause non-range download".to_string(),
+                        ),
+                    )
+                    .await)
+                }
+                ControlSignal::Run => unreachable!("Run does not wake select as interruption"),
+            }
+        }
+        res = probe_for_transfer_start(client, url, headers) => match res {
+            Ok(out) => Ok(out),
+            Err(err) => Err(fail_download(store, sink, id, 0, None, err).await),
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn probe_with_control(
     client: &reqwest::Client,
@@ -785,26 +920,50 @@ async fn probe_with_control(
     }
 }
 
+fn snapshot_acked_segments(
+    live_segments_slot: &Arc<std::sync::Mutex<Option<LiveSegments>>>,
+    cp_map: &HashMap<usize, u64>,
+) -> Vec<SegmentCheckpoint> {
+    let live_arc = live_segments_slot.lock().unwrap().clone();
+    let Some(live) = live_arc else {
+        return Vec::new();
+    };
+    let pool = live.lock().unwrap();
+    pool.snapshot_checkpoints()
+        .into_iter()
+        .map(|mut seg| {
+            let acked = cp_map.get(&seg.segment_index).copied().unwrap_or(seg.start);
+            seg.cursor = acked.max(seg.start).min(seg.end.unwrap_or(acked));
+            seg.completed = seg.end.is_some_and(|e| seg.cursor >= e);
+            seg
+        })
+        .collect()
+}
+
 fn spawn_checkpoint_task(
     store: &Option<DownloadStore>,
     id: &DownloadId,
     checkpointed_cursors: Arc<std::sync::Mutex<HashMap<usize, u64>>>,
+    live_segments_slot: Arc<std::sync::Mutex<Option<LiveSegments>>>,
 ) -> (crate::writer::CheckpointSender, tokio::task::JoinHandle<()>) {
     let store = store.clone();
     let (tx, mut rx) = mpsc::channel::<Vec<(usize, u64)>>(4);
     let task_id = id.clone();
     let handle = tokio::spawn(async move {
         while let Some(cursors) = rx.recv().await {
-            {
+            let split_segments = {
                 let mut map = checkpointed_cursors.lock().unwrap();
                 for &(seg_idx, cursor) in &cursors {
                     map.entry(seg_idx)
                         .and_modify(|prev| *prev = (*prev).max(cursor))
                         .or_insert(cursor);
                 }
-            }
+                snapshot_acked_segments(&live_segments_slot, &map)
+            };
             if let Some(store) = &store
-                && let Err(err) = store.apply_writer_checkpoint(&task_id, &cursors).await
+                && let Err(err) = store
+                    .apply_writer_checkpoint(&task_id, &cursors, &split_segments)
+                    .await
             {
                 tracing::warn!(download_id = %task_id, error = %err, "failed to persist writer checkpoint");
             }
@@ -822,6 +981,7 @@ async fn finalize_transfer(
     final_path: PathBuf,
     part_path: &Path,
     writer: Arc<PartFileWriter>,
+    live_segments_slot: &Arc<std::sync::Mutex<Option<LiveSegments>>>,
     downloaded: &AtomicU64,
     transfer_result: Result<MultiSegmentResult, EngineError>,
     probe_duration: Duration,
@@ -879,6 +1039,7 @@ async fn finalize_transfer(
                             .await);
                         }
                     };
+                    let split_segments = snapshot_acked_segments(live_segments_slot, &writer_cursors);
                     let persisted_bytes = if let Some(store) = store {
                         store
                             .finalize_writer_checkpoint(
@@ -886,6 +1047,7 @@ async fn finalize_transfer(
                                 DownloadState::Paused,
                                 None,
                                 &writer_cursors,
+                                &split_segments,
                             )
                             .await
                             .map_err(|e| EngineError::TaskJoin(e.to_string()))?
@@ -921,6 +1083,8 @@ async fn finalize_transfer(
                         && let Ok(w) = Arc::try_unwrap(writer)
                         && let Ok(writer_cursors) = w.flush_and_close().await
                     {
+                        let split_segments =
+                            snapshot_acked_segments(live_segments_slot, &writer_cursors);
                         if let Some(store) = store
                             && let Ok(persisted) = store
                                 .finalize_writer_checkpoint(
@@ -928,6 +1092,7 @@ async fn finalize_transfer(
                                     DownloadState::Failed,
                                     Some(&err.to_string()),
                                     &writer_cursors,
+                                    &split_segments,
                                 )
                                 .await
                         {
@@ -1096,9 +1261,12 @@ fn collect_segment_progress(
     let cp_map = checkpointed_cursors.lock().unwrap();
 
     if let Some(live_segments) = live_arc {
-        let segs = live_segments.lock().unwrap();
-        let mut out: Vec<SegmentProgress> =
-            segs.iter().map(|seg| seg.snapshot_progress(&cp_map)).collect();
+        let pool = live_segments.lock().unwrap();
+        let mut out: Vec<SegmentProgress> = pool
+            .segments
+            .iter()
+            .map(|seg| seg.snapshot_progress(&cp_map))
+            .collect();
         out.sort_by_key(|s| s.id);
         out
     } else {
@@ -1170,6 +1338,7 @@ mod tests {
             supports_ranges,
             etag: etag.map(str::to_string),
             last_modified: last_modified.map(str::to_string),
+            server_digest: None,
         }
     }
 

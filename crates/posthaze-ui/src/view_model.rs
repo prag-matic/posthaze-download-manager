@@ -643,7 +643,6 @@ pub struct KeyboardContext {
     pub has_confirm_modal: bool,
     pub has_preflight_resolved: bool,
     pub has_any_preflight: bool,
-    pub has_settings_modal: bool,
     pub has_file_op_modal: bool,
     pub url_input_focused: bool,
 }
@@ -665,16 +664,12 @@ pub fn resolve_keyboard_action(key: &str, ctx: KeyboardContext) -> KeyboardActio
         return KeyboardAction::DismissOverlays;
     }
     if key == "enter"
-        && (ctx.has_confirm_modal
-            || ctx.has_preflight_resolved
-            || ctx.has_settings_modal
-            || ctx.has_file_op_modal)
+        && (ctx.has_confirm_modal || ctx.has_preflight_resolved || ctx.has_file_op_modal)
     {
         return KeyboardAction::ConfirmActiveModal;
     }
     if ctx.has_confirm_modal
         || ctx.has_any_preflight
-        || ctx.has_settings_modal
         || ctx.has_file_op_modal
         || ctx.url_input_focused
     {
@@ -697,12 +692,36 @@ pub enum PrimaryDownloadAction {
     RestartFresh(DownloadId),
 }
 
+/// Structured desktop notification payloads emitted by [`QueueController`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToastEvent {
+    Started {
+        id: DownloadId,
+        filename: String,
+        output_path: Option<PathBuf>,
+        total_bytes: Option<u64>,
+    },
+    Completed {
+        id: DownloadId,
+        filename: String,
+        output_path: Option<PathBuf>,
+        total_bytes: Option<u64>,
+    },
+    Failed {
+        id: DownloadId,
+        filename: String,
+        error: Option<String>,
+        failure_kind: Option<FailureKind>,
+        resumable: bool,
+    },
+}
+
 /// Side effects emitted by [`QueueController`] for the GPUI shell to execute.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiEffect {
     RefreshFromEngine,
     ResumeDownload(DownloadId),
-    ShowToast { title: String, body: String },
+    ShowToast(ToastEvent),
     RunCompletionHook { path: PathBuf },
     LoadSegments(DownloadId),
 }
@@ -756,6 +775,7 @@ pub struct QueueController {
     pub selected_ids: HashSet<DownloadId>,
     pub selection_anchor: Option<DownloadId>,
     pub auto_retries_used: HashMap<DownloadId, u32>,
+    started_notified: HashSet<DownloadId>,
     projection: QueueProjectionCache,
 }
 
@@ -778,6 +798,8 @@ impl QueueController {
         self.persisted_segments.retain(|id, _| existing.contains(id));
         self.persisted_segments_order
             .retain(|id| existing.contains(id));
+        self.started_notified.retain(|id| existing.contains(id));
+        self.auto_retries_used.retain(|id, _| existing.contains(id));
         if let Some(ref anchor) = self.selection_anchor
             && !existing.contains(anchor)
         {
@@ -909,6 +931,44 @@ impl QueueController {
         &self.projection.all_rows
     }
 
+    /// Computes aggregate Windows taskbar progress across all `Active` / `Probing` transfers.
+    pub(crate) fn taskbar_progress_state(&self) -> crate::platform_hooks::TaskbarProgressState {
+        use crate::platform_hooks::TaskbarProgressState;
+
+        let mut any_active = false;
+        let mut known_total: u64 = 0;
+        let mut known_done: u64 = 0;
+        let mut has_known = false;
+
+        for rec in &self.records {
+            let live = self.live_map.get(&rec.id);
+            let state = live.map_or(rec.state, |s| s.state);
+            if matches!(state, DownloadState::Active | DownloadState::Probing) {
+                any_active = true;
+                let total = live.and_then(|s| s.total_bytes).or(rec.content_length);
+                let done = live.map_or(rec.bytes_downloaded, |s| s.bytes_downloaded);
+                if let Some(t) = total
+                    && t > 0
+                {
+                    has_known = true;
+                    known_total = known_total.saturating_add(t);
+                    known_done = known_done.saturating_add(done.min(t));
+                }
+            }
+        }
+
+        if !any_active {
+            TaskbarProgressState::None
+        } else if has_known && known_total > 0 {
+            TaskbarProgressState::Normal {
+                completed: known_done,
+                total: known_total,
+            }
+        } else {
+            TaskbarProgressState::Indeterminate
+        }
+    }
+
     /// Returns the cached visible row indices into [`Self::all_rows`].
     pub fn visible_indices(&self) -> &[usize] {
         &self.projection.visible_indices
@@ -937,6 +997,11 @@ impl QueueController {
         self.projection.rebuild_count
     }
 
+    /// Clears the one-shot started notification guard when a download is explicitly restarted.
+    pub fn clear_started_notification(&mut self, id: &DownloadId) {
+        self.started_notified.remove(id);
+    }
+
     /// Processes an [`EngineEvent`] and returns any side effects for the UI shell.
     pub fn on_engine_event(&mut self, event: EngineEvent, window_active: bool) -> Vec<UiEffect> {
         let mut effects = Vec::new();
@@ -947,34 +1012,72 @@ impl QueueController {
             EngineEvent::StateChanged {
                 id,
                 state,
-                error: _,
+                error,
                 failure_kind,
             } => {
+                let live_bytes_downloaded = self.live_map.get(&id).map_or(0, |s| s.bytes_downloaded);
+                let live_bytes = self
+                    .live_map
+                    .get(&id)
+                    .and_then(|s| s.total_bytes.filter(|b| *b > 0).or(Some(s.bytes_downloaded).filter(|b| *b > 0)));
                 if state != DownloadState::Active {
                     self.live_map.remove(&id);
                 }
                 self.projection.rows_dirty = true;
                 self.projection.view_dirty = true;
                 let rec = self.records.iter().find(|r| r.id == id).cloned();
-                if state == DownloadState::Completed {
+                if state == DownloadState::Active {
+                    let is_first_start = rec
+                        .as_ref()
+                        .is_none_or(|r| r.bytes_downloaded == 0 && r.state != DownloadState::Failed)
+                        && live_bytes_downloaded == 0
+                        && !self.auto_retries_used.contains_key(&id)
+                        && self.started_notified.insert(id.clone());
+                    if is_first_start
+                        && self.settings.notify_on_started
+                        && (!self.settings.notify_only_inactive || !window_active)
+                    {
+                        let name = rec
+                            .as_ref()
+                            .map(derive_display_filename)
+                            .unwrap_or_else(|| "Download".to_string());
+                        let total_bytes = rec
+                            .as_ref()
+                            .and_then(|r| r.content_length.filter(|b| *b > 0))
+                            .or(live_bytes);
+                        let output_path = rec.as_ref().and_then(|r| r.output_path.clone());
+                        effects.push(UiEffect::ShowToast(ToastEvent::Started {
+                            id,
+                            filename: name,
+                            output_path,
+                            total_bytes,
+                        }));
+                    }
+                } else if state == DownloadState::Completed {
                     self.auto_retries_used.remove(&id);
-                    if let Some(ref r) = rec {
-                        let name = derive_display_filename(r);
-                        if self.settings.notify_on_completed
-                            && (!self.settings.notify_only_inactive || !window_active)
-                        {
-                            effects.push(UiEffect::ShowToast {
-                                title: "Posthaze — Download Completed".to_string(),
-                                body: name,
-                            });
-                        }
-                        if self.settings.completion_cmd_enabled
-                            && let Some(ref out_path) = r.output_path
-                        {
-                            effects.push(UiEffect::RunCompletionHook {
-                                path: out_path.clone(),
-                            });
-                        }
+                    let name = rec
+                        .as_ref()
+                        .map(derive_display_filename)
+                        .unwrap_or_else(|| "Download".to_string());
+                    let total_bytes = rec
+                        .as_ref()
+                        .and_then(|r| r.content_length.filter(|b| *b > 0))
+                        .or(live_bytes);
+                    let output_path = rec.as_ref().and_then(|r| r.output_path.clone());
+                    if self.settings.notify_on_completed
+                        && (!self.settings.notify_only_inactive || !window_active)
+                    {
+                        effects.push(UiEffect::ShowToast(ToastEvent::Completed {
+                            id: id.clone(),
+                            filename: name,
+                            output_path: output_path.clone(),
+                            total_bytes,
+                        }));
+                    }
+                    if self.settings.completion_cmd_enabled
+                        && let Some(out_path) = output_path
+                    {
+                        effects.push(UiEffect::RunCompletionHook { path: out_path });
                     }
                 } else if state == DownloadState::Failed {
                     let is_resource_changed =
@@ -993,10 +1096,13 @@ impl QueueController {
                             .as_ref()
                             .map(derive_display_filename)
                             .unwrap_or_else(|| "Download".to_string());
-                        effects.push(UiEffect::ShowToast {
-                            title: "Posthaze — Download Failed".to_string(),
-                            body: name,
-                        });
+                        effects.push(UiEffect::ShowToast(ToastEvent::Failed {
+                            id,
+                            filename: name,
+                            error,
+                            failure_kind,
+                            resumable: failure_kind != Some(FailureKind::NonResumable),
+                        }));
                     }
                 }
                 effects.push(UiEffect::RefreshFromEngine);
@@ -1635,6 +1741,116 @@ mod tests {
             false,
         );
         assert!(!effects_nr.iter().any(|e| matches!(e, UiEffect::ResumeDownload(_))));
+
+        // Fast completion before `records` caches the row must still emit ShowToast.
+        ctrl.settings.notify_on_completed = true;
+        let fast_id = DownloadId::from("dl-fast".to_string());
+        let effects_fast = ctrl.on_engine_event(
+            EngineEvent::StateChanged {
+                id: fast_id.clone(),
+                state: DownloadState::Completed,
+                error: None,
+                failure_kind: None,
+            },
+            false,
+        );
+        assert!(effects_fast.iter().any(|e| matches!(
+            e,
+            UiEffect::ShowToast(ToastEvent::Completed { id, .. }) if *id == fast_id
+        )));
+    }
+
+    #[test]
+    fn queue_controller_emits_started_toast_only_on_first_start() {
+        let mut ctrl = QueueController::default();
+        ctrl.settings.notify_on_started = true;
+        ctrl.settings.notify_only_inactive = true;
+
+        // Suppressed when window is focused and `notify_only_inactive` is true.
+        let id_suppressed = DownloadId::from("dl-focused".to_string());
+        let eff_focused = ctrl.on_engine_event(
+            EngineEvent::StateChanged {
+                id: id_suppressed,
+                state: DownloadState::Active,
+                error: None,
+                failure_kind: None,
+            },
+            true,
+        );
+        assert!(
+            !eff_focused
+                .iter()
+                .any(|e| matches!(e, UiEffect::ShowToast(ToastEvent::Started { .. })))
+        );
+
+        // First start when unfocused emits `ToastEvent::Started`, even before `records` refreshes.
+        let id1 = DownloadId::from("dl-new".to_string());
+        let eff_first = ctrl.on_engine_event(
+            EngineEvent::StateChanged {
+                id: id1.clone(),
+                state: DownloadState::Active,
+                error: None,
+                failure_kind: None,
+            },
+            false,
+        );
+        assert!(eff_first.iter().any(|e| matches!(
+            e,
+            UiEffect::ShowToast(ToastEvent::Started { id, .. }) if *id == id1
+        )));
+
+        // Second Active transition (e.g. after Pause -> Resume) must NOT re-emit Started.
+        let eff_second = ctrl.on_engine_event(
+            EngineEvent::StateChanged {
+                id: id1,
+                state: DownloadState::Active,
+                error: None,
+                failure_kind: None,
+            },
+            false,
+        );
+        assert!(
+            !eff_second
+                .iter()
+                .any(|e| matches!(e, UiEffect::ShowToast(ToastEvent::Started { .. })))
+        );
+
+        // A download with existing `bytes_downloaded > 0` (resumed from persisted Paused) or Failed
+        // state must NOT emit `Started`.
+        let mut rec_resumed = make_record("dl-resumed", "https://example.com/r.bin", DownloadState::Paused, 1);
+        rec_resumed.bytes_downloaded = 1024;
+        let rec_failed = make_record("dl-failed", "https://example.com/f.bin", DownloadState::Failed, 2);
+        ctrl.records = vec![rec_resumed, rec_failed];
+
+        let eff_resumed = ctrl.on_engine_event(
+            EngineEvent::StateChanged {
+                id: DownloadId::from("dl-resumed".to_string()),
+                state: DownloadState::Active,
+                error: None,
+                failure_kind: None,
+            },
+            false,
+        );
+        assert!(
+            !eff_resumed
+                .iter()
+                .any(|e| matches!(e, UiEffect::ShowToast(ToastEvent::Started { .. })))
+        );
+
+        let eff_failed_resume = ctrl.on_engine_event(
+            EngineEvent::StateChanged {
+                id: DownloadId::from("dl-failed".to_string()),
+                state: DownloadState::Active,
+                error: None,
+                failure_kind: None,
+            },
+            false,
+        );
+        assert!(
+            !eff_failed_resume
+                .iter()
+                .any(|e| matches!(e, UiEffect::ShowToast(ToastEvent::Started { .. })))
+        );
     }
 
     #[test]

@@ -2,6 +2,7 @@
 
 #![deny(missing_docs)]
 
+mod disk;
 mod model;
 mod probe;
 mod queue;
@@ -195,8 +196,16 @@ impl DownloadEngine {
         let original_url = url.into();
         let client = self.http_client();
         let probed = probe_url_with_headers(&client, &original_url, headers).await?;
-        let disambiguated_output_path =
-            disambiguate_output_path(output_dir.as_ref(), &probed.suggested_filename);
+        let reserved = if let Some(store) = &self.store {
+            store.list_reserved_output_paths(None).await.unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let disambiguated_output_path = disambiguate_output_path_with_reserved(
+            output_dir.as_ref(),
+            &probed.suggested_filename,
+            &reserved,
+        );
         Ok(PreflightInfo {
             original_url,
             final_url: probed.final_url,
@@ -206,14 +215,22 @@ impl DownloadEngine {
             supports_ranges: probed.supports_ranges,
             etag: probed.etag,
             last_modified: probed.last_modified,
+            server_digest: probed.server_digest,
         })
     }
 
     /// Starts a `Download` asynchronously and returns a [`DownloadHandle`].
-    pub async fn start(&self, request: DownloadRequest) -> Result<DownloadHandle, EngineError> {
+    pub async fn start(&self, mut request: DownloadRequest) -> Result<DownloadHandle, EngineError> {
         let id = DownloadId::new();
         if let Some(store) = &self.store {
+            reserve_non_conflicting_output_path(store, &mut request).await;
             store.insert_queued(&id, &request).await?;
+            let folder = request
+                .output_path
+                .as_deref()
+                .and_then(|p| p.parent())
+                .unwrap_or(&request.output_dir);
+            let _ = store.record_folder_history(folder).await;
         }
         Ok(self.spawn_fresh_download(id, request).await)
     }
@@ -221,14 +238,24 @@ impl DownloadEngine {
     /// Stages a new `Download` in [`DownloadState::Paused`] without starting network transfer.
     ///
     /// The staged record can be started later via [`Self::resume`].
-    pub async fn enqueue_paused(&self, request: DownloadRequest) -> Result<DownloadId, EngineError> {
+    pub async fn enqueue_paused(
+        &self,
+        mut request: DownloadRequest,
+    ) -> Result<DownloadId, EngineError> {
         let Some(store) = &self.store else {
             return Err(EngineError::InvalidState(
                 "cannot stage paused download without persistence".to_string(),
             ));
         };
         let id = DownloadId::new();
+        reserve_non_conflicting_output_path(store, &mut request).await;
         store.insert_paused(&id, &request).await?;
+        let folder = request
+            .output_path
+            .as_deref()
+            .and_then(|p| p.parent())
+            .unwrap_or(&request.output_dir);
+        let _ = store.record_folder_history(folder).await;
         let _ = self.event_tx.send(EngineEvent::StateChanged {
             id: id.clone(),
             state: DownloadState::Paused,
@@ -391,16 +418,38 @@ impl DownloadEngine {
         )))
     }
 
-    /// Deletes a `Download` record (stopping any active `Download`), its `.part` file, and optionally its final file.
+    /// Deletes a `Download` record (stopping any active `Download`), its `.part` file, and optionally its final file permanently.
     pub async fn delete(&self, id: &DownloadId, delete_file: bool) -> Result<(), EngineError> {
+        self.delete_with_mode(id, delete_file.then_some(DeleteFileMode::Permanent))
+            .await
+    }
+
+    /// Deletes a `Download` record (stopping any active `Download`), its `.part` file, and optionally
+    /// removes its completed output file using `file_mode` (`RecycleBin` or `Permanent`).
+    pub async fn delete_with_mode(
+        &self,
+        id: &DownloadId,
+        file_mode: Option<DeleteFileMode>,
+    ) -> Result<(), EngineError> {
         let _ = self.signal_and_wait_active(id, ControlSignal::Cancel).await;
         let (store, record) = self.require_download_record(id).await?;
 
         if let Some(part_path) = &record.part_path {
             remove_file_if_exists(part_path).await?;
         }
-        if delete_file && let Some(output_path) = &record.output_path {
-            remove_file_if_exists(output_path).await?;
+        if let Some(mode) = file_mode
+            && let Some(output_path) = record.output_path
+        {
+            match mode {
+                DeleteFileMode::Permanent => {
+                    remove_file_if_exists(&output_path).await?;
+                }
+                DeleteFileMode::RecycleBin => {
+                    tokio::task::spawn_blocking(move || disk::move_to_recycle_bin(&output_path))
+                        .await
+                        .map_err(|e| EngineError::TaskJoin(e.to_string()))??;
+                }
+            }
         }
         store.delete_download(id).await?;
         let _ = self.event_tx.send(EngineEvent::QueueUpdated);
@@ -448,6 +497,8 @@ impl DownloadEngine {
             headers: record.headers,
             known_content_length: record.content_length,
             skip_probe: false,
+            probe_via_get: false,
+            preflight_probe: None,
         };
 
         Ok(self.spawn_fresh_download(id.clone(), req).await)
@@ -466,6 +517,64 @@ impl DownloadEngine {
         match &self.store {
             Some(store) => store.get_download(id).await,
             None => Ok(None),
+        }
+    }
+
+    /// Finds the most recent non-cancelled persisted `DownloadRecord` matching `url`.
+    pub async fn find_download_by_url(
+        &self,
+        url: &str,
+    ) -> Result<Option<DownloadRecord>, EngineError> {
+        match &self.store {
+            Some(store) => store.find_download_by_url(url).await,
+            None => Ok(None),
+        }
+    }
+
+    /// Finds a duplicate `DownloadRecord` matching `url` or fallback `(filename, content_length)`
+    /// (ignoring ` (N)` disambiguation counters for rotating-token URLs and auto-renamed files).
+    pub async fn find_duplicate_download(
+        &self,
+        url: &str,
+        filename: Option<&str>,
+        content_length: Option<u64>,
+        output_dir: Option<&Path>,
+    ) -> Result<Option<DownloadRecord>, EngineError> {
+        let Some(store) = &self.store else {
+            return Ok(None);
+        };
+        if let Some(rec) = store.find_download_by_url(url).await? {
+            return Ok(Some(rec));
+        }
+        if let Some(name) = filename {
+            return store
+                .find_duplicate_by_file(name, content_length, output_dir)
+                .await;
+        }
+        Ok(None)
+    }
+
+    /// Lists up to `limit` most recently used existing destination folders.
+    pub async fn list_recent_folders(&self, limit: usize) -> Result<Vec<PathBuf>, EngineError> {
+        match &self.store {
+            Some(store) => store.list_recent_folders(limit).await,
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// Clears all persisted destination folder entries from history.
+    pub async fn clear_recent_folders(&self) -> Result<(), EngineError> {
+        match &self.store {
+            Some(store) => store.clear_folder_history().await,
+            None => Ok(()),
+        }
+    }
+
+    /// Lists output paths currently claimed by active, queued, paused, or resumable-failed `Download`s.
+    pub async fn list_reserved_output_paths(&self) -> Result<Vec<PathBuf>, EngineError> {
+        match &self.store {
+            Some(store) => store.list_reserved_output_paths(None).await,
+            None => Ok(Vec::new()),
         }
     }
 
@@ -537,6 +646,15 @@ impl DownloadEngine {
 
     /// Computes the `BLAKE3` hex digest of a `Completed` `Download`'s output file.
     pub async fn compute_file_blake3(&self, id: &DownloadId) -> Result<String, EngineError> {
+        Ok(self.compute_file_checksums(id).await?.blake3)
+    }
+
+    /// Computes `BLAKE3`, `SHA-256`, `SHA-512`, `SHA-1`, `MD5`, and `CRC32` hex digests of a
+    /// `Completed` `Download`'s output file in a single sequential read pass.
+    pub async fn compute_file_checksums(
+        &self,
+        id: &DownloadId,
+    ) -> Result<FileChecksums, EngineError> {
         let (_, record) = self.require_download_record(id).await?;
         if record.state != DownloadState::Completed {
             return Err(EngineError::InvalidState(
@@ -546,8 +664,10 @@ impl DownloadEngine {
         let path = record.output_path.ok_or_else(|| {
             EngineError::NotFound("completed download has no output path".to_string())
         })?;
-        tokio::task::spawn_blocking(move || -> Result<String, EngineError> {
+        tokio::task::spawn_blocking(move || -> Result<FileChecksums, EngineError> {
             use std::io::Read as _;
+            use sha2::Digest as _;
+
             let mut opts = std::fs::OpenOptions::new();
             opts.read(true);
             #[cfg(target_os = "windows")]
@@ -557,16 +677,34 @@ impl DownloadEngine {
                 opts.custom_flags(FILE_FLAG_SEQUENTIAL_SCAN);
             }
             let mut file = opts.open(&path)?;
-            let mut hasher = blake3::Hasher::new();
+            let mut b3 = blake3::Hasher::new();
+            let mut s256 = sha2::Sha256::new();
+            let mut s512 = sha2::Sha512::new();
+            let mut s1 = sha1::Sha1::new();
+            let mut m5 = md5::Md5::new();
+            let mut crc = crc32fast::Hasher::new();
             let mut buf = [0u8; 64 * 1024];
             loop {
                 let n = file.read(&mut buf)?;
                 if n == 0 {
                     break;
                 }
-                hasher.update(&buf[..n]);
+                let slice = &buf[..n];
+                b3.update(slice);
+                s256.update(slice);
+                s512.update(slice);
+                s1.update(slice);
+                m5.update(slice);
+                crc.update(slice);
             }
-            Ok(hasher.finalize().to_hex().to_string())
+            Ok(FileChecksums {
+                blake3: b3.finalize().to_hex().to_string(),
+                sha256: format!("{:x}", s256.finalize()),
+                sha512: format!("{:x}", s512.finalize()),
+                sha1: format!("{:x}", s1.finalize()),
+                md5: format!("{:x}", m5.finalize()),
+                crc32: format!("{:08x}", crc.finalize()),
+            })
         })
         .await
         .map_err(|e| EngineError::TaskJoin(e.to_string()))?
@@ -652,7 +790,8 @@ impl DownloadEngine {
         store
             .update_completed_file_paths(id, &new_path, Some(&target_dir))
             .await
-        .map_err(|e| EngineError::TaskJoin(e.to_string()))?;
+            .map_err(|e| EngineError::TaskJoin(e.to_string()))?;
+        let _ = store.record_folder_history(&target_dir).await;
         let _ = self.event_tx.send(EngineEvent::QueueUpdated);
         Ok(new_path)
     }
@@ -683,7 +822,9 @@ impl DownloadEngine {
 fn build_http_client(proxy_mode: ProxyMode, proxy_url: &str) -> Result<reqwest::Client, EngineError> {
     let mut builder = reqwest::Client::builder()
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+        .http1_only()
         .connect_timeout(Duration::from_secs(15))
+        .read_timeout(Duration::from_secs(30))
         .pool_max_idle_per_host(6)
         .pool_idle_timeout(Duration::from_secs(30))
         .tcp_nodelay(true);
@@ -708,6 +849,31 @@ fn build_http_client(proxy_mode: ProxyMode, proxy_url: &str) -> Result<reqwest::
     }
 
     builder.build().map_err(EngineError::Http)
+}
+
+async fn reserve_non_conflicting_output_path(
+    store: &DownloadStore,
+    request: &mut DownloadRequest,
+) {
+    let Some(explicit) = request.output_path.as_ref() else {
+        return;
+    };
+    let Ok(reserved) = store.list_reserved_output_paths(None).await else {
+        return;
+    };
+    if crate::model::path_conflicts_with_reserved(explicit, &reserved) {
+        let parent = explicit.parent().unwrap_or(&request.output_dir);
+        let name = explicit
+            .file_name()
+            .and_then(|n| n.to_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or("download.bin");
+        request.output_path = Some(disambiguate_output_path_with_reserved(
+            parent,
+            name,
+            &reserved,
+        ));
+    }
 }
 
 pub(crate) async fn remove_file_if_exists(path: &Path) -> Result<(), EngineError> {

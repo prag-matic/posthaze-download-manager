@@ -385,11 +385,11 @@ impl PosthazeApp {
                 "sel-delete",
                 IconName::Trash,
                 label("DELETE", None),
-                "Delete Selected",
+                "Remove / Recycle Selected (Shift+Click or Shift+Del: Permanent)",
                 GridTone::Danger,
                 CellBorder::Right,
-                Box::new(cx.listener(|app, _, _, cx| {
-                    app.request_delete_selected(cx);
+                Box::new(cx.listener(|app, ev: &ClickEvent, _, cx| {
+                    app.request_delete_selected_with_mode(ev.modifiers().shift, cx);
                 })),
             ))
             .child(button(
@@ -533,8 +533,7 @@ impl PosthazeApp {
                         .child(
                             svg()
                                 .path(BRAND_LOGO_SVG)
-                                .w(px(26.0))
-                                .h(px(23.0))
+                                .size(px(36.0))
                                 .text_color(selenium_amber()),
                         )
                         .into_any_element()
@@ -1222,11 +1221,12 @@ impl PosthazeApp {
                         SharedString::from(format!("del-{}", row.id.as_str())),
                         IconName::Trash,
                         None,
-                        "Delete",
-                        cx.listener(move |app, _, _, cx| {
-                            app.request_delete_download(
+                        "Remove / Recycle (Shift+Click: Permanent)",
+                        cx.listener(move |app, ev: &ClickEvent, _, cx| {
+                            app.request_delete_download_with_shift(
                                 id_delete.clone(),
                                 filename_del.clone(),
+                                ev.modifiers().shift,
                                 cx,
                             );
                         }),

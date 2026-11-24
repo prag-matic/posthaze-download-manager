@@ -1,7 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildEnqueueHints, buildHeaders } from "./headers.js";
+import {
+  DEFAULT_EXCLUDED_EXTENSIONS,
+  buildEnqueueHints,
+  buildHeaders,
+  hostMatchesCsv,
+  isBlockedInternalUrl,
+  redactStatusForIncognito,
+  resolveStoreId,
+  shouldSkipDownload,
+} from "./headers.js";
 
 test("merges unpartitioned and CHIPS-partitioned cookies without duplicates", async () => {
   const calls = [];
@@ -49,6 +58,48 @@ test("merges unpartitioned and CHIPS-partitioned cookies without duplicates", as
     ["Referer", "https://kayoani.online/watch/123"],
     ["User-Agent", "TestAgent/1.0"],
     ["Cookie", "session=unpart_val; prefs=dark; cf_clearance=part_val"],
+  ]);
+});
+
+test("isolates cookies by incognito storeId and skips regular activeTab Referer", async () => {
+  const calls = [];
+  const fakeChrome = {
+    cookies: {
+      async getAll(query) {
+        calls.push(query);
+        if (query.partitionKey) {
+          return [{ name: "part_incog", value: "p1" }];
+        }
+        return [{ name: "incog_sid", value: "secret" }];
+      },
+    },
+    tabs: {
+      async query() {
+        return [{ url: "https://regular-tab.example.com/private", incognito: false }];
+      },
+    },
+  };
+
+  const headers = await buildHeaders("https://cdn.example.com/file.zip", "", {
+    chromeApi: fakeChrome,
+    userAgent: "TestAgent/1.0",
+    storeId: "1",
+    incognito: true,
+    topLevelUrl: "https://incognito-tab.example.com/page",
+  });
+
+  assert.deepEqual(calls, [
+    { url: "https://cdn.example.com/file.zip", storeId: "1" },
+    {
+      url: "https://cdn.example.com/file.zip",
+      partitionKey: { topLevelSite: "https://incognito-tab.example.com" },
+      storeId: "1",
+    },
+  ]);
+
+  assert.deepEqual(headers, [
+    ["User-Agent", "TestAgent/1.0"],
+    ["Cookie", "incog_sid=secret; part_incog=p1"],
   ]);
 });
 
@@ -172,4 +223,72 @@ test("buildEnqueueHints forwards totalBytes and sets singleStream/skipProbe for 
     singleStream: false,
     skipProbe: false,
   });
+});
+
+test("shouldSkipDownload checks target host, referrer host, basename extension, and minSizeMb", () => {
+  const settings = {
+    excludedDomains: "localhost, excluded.org",
+    excludedExtensions: DEFAULT_EXCLUDED_EXTENSIONS,
+    minSizeMb: 2,
+  };
+
+  assert.equal(hostMatchesCsv("sub.excluded.org", settings.excludedDomains), true);
+  assert.equal(
+    shouldSkipDownload(
+      { filename: "C:\\v1.2\\Downloads\\archive.zip", totalBytes: 5 * 1024 * 1024 },
+      "https://cdn.example.com/archive.zip",
+      "https://app.excluded.org/page",
+      settings,
+    ),
+    true,
+  );
+  assert.equal(
+    shouldSkipDownload(
+      { filename: "C:\\v1.2\\Downloads\\page.html", totalBytes: 5 * 1024 * 1024 },
+      "https://cdn.example.com/export",
+      "https://good.example.com/",
+      settings,
+    ),
+    true,
+  );
+  assert.equal(
+    shouldSkipDownload(
+      { filename: "C:\\v1.2\\Downloads\\archive_noext", totalBytes: 5 * 1024 * 1024 },
+      "https://cdn.example.com/dl/123",
+      "https://good.example.com/",
+      settings,
+    ),
+    false,
+  );
+  assert.equal(
+    shouldSkipDownload(
+      { filename: "small.zip", totalBytes: 1024 },
+      "https://cdn.example.com/small.zip",
+      "https://good.example.com/",
+      settings,
+    ),
+    true,
+  );
+});
+
+test("isBlockedInternalUrl and incognito helpers handle SW streams and redaction", () => {
+  assert.equal(isBlockedInternalUrl("blob:https://example.com/uuid"), true);
+  assert.equal(
+    isBlockedInternalUrl("https://web.telegram.org/k/stream/12345"),
+    true,
+  );
+  assert.equal(
+    isBlockedInternalUrl("https://example.com/dl?colab-runtime-proxy-token=abc"),
+    true,
+  );
+  assert.equal(isBlockedInternalUrl("https://cdn.example.com/archive.zip"), false);
+
+  assert.equal(resolveStoreId({ incognito: true }, null), "1");
+  assert.equal(resolveStoreId({ cookieStoreId: "firefox-private" }, null), "firefox-private");
+  assert.equal(resolveStoreId({ incognito: false }, { incognito: false }), undefined);
+
+  assert.deepEqual(
+    redactStatusForIncognito({ ok: true, url: "https://secret.example/file", message: "ok" }, true),
+    { ok: true, url: "", message: "Sent to Posthaze (Private)" },
+  );
 });

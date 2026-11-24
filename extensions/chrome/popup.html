@@ -76,6 +76,32 @@
       accent-color: var(--accent);
       margin: 0;
     }
+    .site-btn {
+      width: 100%;
+      color: var(--text);
+      font: inherit;
+      text-align: left;
+    }
+    .site-btn:hover { border-color: var(--accent); }
+    .site-btn[hidden] { display: none; }
+    .site-host {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--muted);
+    }
+    .site-action {
+      font-family: Consolas, monospace;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+      color: var(--accent);
+      flex-shrink: 0;
+    }
+    .site-btn.excluded .site-action {
+      color: var(--ok);
+    }
     .actions {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -189,6 +215,11 @@
       <input id="intercept-toggle" type="checkbox" />
     </label>
 
+    <button id="site-exclude-btn" class="row site-btn" type="button" hidden>
+      <span id="site-exclude-host" class="site-host"></span>
+      <span id="site-exclude-label" class="site-action">EXCLUDE SITE</span>
+    </button>
+
     <div class="actions">
       <button id="open-ui-btn" class="btn primary" type="button">OPEN POSTHAZE</button>
       <button id="ping-btn" class="btn" type="button">PING HOST</button>
@@ -203,7 +234,7 @@
         </div>
         <div class="field">
           <label for="skip-ext">SKIP EXT</label>
-          <input id="skip-ext" type="text" placeholder="svg, json, txt" />
+          <input id="skip-ext" type="text" placeholder="svg, crx, xpi, html, htm" />
         </div>
         <div class="field">
           <label for="skip-dom">SKIP HOST</label>
@@ -215,6 +246,6 @@
     <div id="status-box" class="status">Ready.</div>
   </div>
 
-  <script src="popup.js"></script>
+  <script type="module" src="popup.js"></script>
 </body>
 </html>

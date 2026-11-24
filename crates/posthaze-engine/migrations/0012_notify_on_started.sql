@@ -1,0 +1,1 @@
+ALTER TABLE settings ADD COLUMN notify_on_started INTEGER NOT NULL DEFAULT 0;

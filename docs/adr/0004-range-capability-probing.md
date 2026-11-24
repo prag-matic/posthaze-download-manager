@@ -8,3 +8,7 @@ Before scheduling `Segment`s, `Probing` issues a `HEAD` request and falls back t
 
 - Servers that block `HEAD` or strip `Accept-Ranges` on `HEAD` still get multi-connection acceleration via the `bytes=0-0` probe.
 - Dynamic/chunked responses without `Content-Length` cleanly degrade to single-stream mode without corrupting range assumptions.
+
+## Amendments
+
+- **Pre-Flight reuse, opt-in `probe_via_get`, `read_timeout`, and `Retry-After`:** Callers that already ran Pre-Flight (`DownloadRequest::preflight_probe`) skip duplicate probing; callers opting into `DownloadRequest::probe_via_get` probe with a single `Range: bytes=0-` `GET` (falling back to plain `GET` on `416`) and hand the live `InitialStream` directly to Worker `0` or single-stream transfer. The shared `reqwest::Client` enforces `.http1_only()` and `.read_timeout(30s)`, and `429`/`503` responses with a valid `Retry-After` header are surfaced as `EngineError::Throttled` and honored up to `300s`.

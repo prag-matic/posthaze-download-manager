@@ -29,7 +29,7 @@ pub(crate) fn render_inspector<F1, F2, F3>(
 ) -> AnyElement
 where
     F1: Fn(DownloadId, &mut Window, &mut App) + 'static,
-    F2: Fn(DownloadId, &mut Window, &mut App) + 'static,
+    F2: Fn(DownloadId, bool, &mut Window, &mut App) + 'static,
     F3: Fn(&mut Window, &mut App) + 'static,
 {
     let on_toggle_collapse = callbacks.on_toggle_collapse;
@@ -261,15 +261,14 @@ where
         )
         // Diagnostic & Errata Strip for Failed Downloads
         .when(row.state == DownloadState::Failed, |el| {
-            let msg = if row.is_resource_changed {
-                "File changed on the server since pause. Partial progress is preserved — restart fresh to download the updated file.".to_string()
-            } else {
-                format!(
-                    "FAILED: {}",
-                    row.error_message
-                        .as_deref()
-                        .unwrap_or("Transfer failed with an unspecified error.")
-                )
+            let diag = crate::errors::describe_error(
+                row.error_message.as_deref().unwrap_or(""),
+                row.is_resource_changed,
+            );
+            let msg = format!("{}: {}", diag.headline, diag.detail);
+            let tip_full = match diag.tip {
+                Some(t) => format!("{msg}\n{t}"),
+                None => msg.clone(),
             };
             el.child(
                 div()
@@ -284,11 +283,16 @@ where
                     .gap_2()
                     .child(
                         div()
+                            .id("errata-diagnostic-text")
                             .flex_1()
                             .flex()
                             .items_center()
                             .gap_2()
                             .min_w_0()
+                            .tooltip(move |window, cx| {
+                                gpui_kit::component::tooltip::Tooltip::new(tip_full.clone())
+                                    .build(window, cx)
+                            })
                             .child(
                                 Icon::new(IconName::TriangleAlert)
                                     .size(px(14.0))
@@ -332,12 +336,17 @@ where
                                 "errata-delete",
                                 Some(IconName::Trash),
                                 Some("DELETE"),
-                                Some("Delete"),
+                                Some("Remove / Recycle (Shift+Click: Permanent)"),
                                 GridTone::Danger,
                                 CellBorder::Left,
                                 true,
-                                move |_, window, cx| {
-                                    (callbacks.on_delete)(id_delete.clone(), window, cx);
+                                move |ev, window, cx| {
+                                    (callbacks.on_delete)(
+                                        id_delete.clone(),
+                                        ev.modifiers().shift,
+                                        window,
+                                        cx,
+                                    );
                                 },
                             )),
                     ),

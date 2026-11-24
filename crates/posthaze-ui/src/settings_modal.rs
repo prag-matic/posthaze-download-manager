@@ -13,35 +13,30 @@ use crate::grid_cells::{
     CellBorder, GridTone, grid_boxed_button, grid_cell_button, grid_cell_button_dyn,
     grid_modal_footer, grid_section_header,
 };
-use crate::modals::{labeled_input, modal_backdrop};
+use crate::modals::labeled_input;
 use crate::theme::*;
 use crate::updater::UpdateState;
 
-/// Navigation tabs inside the comprehensive Settings modal.
+/// Navigation tabs inside the Settings window (`General`, `Downloads`, `Network`, `Appearance`,
+/// `Integrations`, `System`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SettingsTab {
     General,
     Downloads,
     Network,
-    Notifications,
-    Automation,
-    Integration,
-    Interface,
-    Updates,
-    Reset,
+    Appearance,
+    Integrations,
+    System,
 }
 
 impl SettingsTab {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 6] = [
         Self::General,
-        Self::Interface,
         Self::Downloads,
         Self::Network,
-        Self::Notifications,
-        Self::Automation,
-        Self::Integration,
-        Self::Updates,
-        Self::Reset,
+        Self::Appearance,
+        Self::Integrations,
+        Self::System,
     ];
 
     pub fn label(self) -> &'static str {
@@ -49,40 +44,31 @@ impl SettingsTab {
             Self::General => "General",
             Self::Downloads => "Downloads",
             Self::Network => "Network",
-            Self::Notifications => "Notifications",
-            Self::Automation => "Automation",
-            Self::Integration => "Integration",
-            Self::Interface => "Interface",
-            Self::Updates => "Updates",
-            Self::Reset => "Reset",
+            Self::Appearance => "Appearance",
+            Self::Integrations => "Integrations",
+            Self::System => "System",
         }
     }
 
     pub fn subtitle(self) -> &'static str {
         match self {
-            Self::General => "Default save location and folder sorting.",
-            Self::Downloads => "File collisions, removal behavior, and automatic retries.",
-            Self::Network => "Proxy routing, bandwidth cap, and connection limits.",
-            Self::Notifications => "Windows desktop alerts for queue and transfer events.",
-            Self::Automation => "External commands and antivirus scans run after completion.",
-            Self::Integration => "Browser Capture Native Messaging Host setup for Chrome, Edge, and Brave.",
-            Self::Interface => "Row interactions, Pre-Flight actions, and display scale.",
-            Self::Updates => "Version info, automatic update checks, and signed releases.",
-            Self::Reset => "Restore all preferences to factory defaults.",
+            Self::General => "Startup behavior, System Tray, and Windows notifications.",
+            Self::Downloads => "Save location, Pre-Flight defaults, collision policy, and safety.",
+            Self::Network => "Proxy routing, global bandwidth cap, and connection limits.",
+            Self::Appearance => "Color themes, accents, table columns, scale, and window chrome.",
+            Self::Integrations => "Browser Capture extension host and post-download command hooks.",
+            Self::System => "Application updates, diagnostics, folder history, and factory reset.",
         }
     }
 
     pub fn icon(self) -> IconName {
         match self {
-            Self::General => IconName::Folder,
+            Self::General => IconName::Settings,
             Self::Downloads => IconName::Download,
             Self::Network => IconName::Globe,
-            Self::Notifications => IconName::Bell,
-            Self::Automation => IconName::ShieldCheck,
-            Self::Integration => IconName::Globe,
-            Self::Interface => IconName::LayoutDashboard,
-            Self::Updates => IconName::RefreshCw,
-            Self::Reset => IconName::RotateCcw,
+            Self::Appearance => IconName::LayoutDashboard,
+            Self::Integrations => IconName::ShieldCheck,
+            Self::System => IconName::RefreshCw,
         }
     }
 }
@@ -105,6 +91,7 @@ pub(crate) struct SettingsDraft {
     pub delete_action_default: DeleteDefaultAction,
     pub completion_cmd_enabled: bool,
     pub notify_on_added: bool,
+    pub notify_on_started: bool,
     pub notify_on_completed: bool,
     pub notify_on_failed: bool,
     pub notify_only_inactive: bool,
@@ -145,6 +132,7 @@ impl SettingsDraft {
             delete_action_default: settings.delete_action_default,
             completion_cmd_enabled: settings.completion_cmd_enabled,
             notify_on_added: settings.notify_on_added,
+            notify_on_started: settings.notify_on_started,
             notify_on_completed: settings.notify_on_completed,
             notify_on_failed: settings.notify_on_failed,
             notify_only_inactive: settings.notify_only_inactive,
@@ -226,6 +214,7 @@ impl SettingsDraft {
                 completion_cmd_args
             },
             notify_on_added: self.notify_on_added,
+            notify_on_started: self.notify_on_started,
             notify_on_completed: self.notify_on_completed,
             notify_on_failed: self.notify_on_failed,
             notify_only_inactive: self.notify_only_inactive,
@@ -266,6 +255,7 @@ pub(crate) struct SettingsModalState {
     pub extension_id_input: Entity<InputState>,
     pub browser_statuses: Vec<(&'static str, bool)>,
     pub integration_feedback: Option<Result<String, String>>,
+    pub system_feedback: Option<Result<String, String>>,
     pub draft: SettingsDraft,
     pub error: Option<String>,
 }
@@ -315,7 +305,14 @@ impl SettingsModalState {
             st
         });
         let extension_id_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("Paste 32-character Extension ID from chrome://extensions")
+            let mut st =
+                InputState::new(window, cx).placeholder("32-char unpacked/store Extension ID");
+            st.set_value(
+                crate::browser_integration::DEFAULT_UNPACKED_EXTENSION_ID,
+                window,
+                cx,
+            );
+            st
         });
         let browser_statuses = crate::browser_integration::query_browser_statuses();
 
@@ -332,6 +329,7 @@ impl SettingsModalState {
             extension_id_input,
             browser_statuses,
             integration_feedback: None,
+            system_feedback: None,
             draft,
             error: None,
         }
@@ -373,6 +371,9 @@ impl SettingsModalState {
             }
             SettingsAction::ToggleNotifyAdded => {
                 self.draft.notify_on_added = !self.draft.notify_on_added;
+            }
+            SettingsAction::ToggleNotifyStarted => {
+                self.draft.notify_on_started = !self.draft.notify_on_started;
             }
             SettingsAction::ToggleNotifyCompleted => {
                 self.draft.notify_on_completed = !self.draft.notify_on_completed;
@@ -483,12 +484,21 @@ impl SettingsModalState {
                     });
                     if let Ok(pretty) = serde_json::to_string_pretty(&payload) {
                         cx.write_to_clipboard(ClipboardItem::new_string(pretty));
+                        self.system_feedback =
+                            Some(Ok("Configuration JSON copied to clipboard.".to_string()));
                     }
+                } else {
+                    self.system_feedback = Some(Err(
+                        "Fix invalid input fields before exporting configuration JSON.".to_string(),
+                    ));
                 }
             }
             SettingsAction::ResetToDefaults => {
                 *self = Self::from_settings(&Settings::default(), window, cx);
-                self.active_tab = SettingsTab::Reset;
+                self.active_tab = SettingsTab::System;
+                self.system_feedback = Some(Ok(
+                    "Restored factory defaults. Click Apply or Save Settings to keep.".to_string(),
+                ));
                 crate::sync_theme_and_backdrops_in_window(
                     &self.draft.ui_theme,
                     self.draft.ui_accent_override.as_deref(),
@@ -497,6 +507,7 @@ impl SettingsModalState {
                 );
             }
             SettingsAction::OpenLogsFolder => {}
+            SettingsAction::ClearRecentFolders => {}
             SettingsAction::RegisterNativeHost => {}
             SettingsAction::RefreshBrowserStatus => {}
         }
@@ -531,6 +542,7 @@ pub(crate) enum SettingsAction {
     ToggleCompletionCmd,
     ApplyDefenderPreset,
     ToggleNotifyAdded,
+    ToggleNotifyStarted,
     ToggleNotifyCompleted,
     ToggleNotifyFailed,
     ToggleNotifyOnlyInactive,
@@ -555,84 +567,45 @@ pub(crate) enum SettingsAction {
     SetAccentOverride(Option<String>),
     CopyConfigJson,
     OpenLogsFolder,
+    ClearRecentFolders,
     RegisterNativeHost,
     RefreshBrowserStatus,
     ResetToDefaults,
 }
 
-pub(crate) fn render_settings_modal<F1, F2, F3>(
+/// Renders the two-pane Settings navigation, scrollable tab content, validation error bar,
+/// and `CANCEL` / `APPLY` / `SAVE SETTINGS` footer for [`SettingsWindow`](crate::settings_window::SettingsWindow).
+pub(crate) fn render_settings_window_body<F1, F2, F3, F4>(
     state: &SettingsModalState,
     update_state: &UpdateState,
     is_portable: bool,
     on_action: F1,
     on_cancel: F2,
-    on_save: F3,
+    on_apply: F3,
+    on_save: F4,
 ) -> AnyElement
 where
     F1: Fn(SettingsAction, &mut Window, &mut App) + Clone + 'static,
     F2: Fn(&mut Window, &mut App) + Clone + 'static,
     F3: Fn(&mut Window, &mut App) + 'static,
+    F4: Fn(&mut Window, &mut App) + 'static,
 {
-    let on_backdrop_close = on_cancel.clone();
-
     let body = match state.active_tab {
         SettingsTab::General => render_general_tab(state, on_action.clone()),
         SettingsTab::Downloads => render_downloads_tab(state, on_action.clone()),
         SettingsTab::Network => render_network_tab(state, on_action.clone()),
-        SettingsTab::Notifications => render_notifications_tab(state, on_action.clone()),
-        SettingsTab::Automation => render_automation_tab(state, on_action.clone()),
-        SettingsTab::Integration => render_integration_tab(state, on_action.clone()),
-        SettingsTab::Interface => render_interface_tab(state, on_action.clone()),
-        SettingsTab::Updates => {
-            render_updates_tab(state, update_state, is_portable, on_action.clone())
-        }
-        SettingsTab::Reset => render_reset_tab(on_action.clone()),
+        SettingsTab::Appearance => render_appearance_tab(state, on_action.clone()),
+        SettingsTab::Integrations => render_integrations_tab(state, on_action.clone()),
+        SettingsTab::System => render_system_tab(state, update_state, is_portable, on_action.clone()),
     };
 
-    let card = div()
-        .w(px(780.0))
-        .h(px(540.0))
-        .max_w_full()
-        .max_h_full()
-        .bg(modal_bg())
-        .border_1()
-        .border_color(graphite_border())
-        .shadow_lg()
+    div()
+        .flex_1()
+        .min_h_0()
+        .w_full()
         .flex()
         .flex_col()
         .overflow_hidden()
-        .child(
-            div()
-                .h(px(36.0))
-                .pl_5()
-                .border_b_1()
-                .border_color(graphite_border())
-                .flex()
-                .items_center()
-                .justify_between()
-                .child(
-                    div()
-                        .font_family(MONO_FONT)
-                        .text_size(TYPE_HEADING)
-                        .line_height(px(22.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(silver_text())
-                        .child("SETTINGS"),
-                )
-                .child(grid_cell_button(
-                    "settings-x-close",
-                    Some(IconName::X),
-                    None,
-                    Some("Close"),
-                    GridTone::Graphite,
-                    CellBorder::Left,
-                    true,
-                    {
-                        let cancel = on_cancel.clone();
-                        move |_, window, cx| cancel(window, cx)
-                    },
-                )),
-        )
         .child(
             div()
                 .flex_1()
@@ -642,6 +615,7 @@ where
                     div()
                         .w(px(176.0))
                         .h_full()
+                        .bg(graphite_bg())
                         .border_r_1()
                         .border_color(graphite_border())
                         .flex()
@@ -697,20 +671,21 @@ where
                         .flex_1()
                         .min_w_0()
                         .h_full()
+                        .bg(modal_bg())
                         .px_5()
                         .py_4()
                         .overflow_y_scroll()
                         .flex()
                         .flex_col()
-                        .gap_3()
+                        .gap_4()
                         .child(
                             div()
-                                .pb_2p5()
+                                .pb_3()
                                 .border_b_1()
                                 .border_color(graphite_border())
                                 .flex()
                                 .flex_col()
-                                .gap_0p5()
+                                .gap_1()
                                 .child(
                                     div()
                                         .font_family(MONO_FONT)
@@ -758,6 +733,16 @@ where
                     move |_, window, cx| on_cancel(window, cx),
                 ))
                 .child(grid_cell_button(
+                    "settings-apply",
+                    Some(IconName::Check),
+                    Some("APPLY"),
+                    Some("Save settings and keep this window open"),
+                    GridTone::Graphite,
+                    CellBorder::Left,
+                    false,
+                    move |_, window, cx| on_apply(window, cx),
+                ))
+                .child(grid_cell_button(
                     "settings-save",
                     Some(IconName::Check),
                     Some("SAVE SETTINGS"),
@@ -767,16 +752,41 @@ where
                     false,
                     move |_, window, cx| on_save(window, cx),
                 )),
-        );
-
-    modal_backdrop(card, on_backdrop_close)
+        )
+        .into_any_element()
 }
 
-fn section_heading(text: &'static str) -> impl IntoElement {
+fn settings_section(title: &'static str, rows: Vec<AnyElement>) -> AnyElement {
     div()
-        .border_1()
-        .border_color(graphite_border())
-        .child(grid_section_header(text.to_uppercase(), GridTone::Graphite))
+        .w_full()
+        .flex()
+        .flex_col()
+        .gap_1p5()
+        .child(
+            div()
+                .px_0p5()
+                .font_family(MONO_FONT)
+                .text_size(TYPE_HEADER)
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(silver_muted())
+                .child(title.to_uppercase()),
+        )
+        .child(
+            div()
+                .w_full()
+                .bg(graphite_elevated().opacity(0.45))
+                .border_1()
+                .border_color(graphite_border())
+                .flex()
+                .flex_col()
+                .children(rows.into_iter().enumerate().map(|(idx, row)| {
+                    div()
+                        .w_full()
+                        .when(idx > 0, |el| el.border_t_1().border_color(graphite_border()))
+                        .child(row)
+                })),
+        )
+        .into_any_element()
 }
 
 fn setting_text(title: &'static str, description: &'static str) -> impl IntoElement {
@@ -806,17 +816,58 @@ fn setting_row(
     title: &'static str,
     description: &'static str,
     control: impl IntoElement,
-) -> impl IntoElement {
+) -> AnyElement {
     div()
-        .py_3()
-        .border_b_1()
-        .border_color(graphite_border())
+        .w_full()
+        .px_3p5()
+        .py_2p5()
         .flex()
         .items_center()
         .justify_between()
         .gap_4()
         .child(setting_text(title, description))
         .child(div().flex_shrink_0().child(control))
+        .into_any_element()
+}
+
+fn stacked_row(content: impl IntoElement) -> AnyElement {
+    div()
+        .w_full()
+        .px_3p5()
+        .py_2p5()
+        .flex()
+        .flex_col()
+        .gap_2p5()
+        .child(content)
+        .into_any_element()
+}
+
+fn inline_feedback_banner(feedback: &Result<String, String>) -> AnyElement {
+    let (bg, border, text_col, msg) = match feedback {
+        Ok(msg) => (
+            graphite_elevated(),
+            halide_emerald(),
+            halide_emerald(),
+            msg.clone(),
+        ),
+        Err(err) => (
+            errata_surface_bg(),
+            errata_vermilion(),
+            errata_vermilion(),
+            err.clone(),
+        ),
+    };
+    div()
+        .w_full()
+        .p_2p5()
+        .bg(bg)
+        .border_1()
+        .border_color(border)
+        .font_family(MONO_FONT)
+        .text_size(TYPE_MICRO)
+        .text_color(text_col)
+        .child(msg)
+        .into_any_element()
 }
 
 fn segmented_track() -> Div {
@@ -872,23 +923,29 @@ fn toggle_row<F>(
     checked: bool,
     action: SettingsAction,
     on_action: F,
-) -> impl IntoElement
+) -> AnyElement
 where
     F: Fn(SettingsAction, &mut Window, &mut App) + 'static,
 {
     div()
         .id(id)
-        .py_1p5()
+        .w_full()
+        .px_3p5()
+        .py_2p5()
         .flex()
-        .items_start()
-        .gap_2p5()
+        .items_center()
+        .justify_between()
+        .gap_4()
         .cursor_pointer()
+        .hover(|s| s.bg(paper_hover()))
         .on_click(move |_, window, cx| on_action(action.clone(), window, cx))
+        .child(setting_text(title, description))
         .child(
             div()
-                .mt(px(2.0))
-                .w(px(16.0))
-                .h(px(16.0))
+                .w(px(34.0))
+                .h(px(18.0))
+                .p(px(2.0))
+                .rounded(px(9.0))
                 .flex_shrink_0()
                 .border_1()
                 .border_color(if checked {
@@ -903,16 +960,20 @@ where
                 })
                 .flex()
                 .items_center()
-                .justify_center()
-                .when(checked, |el| {
-                    el.child(
-                        Icon::new(IconName::Check)
-                            .size(px(11.0))
-                            .text_color(active_theme().accent_foreground.hsla()),
-                    )
-                }),
+                .when(checked, |el| el.justify_end())
+                .child(
+                    div()
+                        .w(px(12.0))
+                        .h(px(12.0))
+                        .rounded(px(6.0))
+                        .bg(if checked {
+                            active_theme().accent_foreground.hsla()
+                        } else {
+                            silver_muted()
+                        }),
+                ),
         )
-        .child(setting_text(title, description))
+        .into_any_element()
 }
 
 fn choice_btn<F>(
@@ -977,60 +1038,75 @@ fn render_general_tab<F>(state: &SettingsModalState, on_action: F) -> AnyElement
 where
     F: Fn(SettingsAction, &mut Window, &mut App) + Clone + 'static,
 {
-    let browse_action = on_action.clone();
     div()
         .flex()
         .flex_col()
-        .gap_3()
-        .child(
-            div()
-                .w_full()
-                .flex()
-                .items_stretch()
-                .child(div().flex_1().min_w_0().child(labeled_input("Save Folder", &state.dir_input)))
-                .child(
-                    div()
-                        .border_t_1()
-                        .border_b_1()
-                        .border_r_1()
-                        .border_color(graphite_border())
-                        .flex()
-                        .items_stretch()
-                        .child(grid_cell_button(
-                            "settings-browse-dir",
-                            Some(IconName::FolderOpen),
-                            Some("BROWSE"),
-                            Some("Choose default download folder"),
-                            GridTone::Graphite,
-                            CellBorder::Left,
-                            false,
-                            move |_, window, cx| browse_action(SettingsAction::BrowseSaveFolder, window, cx),
-                        )),
+        .gap_4()
+        .child(settings_section(
+            "Window & Startup",
+            vec![
+                toggle_row(
+                    "settings-close-to-tray",
+                    "Close to System Tray",
+                    "Keep active Downloads and Browser Capture running in the tray when closing the main window (Ctrl+Q or Tray -> Quit to exit).",
+                    state.draft.ui_close_to_tray,
+                    SettingsAction::ToggleCloseToTray,
+                    on_action.clone(),
                 ),
-        )
-        .child(toggle_row(
-            "settings-auto-categorize",
-            "Sort by File Type",
-            "Route files into Archives, Video, Audio, Documents, and Programs subfolders.",
-            state.draft.auto_categorize_folders,
-            SettingsAction::ToggleAutoCategorize,
-            on_action.clone(),
+                toggle_row(
+                    "settings-launch-startup",
+                    "Launch on Windows Startup",
+                    "Start Posthaze minimized to the System Tray automatically when you sign in to Windows.",
+                    state.draft.launch_on_startup,
+                    SettingsAction::ToggleLaunchOnStartup,
+                    on_action.clone(),
+                ),
+            ],
         ))
-        .child(toggle_row(
-            "settings-close-to-tray",
-            "Close to System Tray",
-            "Keep active Downloads and Browser Capture running in the tray when closing the main window (Ctrl+Q or Tray -> Quit to exit).",
-            state.draft.ui_close_to_tray,
-            SettingsAction::ToggleCloseToTray,
-            on_action.clone(),
-        ))
-        .child(toggle_row(
-            "settings-launch-startup",
-            "Launch on Windows Startup",
-            "Start Posthaze minimized to the System Tray automatically when you sign in to Windows.",
-            state.draft.launch_on_startup,
-            SettingsAction::ToggleLaunchOnStartup,
-            on_action,
+        .child(settings_section(
+            "Desktop Notifications",
+            vec![
+                toggle_row(
+                    "notify-added",
+                    "Download Added",
+                    "Show a Windows notification when a new download is added to the queue.",
+                    state.draft.notify_on_added,
+                    SettingsAction::ToggleNotifyAdded,
+                    on_action.clone(),
+                ),
+                toggle_row(
+                    "notify-started",
+                    "Download Started",
+                    "Show a Windows notification when a new download begins transferring.",
+                    state.draft.notify_on_started,
+                    SettingsAction::ToggleNotifyStarted,
+                    on_action.clone(),
+                ),
+                toggle_row(
+                    "notify-completed",
+                    "Download Completed",
+                    "Show a Windows notification when a file finishes.",
+                    state.draft.notify_on_completed,
+                    SettingsAction::ToggleNotifyCompleted,
+                    on_action.clone(),
+                ),
+                toggle_row(
+                    "notify-failed",
+                    "Download Failed",
+                    "Show a Windows notification if a download stops with an error.",
+                    state.draft.notify_on_failed,
+                    SettingsAction::ToggleNotifyFailed,
+                    on_action.clone(),
+                ),
+                toggle_row(
+                    "notify-inactive",
+                    "Only When Window Is Unfocused",
+                    "Suppress notifications while you are actively viewing Posthaze.",
+                    state.draft.notify_only_inactive,
+                    SettingsAction::ToggleNotifyOnlyInactive,
+                    on_action,
+                ),
+            ],
         ))
         .into_any_element()
 }
@@ -1039,65 +1115,142 @@ fn render_downloads_tab<F>(state: &SettingsModalState, on_action: F) -> AnyEleme
 where
     F: Fn(SettingsAction, &mut Window, &mut App) + Clone + 'static,
 {
+    let browse_action = on_action.clone();
     div()
         .flex()
         .flex_col()
-        .child(setting_row(
-            "When File Exists",
-            "Action when the destination filename already exists on disk.",
-            segmented_track()
-                .child(choice_btn(
-                    "coll-rename",
-                    "Rename Copy",
-                    state.draft.collision_policy == CollisionPolicy::Rename,
-                    SettingsAction::SetCollisionPolicy(CollisionPolicy::Rename),
+        .gap_4()
+        .child(settings_section(
+            "Storage & Pre-Flight",
+            vec![
+                stacked_row(
+                    div()
+                        .w_full()
+                        .flex()
+                        .items_stretch()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(labeled_input("Default Save Folder", &state.dir_input)),
+                        )
+                        .child(
+                            div()
+                                .border_t_1()
+                                .border_b_1()
+                                .border_r_1()
+                                .border_color(graphite_border())
+                                .flex()
+                                .items_stretch()
+                                .child(grid_cell_button(
+                                    "settings-browse-dir",
+                                    Some(IconName::FolderOpen),
+                                    Some("BROWSE"),
+                                    Some("Choose default download folder"),
+                                    GridTone::Graphite,
+                                    CellBorder::Left,
+                                    false,
+                                    move |_, window, cx| {
+                                        browse_action(SettingsAction::BrowseSaveFolder, window, cx)
+                                    },
+                                )),
+                        ),
+                ),
+                toggle_row(
+                    "settings-auto-categorize",
+                    "Sort by File Type",
+                    "Route files into Archives, Video, Audio, Documents, and Programs subfolders.",
+                    state.draft.auto_categorize_folders,
+                    SettingsAction::ToggleAutoCategorize,
                     on_action.clone(),
-                ))
-                .child(choice_btn(
-                    "coll-overwrite",
-                    "Overwrite",
-                    state.draft.collision_policy == CollisionPolicy::Overwrite,
-                    SettingsAction::SetCollisionPolicy(CollisionPolicy::Overwrite),
+                ),
+                toggle_row(
+                    "ui-lock-ext",
+                    "Lock File Extension in Pre-Flight",
+                    "Separate and lock the probed file extension so renaming cannot accidentally remove it.",
+                    state.draft.ui_lock_file_extension,
+                    SettingsAction::ToggleLockFileExtension,
                     on_action.clone(),
-                ))
-                .child(choice_btn(
-                    "coll-ask",
-                    "Ask Each Time",
-                    state.draft.collision_policy == CollisionPolicy::Ask,
-                    SettingsAction::SetCollisionPolicy(CollisionPolicy::Ask),
+                ),
+                toggle_row(
+                    "ui-add-paused",
+                    "Show \"Add Paused\" in Pre-Flight",
+                    "Include the Add Paused button alongside Download Now.",
+                    state.draft.ui_show_add_paused,
+                    SettingsAction::ToggleShowAddPaused,
                     on_action.clone(),
-                )),
+                ),
+            ],
         ))
-        .child(setting_row(
-            "Remove Button Action",
-            "Default behavior for the row Trash icon (right-click always shows both).",
-            segmented_track()
-                .child(choice_btn(
-                    "del-ask",
-                    "Ask Each Time",
-                    state.draft.delete_action_default == DeleteDefaultAction::Ask,
-                    SettingsAction::SetDeleteDefault(DeleteDefaultAction::Ask),
-                    on_action.clone(),
-                ))
-                .child(choice_btn(
-                    "del-remove",
-                    "Remove Entry",
-                    state.draft.delete_action_default == DeleteDefaultAction::Remove,
-                    SettingsAction::SetDeleteDefault(DeleteDefaultAction::Remove),
-                    on_action.clone(),
-                ))
-                .child(choice_btn(
-                    "del-file",
-                    "Delete File",
-                    state.draft.delete_action_default == DeleteDefaultAction::DeleteFile,
-                    SettingsAction::SetDeleteDefault(DeleteDefaultAction::DeleteFile),
+        .child(settings_section(
+            "Queue, Collisions & Safety",
+            vec![
+                setting_row(
+                    "When File Exists",
+                    "Action when the destination filename already exists on disk.",
+                    segmented_track()
+                        .child(choice_btn(
+                            "coll-rename",
+                            "Rename Copy",
+                            state.draft.collision_policy == CollisionPolicy::Rename,
+                            SettingsAction::SetCollisionPolicy(CollisionPolicy::Rename),
+                            on_action.clone(),
+                        ))
+                        .child(choice_btn(
+                            "coll-overwrite",
+                            "Overwrite",
+                            state.draft.collision_policy == CollisionPolicy::Overwrite,
+                            SettingsAction::SetCollisionPolicy(CollisionPolicy::Overwrite),
+                            on_action.clone(),
+                        ))
+                        .child(choice_btn(
+                            "coll-ask",
+                            "Ask Each Time",
+                            state.draft.collision_policy == CollisionPolicy::Ask,
+                            SettingsAction::SetCollisionPolicy(CollisionPolicy::Ask),
+                            on_action.clone(),
+                        )),
+                ),
+                setting_row(
+                    "Remove Button Action",
+                    "Default behavior for Trash / Delete key. Disk deletions use Recycle Bin (Shift+Delete deletes permanently).",
+                    segmented_track()
+                        .child(choice_btn(
+                            "del-ask",
+                            "Ask Each Time",
+                            state.draft.delete_action_default == DeleteDefaultAction::Ask,
+                            SettingsAction::SetDeleteDefault(DeleteDefaultAction::Ask),
+                            on_action.clone(),
+                        ))
+                        .child(choice_btn(
+                            "del-remove",
+                            "Remove Entry",
+                            state.draft.delete_action_default == DeleteDefaultAction::Remove,
+                            SettingsAction::SetDeleteDefault(DeleteDefaultAction::Remove),
+                            on_action.clone(),
+                        ))
+                        .child(choice_btn(
+                            "del-file",
+                            "Recycle Bin",
+                            state.draft.delete_action_default == DeleteDefaultAction::DeleteFile,
+                            SettingsAction::SetDeleteDefault(DeleteDefaultAction::DeleteFile),
+                            on_action.clone(),
+                        )),
+                ),
+                setting_row(
+                    "Auto-Retry on Error",
+                    "Automatic retry attempts (0–10) after a transient failure.",
+                    compact_input(&state.auto_retry_input, px(88.0), Some("retries")),
+                ),
+                toggle_row(
+                    "settings-sync",
+                    "Flush File Buffers on Finish",
+                    "Call sync_all before finalizing each download to protect against power loss.",
+                    state.draft.sync_on_complete,
+                    SettingsAction::ToggleSyncOnComplete,
                     on_action,
-                )),
-        ))
-        .child(setting_row(
-            "Auto-Retry on Error",
-            "Automatic retry attempts (0–10) after a transient failure.",
-            compact_input(&state.auto_retry_input, px(88.0), Some("retries")),
+                ),
+            ],
         ))
         .into_any_element()
 }
@@ -1106,670 +1259,592 @@ fn render_network_tab<F>(state: &SettingsModalState, on_action: F) -> AnyElement
 where
     F: Fn(SettingsAction, &mut Window, &mut App) + Clone + 'static,
 {
+    let mut proxy_rows = vec![setting_row(
+        "Proxy Mode",
+        "How HTTP/HTTPS requests are routed.",
+        segmented_track()
+            .child(choice_btn(
+                "proxy-sys",
+                "System",
+                state.draft.proxy_mode == ProxyMode::System,
+                SettingsAction::SetProxyMode(ProxyMode::System),
+                on_action.clone(),
+            ))
+            .child(choice_btn(
+                "proxy-none",
+                "Direct",
+                state.draft.proxy_mode == ProxyMode::None,
+                SettingsAction::SetProxyMode(ProxyMode::None),
+                on_action.clone(),
+            ))
+            .child(choice_btn(
+                "proxy-manual",
+                "Manual",
+                state.draft.proxy_mode == ProxyMode::Manual,
+                SettingsAction::SetProxyMode(ProxyMode::Manual),
+                on_action.clone(),
+            )),
+    )];
+    if state.draft.proxy_mode == ProxyMode::Manual {
+        proxy_rows.push(stacked_row(labeled_input("Proxy URL", &state.proxy_url_input)));
+    }
+
     div()
         .flex()
         .flex_col()
-        .child(setting_row(
-            "Proxy",
-            "How HTTP/HTTPS requests are routed.",
-            segmented_track()
-                .child(choice_btn(
-                    "proxy-sys",
-                    "System",
-                    state.draft.proxy_mode == ProxyMode::System,
-                    SettingsAction::SetProxyMode(ProxyMode::System),
-                    on_action.clone(),
-                ))
-                .child(choice_btn(
-                    "proxy-none",
-                    "Direct",
-                    state.draft.proxy_mode == ProxyMode::None,
-                    SettingsAction::SetProxyMode(ProxyMode::None),
-                    on_action.clone(),
-                ))
-                .child(choice_btn(
-                    "proxy-manual",
-                    "Manual",
-                    state.draft.proxy_mode == ProxyMode::Manual,
-                    SettingsAction::SetProxyMode(ProxyMode::Manual),
-                    on_action.clone(),
-                )),
-        ))
-        .when(state.draft.proxy_mode == ProxyMode::Manual, |el| {
-            el.child(
-                div()
-                    .py_2p5()
-                    .border_b_1()
-                    .border_color(graphite_border())
-                    .child(labeled_input("Proxy URL", &state.proxy_url_input)),
-            )
-        })
-        .child(
-            div()
-                .py_2p5()
-                .border_b_1()
-                .border_color(graphite_border())
-                .flex()
-                .flex_col()
-                .gap_2()
-                .child(
+        .gap_4()
+        .child(settings_section("Proxy Routing", proxy_rows))
+        .child(settings_section(
+            "Bandwidth & Concurrency",
+            vec![
+                stacked_row(
                     div()
                         .flex()
-                        .items_center()
-                        .justify_between()
-                        .gap_4()
-                        .child(setting_text(
-                            "Speed Limit",
-                            "Global bandwidth cap across active workers (0 = Unlimited).",
-                        ))
-                        .child(compact_input(&state.speed_limit_input, px(108.0), Some("KiB/s"))),
-                )
-                .child(
+                        .flex_col()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .gap_4()
+                                .child(setting_text(
+                                    "Speed Limit",
+                                    "Global bandwidth cap across active workers (0 = Unlimited).",
+                                ))
+                                .child(compact_input(&state.speed_limit_input, px(108.0), Some("KiB/s"))),
+                        )
+                        .child(
+                            segmented_track()
+                                .child(preset_btn(
+                                    "spd-unlim",
+                                    "Unlimited",
+                                    SettingsAction::SetSpeedPreset(0),
+                                    on_action.clone(),
+                                ))
+                                .child(preset_btn(
+                                    "spd-low",
+                                    "Low · 256 KiB/s",
+                                    SettingsAction::SetSpeedPreset(256),
+                                    on_action.clone(),
+                                ))
+                                .child(preset_btn(
+                                    "spd-med",
+                                    "Medium · 2 MiB/s",
+                                    SettingsAction::SetSpeedPreset(2048),
+                                    on_action.clone(),
+                                ))
+                                .child(preset_btn(
+                                    "spd-high",
+                                    "High · 8 MiB/s",
+                                    SettingsAction::SetSpeedPreset(8192),
+                                    on_action,
+                                )),
+                        ),
+                ),
+                setting_row(
+                    "Workers per Download",
+                    "Maximum concurrent byte-range segments per file (1–32).",
+                    compact_input(&state.workers_input, px(88.0), Some("workers")),
+                ),
+                setting_row(
+                    "Parallel Downloads",
+                    "Maximum active downloads running at the same time (1+).",
+                    compact_input(&state.concurrent_input, px(88.0), Some("slots")),
+                ),
+            ],
+        ))
+        .into_any_element()
+}
+
+fn render_appearance_tab<F>(state: &SettingsModalState, on_action: F) -> AnyElement
+where
+    F: Fn(SettingsAction, &mut Window, &mut App) + Clone + 'static,
+{
+    let render_theme_card = |preset: &ThemePreset| {
+        let is_selected = find_theme_preset(&state.draft.ui_theme).id == preset.id;
+        let theme_id = preset.id.to_string();
+        let act = on_action.clone();
+        let tone_label = match preset.badge {
+            ThemeBadge::Dark => "DARK",
+            ThemeBadge::Light => "LIGHT",
+            ThemeBadge::Auto => "AUTO",
+        };
+        div()
+            .id(SharedString::from(format!("theme-{}", preset.id)))
+            .flex_1()
+            .min_w_0()
+            .px_3()
+            .py_2()
+            .cursor_pointer()
+            .bg(if is_selected {
+                paper_selected()
+            } else {
+                Hsla::transparent_black()
+            })
+            .border_1()
+            .border_color(if is_selected {
+                selenium_amber()
+            } else {
+                graphite_border()
+            })
+            .hover(|s| s.bg(paper_hover()))
+            .on_click(move |_, window, cx| {
+                act(SettingsAction::SetTheme(theme_id.clone()), window, cx);
+            })
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(TYPE_BODY)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(silver_text())
+                            .child(preset.name),
+                    )
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .child(swatch_dot(preset.swatches[0]))
+                            .child(swatch_dot(preset.swatches[1]))
+                            .child(swatch_dot(preset.swatches[2]))
+                            .child(
+                                div()
+                                    .ml_1()
+                                    .font_family(MONO_FONT)
+                                    .text_size(TYPE_HEADER)
+                                    .text_color(silver_muted())
+                                    .child(tone_label),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .text_size(TYPE_MICRO)
+                    .text_color(silver_muted())
+                    .truncate()
+                    .child(preset.description),
+            )
+    };
+
+    let theme_grid_rows = BUILTIN_THEME_PRESETS.chunks(2).map(|pair| {
+        div()
+            .w_full()
+            .flex()
+            .gap_2()
+            .children(pair.iter().map(render_theme_card))
+            .when(pair.len() == 1, |el| el.child(div().flex_1().min_w_0()))
+    });
+
+    div()
+        .flex()
+        .flex_col()
+        .gap_4()
+        .child(settings_section(
+            "Theme & Accent",
+            vec![
+                stacked_row(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_size(TYPE_MICRO)
+                                .text_color(silver_muted())
+                                .child("Select a color theme (previews live across open windows; Cancel reverts)."),
+                        )
+                        .child(div().flex().flex_col().gap_2().children(theme_grid_rows))
+                        .when_some(
+                            mica_fallback_status_note(
+                                &state.draft.ui_theme,
+                                crate::platform_hooks::mica_availability(),
+                            ),
+                            |el, note| {
+                                el.child(
+                                    div()
+                                        .id("mica-fallback-status-note")
+                                        .pt_1()
+                                        .text_size(TYPE_MICRO)
+                                        .line_height(px(16.0))
+                                        .text_color(silver_muted())
+                                        .child(note),
+                                )
+                            },
+                        ),
+                ),
+                stacked_row(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_size(TYPE_BODY)
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(silver_text())
+                                .child("Accent Color Override"),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_wrap()
+                                .gap_1p5()
+                                .child({
+                                    let active = state.draft.ui_accent_override.is_none();
+                                    let act = on_action.clone();
+                                    div()
+                                        .id("accent-default")
+                                        .h(px(28.0))
+                                        .px_2p5()
+                                        .border_1()
+                                        .border_color(if active {
+                                            selenium_amber()
+                                        } else {
+                                            graphite_border()
+                                        })
+                                        .bg(if active {
+                                            paper_selected()
+                                        } else {
+                                            Hsla::transparent_black()
+                                        })
+                                        .hover(|s| s.bg(paper_hover()))
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .font_family(MONO_FONT)
+                                        .text_size(TYPE_MICRO)
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(if active { silver_text() } else { silver_muted() })
+                                        .on_click(move |_, window, cx| {
+                                            act(SettingsAction::SetAccentOverride(None), window, cx);
+                                        })
+                                        .child("THEME DEFAULT")
+                                })
+                                .children(ACCENT_PRESETS.iter().map(|preset| {
+                                    let active = state.draft.ui_accent_override.as_deref() == Some(preset.id);
+                                    let act = on_action.clone();
+                                    let pid = preset.id.to_string();
+                                    div()
+                                        .id(SharedString::from(format!("accent-{}", preset.id)))
+                                        .h(px(28.0))
+                                        .px_2p5()
+                                        .border_1()
+                                        .border_color(if active {
+                                            rgb(preset.accent).into()
+                                        } else {
+                                            graphite_border()
+                                        })
+                                        .bg(if active {
+                                            paper_selected()
+                                        } else {
+                                            Hsla::transparent_black()
+                                        })
+                                        .hover(|s| s.bg(paper_hover()))
+                                        .cursor_pointer()
+                                        .flex()
+                                        .items_center()
+                                        .gap_1p5()
+                                        .font_family(MONO_FONT)
+                                        .text_size(TYPE_MICRO)
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(if active { silver_text() } else { silver_muted() })
+                                        .on_click(move |_, window, cx| {
+                                            act(
+                                                SettingsAction::SetAccentOverride(Some(pid.clone())),
+                                                window,
+                                                cx,
+                                            );
+                                        })
+                                        .child(swatch_dot(preset.accent))
+                                        .child(preset.name.to_uppercase())
+                                })),
+                        ),
+                ),
+            ],
+        ))
+        .child(settings_section(
+            "Table & Scale",
+            vec![
+                setting_row(
+                    "Table Row Density",
+                    "Control vertical row height across the virtualized Downloads table.",
                     segmented_track()
-                        .child(preset_btn(
-                            "spd-unlim",
-                            "Unlimited",
-                            SettingsAction::SetSpeedPreset(0),
+                        .child(choice_btn(
+                            "density-compact",
+                            "COMPACT",
+                            state.draft.ui_table_density == TableDensity::Compact,
+                            SettingsAction::SetTableDensity(TableDensity::Compact),
                             on_action.clone(),
                         ))
-                        .child(preset_btn(
-                            "spd-low",
-                            "Low · 256 KiB/s",
-                            SettingsAction::SetSpeedPreset(256),
+                        .child(choice_btn(
+                            "density-standard",
+                            "STANDARD",
+                            state.draft.ui_table_density == TableDensity::Standard,
+                            SettingsAction::SetTableDensity(TableDensity::Standard),
                             on_action.clone(),
                         ))
-                        .child(preset_btn(
-                            "spd-med",
-                            "Medium · 2 MiB/s",
-                            SettingsAction::SetSpeedPreset(2048),
-                            on_action.clone(),
-                        ))
-                        .child(preset_btn(
-                            "spd-high",
-                            "High · 8 MiB/s",
-                            SettingsAction::SetSpeedPreset(8192),
+                        .child(choice_btn(
+                            "density-comfortable",
+                            "COMFORTABLE",
+                            state.draft.ui_table_density == TableDensity::Comfortable,
+                            SettingsAction::SetTableDensity(TableDensity::Comfortable),
                             on_action.clone(),
                         )),
                 ),
-        )
-        .child(setting_row(
-            "Workers per Download",
-            "Maximum concurrent byte-range segments per file (1–32).",
-            compact_input(&state.workers_input, px(88.0), Some("workers")),
-        ))
-        .child(setting_row(
-            "Parallel Downloads",
-            "Maximum active downloads running at the same time (1+).",
-            compact_input(&state.concurrent_input, px(88.0), Some("slots")),
-        ))
-        .child(
-            div().pt_2p5().child(toggle_row(
-                "settings-sync",
-                "Flush File Buffers on Finish",
-                "Call sync_all before finalizing each download to protect against power loss.",
-                state.draft.sync_on_complete,
-                SettingsAction::ToggleSyncOnComplete,
-                on_action,
-            )),
-        )
-        .into_any_element()
-}
-
-fn render_notifications_tab<F>(state: &SettingsModalState, on_action: F) -> AnyElement
-where
-    F: Fn(SettingsAction, &mut Window, &mut App) + Clone + 'static,
-{
-    div()
-        .flex()
-        .flex_col()
-        .gap_2()
-        .child(toggle_row(
-            "notify-added",
-            "Download Added",
-            "Show a Windows notification when a new download is queued.",
-            state.draft.notify_on_added,
-            SettingsAction::ToggleNotifyAdded,
-            on_action.clone(),
-        ))
-        .child(toggle_row(
-            "notify-completed",
-            "Download Completed",
-            "Show a Windows notification when a file finishes.",
-            state.draft.notify_on_completed,
-            SettingsAction::ToggleNotifyCompleted,
-            on_action.clone(),
-        ))
-        .child(toggle_row(
-            "notify-failed",
-            "Download Failed",
-            "Show a Windows notification if a Download stops with an error.",
-            state.draft.notify_on_failed,
-            SettingsAction::ToggleNotifyFailed,
-            on_action.clone(),
-        ))
-        .child(div().h(px(1.0)).w_full().my_1().bg(graphite_border()))
-        .child(toggle_row(
-            "notify-inactive",
-            "Only When Window Is Unfocused",
-            "Suppress notifications while you are actively viewing Posthaze.",
-            state.draft.notify_only_inactive,
-            SettingsAction::ToggleNotifyOnlyInactive,
-            on_action,
-        ))
-        .into_any_element()
-}
-
-fn render_automation_tab<F>(state: &SettingsModalState, on_action: F) -> AnyElement
-where
-    F: Fn(SettingsAction, &mut Window, &mut App) + Clone + 'static,
-{
-    div()
-        .flex()
-        .flex_col()
-        .gap_2()
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .child(section_heading("Run After Completion"))
-                .child({
-                    let act = on_action.clone();
-                    grid_boxed_button(
-                        "settings-defender-preset",
-                        px(28.0),
-                        Some(IconName::ShieldCheck),
-                        Some("USE WINDOWS DEFENDER"),
-                        None,
-                        GridTone::Graphite,
-                        true,
-                        move |_, window, cx| {
-                            act(SettingsAction::ApplyDefenderPreset, window, cx);
-                        },
-                    )
-                }),
-        )
-        .child(toggle_row(
-            "cmd-enabled",
-            "Launch Program on Finish",
-            "Run an antivirus scanner or script when a download completes.",
-            state.draft.completion_cmd_enabled,
-            SettingsAction::ToggleCompletionCmd,
-            on_action,
-        ))
-        .when(state.draft.completion_cmd_enabled, |el| {
-            el.child(
-                div()
-                    .pt_1()
-                    .flex()
-                    .flex_col()
-                    .gap_2p5()
-                    .child(labeled_input("Program Path", &state.cmd_path_input))
-                    .child(labeled_input(
-                        "Arguments (%path% = completed file)",
-                        &state.cmd_args_input,
-                    )),
-            )
-        })
-        .into_any_element()
-}
-
-fn render_interface_tab<F>(state: &SettingsModalState, on_action: F) -> AnyElement
-where
-    F: Fn(SettingsAction, &mut Window, &mut App) + Clone + 'static,
-{
-    div()
-        .flex()
-        .flex_col()
-        .gap_3()
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .child(section_heading("Appearance Theme"))
-                .child(
-                    div()
-                        .text_size(TYPE_MICRO)
-                        .text_color(silver_muted())
-                        .child("Select a color theme (previews immediately; Cancel reverts)."),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .gap_2()
-                        .children(BUILTIN_THEME_PRESETS.iter().map(|preset| {
-                            let is_selected = find_theme_preset(&state.draft.ui_theme).id == preset.id;
-                            let theme_id = preset.id.to_string();
-                            let act = on_action.clone();
-                            let tone_label = match preset.badge {
-                                ThemeBadge::Dark => "DARK",
-                                ThemeBadge::Light => "LIGHT",
-                                ThemeBadge::Auto => "AUTO",
-                            };
-                            div()
-                                .id(SharedString::from(format!("theme-{}", preset.id)))
-                                .w(px(236.0))
-                                .px_3()
-                                .py_2()
-                                .cursor_pointer()
-                                .bg(if is_selected {
-                                    paper_selected()
-                                } else {
-                                    Hsla::transparent_black()
-                                })
-                                .border_1()
-                                .border_color(if is_selected {
-                                    selenium_amber()
-                                } else {
-                                    graphite_border()
-                                })
-                                .hover(|s| s.bg(paper_hover()))
-                                .on_click(move |_, window, cx| {
-                                    act(SettingsAction::SetTheme(theme_id.clone()), window, cx);
-                                })
-                                .flex()
-                                .flex_col()
-                                .gap_1()
-                                .child(
-                                    div()
-                                        .flex()
-                                        .items_center()
-                                        .justify_between()
-                                        .gap_2()
-                                        .child(
-                                            div()
-                                                .text_size(TYPE_BODY)
-                                                .font_weight(FontWeight::SEMIBOLD)
-                                                .text_color(silver_text())
-                                                .child(preset.name),
-                                        )
-                                        .child(
-                                            div()
-                                                .flex()
-                                                .items_center()
-                                                .gap_1()
-                                                .child(swatch_dot(preset.swatches[0]))
-                                                .child(swatch_dot(preset.swatches[1]))
-                                                .child(swatch_dot(preset.swatches[2]))
-                                                .child(
-                                                    div()
-                                                        .ml_1()
-                                                        .font_family(MONO_FONT)
-                                                        .text_size(TYPE_HEADER)
-                                                        .text_color(silver_muted())
-                                                        .child(tone_label),
-                                                ),
-                                        ),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(TYPE_MICRO)
-                                        .text_color(silver_muted())
-                                        .truncate()
-                                        .child(preset.description),
-                                )
-                        })),
-                )
-                .when_some(
-                    mica_fallback_status_note(
-                        &state.draft.ui_theme,
-                        crate::platform_hooks::mica_availability(),
-                    ),
-                    |el, note| {
-                        el.child(
-                            div()
-                                .id("mica-fallback-status-note")
-                                .pt_1()
-                                .text_size(TYPE_MICRO)
-                                .line_height(px(16.0))
-                                .text_color(silver_muted())
-                                .child(note),
-                        )
-                    },
+                setting_row(
+                    "Visible Columns",
+                    "Toggle optional telemetry columns (automatically hidden on narrow windows).",
+                    segmented_track()
+                        .child(choice_btn(
+                            "col-speed",
+                            "SPEED",
+                            state.draft.ui_show_speed_col,
+                            SettingsAction::ToggleSpeedCol,
+                            on_action.clone(),
+                        ))
+                        .child(choice_btn(
+                            "col-eta",
+                            "ETA",
+                            state.draft.ui_show_eta_col,
+                            SettingsAction::ToggleEtaCol,
+                            on_action.clone(),
+                        ))
+                        .child(choice_btn(
+                            "col-segs",
+                            "SEGS",
+                            state.draft.ui_show_segs_col,
+                            SettingsAction::ToggleSegsCol,
+                            on_action.clone(),
+                        )),
                 ),
-        )
-        .child(section_heading("Accent Override"))
-        .child(
-            div()
-                .pb_2p5()
-                .border_b_1()
-                .border_color(graphite_border())
-                .flex()
-                .flex_wrap()
-                .gap_1p5()
-                .child({
-                    let active = state.draft.ui_accent_override.is_none();
-                    let act = on_action.clone();
-                    div()
-                        .id("accent-default")
-                        .h(px(28.0))
-                        .px_2p5()
-                        .border_1()
-                        .border_color(if active {
-                            selenium_amber()
-                        } else {
-                            graphite_border()
-                        })
-                        .bg(if active {
-                            paper_selected()
-                        } else {
-                            Hsla::transparent_black()
-                        })
-                        .hover(|s| s.bg(paper_hover()))
-                        .cursor_pointer()
-                        .flex()
-                        .items_center()
-                        .font_family(MONO_FONT)
-                        .text_size(TYPE_MICRO)
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(if active { silver_text() } else { silver_muted() })
-                        .on_click(move |_, window, cx| {
-                            act(SettingsAction::SetAccentOverride(None), window, cx);
-                        })
-                        .child("THEME DEFAULT")
-                })
-                .children(ACCENT_PRESETS.iter().map(|preset| {
-                    let active = state.draft.ui_accent_override.as_deref() == Some(preset.id);
-                    let act = on_action.clone();
-                    let pid = preset.id.to_string();
-                    div()
-                        .id(SharedString::from(format!("accent-{}", preset.id)))
-                        .h(px(28.0))
-                        .px_2p5()
-                        .border_1()
-                        .border_color(if active {
-                            rgb(preset.accent).into()
-                        } else {
-                            graphite_border()
-                        })
-                        .bg(if active {
-                            paper_selected()
-                        } else {
-                            Hsla::transparent_black()
-                        })
-                        .hover(|s| s.bg(paper_hover()))
-                        .cursor_pointer()
-                        .flex()
-                        .items_center()
-                        .gap_1p5()
-                        .font_family(MONO_FONT)
-                        .text_size(TYPE_MICRO)
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(if active { silver_text() } else { silver_muted() })
-                        .on_click(move |_, window, cx| {
-                            act(SettingsAction::SetAccentOverride(Some(pid.clone())), window, cx);
-                        })
-                        .child(swatch_dot(preset.accent))
-                        .child(preset.name.to_uppercase())
-                })),
-        )
-        .child(section_heading("Table Density & Columns"))
-        .child(setting_row(
-            "Table Row Density",
-            "Control vertical row height across the virtualized Downloads table.",
-            segmented_track()
-                .child(choice_btn(
-                    "density-compact",
-                    "COMPACT",
-                    state.draft.ui_table_density == TableDensity::Compact,
-                    SettingsAction::SetTableDensity(TableDensity::Compact),
-                    on_action.clone(),
-                ))
-                .child(choice_btn(
-                    "density-standard",
-                    "STANDARD",
-                    state.draft.ui_table_density == TableDensity::Standard,
-                    SettingsAction::SetTableDensity(TableDensity::Standard),
-                    on_action.clone(),
-                ))
-                .child(choice_btn(
-                    "density-comfortable",
-                    "COMFORTABLE",
-                    state.draft.ui_table_density == TableDensity::Comfortable,
-                    SettingsAction::SetTableDensity(TableDensity::Comfortable),
-                    on_action.clone(),
-                )),
+                setting_row(
+                    "Interface Scale",
+                    "Adjust overall text and control sizing.",
+                    segmented_track()
+                        .child(choice_btn(
+                            "zoom-90",
+                            "90%",
+                            state.draft.ui_zoom_percent == 90,
+                            SettingsAction::SetZoom(90),
+                            on_action.clone(),
+                        ))
+                        .child(choice_btn(
+                            "zoom-100",
+                            "100%",
+                            state.draft.ui_zoom_percent == 100,
+                            SettingsAction::SetZoom(100),
+                            on_action.clone(),
+                        ))
+                        .child(choice_btn(
+                            "zoom-110",
+                            "110%",
+                            state.draft.ui_zoom_percent == 110,
+                            SettingsAction::SetZoom(110),
+                            on_action.clone(),
+                        ))
+                        .child(choice_btn(
+                            "zoom-125",
+                            "125%",
+                            state.draft.ui_zoom_percent == 125,
+                            SettingsAction::SetZoom(125),
+                            on_action.clone(),
+                        )),
+                ),
+            ],
         ))
-        .child(setting_row(
-            "Visible Columns",
-            "Toggle optional telemetry columns (automatically hidden on narrow windows).",
-            segmented_track()
-                .child(choice_btn(
-                    "col-speed",
-                    "SPEED",
-                    state.draft.ui_show_speed_col,
-                    SettingsAction::ToggleSpeedCol,
-                    on_action.clone(),
-                ))
-                .child(choice_btn(
-                    "col-eta",
-                    "ETA",
-                    state.draft.ui_show_eta_col,
-                    SettingsAction::ToggleEtaCol,
-                    on_action.clone(),
-                ))
-                .child(choice_btn(
-                    "col-segs",
-                    "SEGS",
-                    state.draft.ui_show_segs_col,
-                    SettingsAction::ToggleSegsCol,
-                    on_action.clone(),
-                )),
-        ))
-        .child(setting_row(
-            "Interface Scale",
-            "Adjust overall text and control sizing.",
-            segmented_track()
-                .child(choice_btn(
-                    "zoom-90",
-                    "90%",
-                    state.draft.ui_zoom_percent == 90,
-                    SettingsAction::SetZoom(90),
-                    on_action.clone(),
-                ))
-                .child(choice_btn(
-                    "zoom-100",
-                    "100%",
-                    state.draft.ui_zoom_percent == 100,
-                    SettingsAction::SetZoom(100),
-                    on_action.clone(),
-                ))
-                .child(choice_btn(
-                    "zoom-110",
-                    "110%",
-                    state.draft.ui_zoom_percent == 110,
-                    SettingsAction::SetZoom(110),
-                    on_action.clone(),
-                ))
-                .child(choice_btn(
-                    "zoom-125",
-                    "125%",
-                    state.draft.ui_zoom_percent == 125,
-                    SettingsAction::SetZoom(125),
-                    on_action.clone(),
-                )),
-        ))
-        .child(section_heading("Workspace & Chrome"))
-        .child(
-            div()
-                .pb_2p5()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .child(toggle_row(
+        .child(settings_section(
+            "Workspace Chrome",
+            vec![
+                toggle_row(
                     "ui-click-insp",
                     "Open Byte-Map Inspector on Click",
                     "Automatically expand the bottom inspector when selecting a download row.",
                     state.draft.ui_click_row_opens_inspector,
                     SettingsAction::ToggleClickOpensInspector,
                     on_action.clone(),
-                ))
-                .child(toggle_row(
-                    "ui-add-paused",
-                    "Show \"Add Paused\" in Pre-Flight",
-                    "Include the Add Paused button alongside Download Now.",
-                    state.draft.ui_show_add_paused,
-                    SettingsAction::ToggleShowAddPaused,
-                    on_action.clone(),
-                ))
-                .child(toggle_row(
-                    "ui-lock-ext",
-                    "Lock File Extension in Pre-Flight",
-                    "Separate and lock the probed file extension so renaming cannot accidentally remove it.",
-                    state.draft.ui_lock_file_extension,
-                    SettingsAction::ToggleLockFileExtension,
-                    on_action.clone(),
-                ))
-                .child(toggle_row(
+                ),
+                toggle_row(
                     "ui-start-rail",
                     "Start with Sidebar Collapsed",
                     "Launch into the compact left icon rail instead of the expanded filter rail.",
                     state.draft.ui_start_sidebar_collapsed,
                     SettingsAction::ToggleStartSidebarCollapsed,
                     on_action.clone(),
-                ))
-                .child(toggle_row(
+                ),
+                toggle_row(
                     "ui-titlebar-tel",
                     "Show Live Telemetry in Titlebar",
                     "Display active transfer slots, throughput, and queue count in the top bar.",
                     state.draft.ui_show_titlebar_telemetry,
                     SettingsAction::ToggleTitlebarTelemetry,
                     on_action.clone(),
-                ))
-                .child(toggle_row(
+                ),
+                toggle_row(
                     "ui-toolbar-labels",
                     "Show Toolbar Button Labels",
                     "Display text labels on top-bar action cells (uncheck for icon-only cells).",
                     state.draft.ui_show_toolbar_labels,
                     SettingsAction::ToggleToolbarLabels,
                     on_action.clone(),
-                ))
-                .child(toggle_row(
+                ),
+                toggle_row(
                     "ui-minimap",
                     "Show Scrollbar Minimap",
                     "Highlight Active and Failed row positions along the table scrollbar rail.",
                     state.draft.ui_show_scrollbar_minimap,
                     SettingsAction::ToggleScrollbarMinimap,
                     on_action,
-                )),
-        )
+                ),
+            ],
+        ))
         .into_any_element()
 }
 
-fn render_integration_tab<F>(state: &SettingsModalState, on_action: F) -> AnyElement
+fn render_integrations_tab<F>(state: &SettingsModalState, on_action: F) -> AnyElement
 where
     F: Fn(SettingsAction, &mut Window, &mut App) + Clone + 'static,
 {
     let reg_act = on_action.clone();
-    let refresh_act = on_action;
+    let refresh_act = on_action.clone();
+    let defender_act = on_action.clone();
+
+    let mut browser_rows = vec![
+        stacked_row(
+            div()
+                .flex()
+                .flex_col()
+                .gap_2p5()
+                .child(
+                    div()
+                        .text_xs()
+                        .line_height(px(18.0))
+                        .text_color(silver_muted())
+                        .child("Load the bundled extension in chrome://extensions (or edge://extensions) and click REGISTER NATIVE HOST. The Extension ID below is pre-filled for unpacked installs (edit only if using a custom ID)."),
+                )
+                .child(labeled_input("Extension ID", &state.extension_id_input))
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .gap_2()
+                        .child(grid_boxed_button(
+                            "settings-register-host",
+                            px(30.0),
+                            Some(IconName::Check),
+                            Some("REGISTER NATIVE HOST"),
+                            Some("Write host manifest and register HKCU keys for Chrome, Edge, and Brave"),
+                            GridTone::Primary,
+                            false,
+                            move |_, window, cx| {
+                                reg_act(SettingsAction::RegisterNativeHost, window, cx)
+                            },
+                        ))
+                        .child(grid_boxed_button(
+                            "settings-refresh-host",
+                            px(30.0),
+                            Some(IconName::RefreshCw),
+                            Some("REFRESH STATUS"),
+                            Some("Re-check HKCU Native Messaging registration"),
+                            GridTone::Graphite,
+                            false,
+                            move |_, window, cx| {
+                                refresh_act(SettingsAction::RefreshBrowserStatus, window, cx)
+                            },
+                        )),
+                )
+                .when_some(state.integration_feedback.as_ref(), |el, feedback| {
+                    el.child(inline_feedback_banner(feedback))
+                }),
+        ),
+    ];
+
+    for (name, ok) in &state.browser_statuses {
+        browser_rows.push(
+            div()
+                .w_full()
+                .px_3p5()
+                .h(px(36.0))
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(div().text_xs().text_color(silver_text()).child(*name))
+                .child(
+                    div()
+                        .font_family(MONO_FONT)
+                        .text_size(TYPE_MICRO)
+                        .text_color(if *ok {
+                            halide_emerald()
+                        } else {
+                            silver_muted()
+                        })
+                        .child(if *ok { "REGISTERED" } else { "NOT REGISTERED" }),
+                )
+                .into_any_element(),
+        );
+    }
+
+    let mut hook_rows = vec![
+        toggle_row(
+            "cmd-enabled",
+            "Launch Program on Finish",
+            "Run an antivirus scanner or script automatically after each completed download.",
+            state.draft.completion_cmd_enabled,
+            SettingsAction::ToggleCompletionCmd,
+            on_action,
+        ),
+        setting_row(
+            "Antivirus Preset",
+            "Fill Program Path and Arguments (%path%) with Windows Defender scanner defaults.",
+            grid_boxed_button(
+                "settings-defender-preset",
+                px(28.0),
+                Some(IconName::ShieldCheck),
+                Some("USE WINDOWS DEFENDER"),
+                None,
+                GridTone::Graphite,
+                true,
+                move |_, window, cx| {
+                    defender_act(SettingsAction::ApplyDefenderPreset, window, cx);
+                },
+            ),
+        ),
+    ];
+    if state.draft.completion_cmd_enabled {
+        hook_rows.push(stacked_row(
+            div()
+                .flex()
+                .flex_col()
+                .gap_2p5()
+                .child(labeled_input("Program Path", &state.cmd_path_input))
+                .child(labeled_input(
+                    "Arguments (%path% = completed file)",
+                    &state.cmd_args_input,
+                )),
+        ));
+    }
+
     div()
         .flex()
         .flex_col()
-        .gap_3()
-        .child(
-            div()
-                .p_3()
-                .bg(graphite_elevated())
-                .border_1()
-                .border_color(graphite_border())
-                .text_xs()
-                .line_height(px(18.0))
-                .text_color(silver_muted())
-                .child("Load the bundled extension in chrome://extensions (or edge://extensions), copy its 32-character Extension ID, and register the Native Messaging Host for Browser Capture."),
-        )
-        .child(labeled_input("Extension ID", &state.extension_id_input))
-        .child(
-            div()
-                .flex()
-                .gap_2()
-                .child(grid_boxed_button(
-                    "settings-register-host",
-                    px(30.0),
-                    Some(IconName::Check),
-                    Some("REGISTER NATIVE HOST"),
-                    Some("Write host manifest and register HKCU keys for Chrome, Edge, and Brave"),
-                    GridTone::Primary,
-                    false,
-                    move |_, window, cx| reg_act(SettingsAction::RegisterNativeHost, window, cx),
-                ))
-                .child(grid_boxed_button(
-                    "settings-refresh-host",
-                    px(30.0),
-                    Some(IconName::RefreshCw),
-                    Some("REFRESH STATUS"),
-                    Some("Re-check HKCU Native Messaging registration"),
-                    GridTone::Graphite,
-                    false,
-                    move |_, window, cx| {
-                        refresh_act(SettingsAction::RefreshBrowserStatus, window, cx)
-                    },
-                )),
-        )
-        .when_some(state.integration_feedback.as_ref(), |el, feedback| {
-            let (bg, border, text_col, msg) = match feedback {
-                Ok(msg) => (
-                    graphite_elevated(),
-                    halide_emerald(),
-                    halide_emerald(),
-                    msg.clone(),
-                ),
-                Err(err) => (
-                    errata_surface_bg(),
-                    errata_vermilion(),
-                    errata_vermilion(),
-                    err.clone(),
-                ),
-            };
-            el.child(
-                div()
-                    .p_2p5()
-                    .bg(bg)
-                    .border_1()
-                    .border_color(border)
-                    .font_family(MONO_FONT)
-                    .text_size(TYPE_MICRO)
-                    .text_color(text_col)
-                    .child(msg),
-            )
-        })
-        .child(
-            div()
-                .border_1()
-                .border_color(graphite_border())
-                .flex()
-                .flex_col()
-                .children(state.browser_statuses.iter().enumerate().map(|(idx, (name, ok))| {
-                    div()
-                        .h(px(32.0))
-                        .px_3()
-                        .when(idx > 0, |el| el.border_t_1().border_color(graphite_border()))
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .child(div().text_xs().text_color(silver_text()).child(*name))
-                        .child(
-                            div()
-                                .font_family(MONO_FONT)
-                                .text_size(TYPE_MICRO)
-                                .text_color(if *ok {
-                                    halide_emerald()
-                                } else {
-                                    silver_muted()
-                                })
-                                .child(if *ok {
-                                    "REGISTERED"
-                                } else {
-                                    "NOT REGISTERED"
-                                }),
-                        )
-                })),
-        )
+        .gap_4()
+        .child(settings_section("Browser Capture", browser_rows))
+        .child(settings_section("Post-Download Command", hook_rows))
         .into_any_element()
 }
 
-fn render_updates_tab<F>(
+fn render_system_tab<F>(
     state: &SettingsModalState,
     update_state: &UpdateState,
     is_portable: bool,
@@ -1792,10 +1867,7 @@ where
         ),
         UpdateState::UpToDate => (
             halide_emerald(),
-            format!(
-                "Posthaze v{} is up to date.",
-                env!("CARGO_PKG_VERSION")
-            ),
+            format!("Posthaze v{} is up to date.", env!("CARGO_PKG_VERSION")),
             None,
         ),
         UpdateState::Available(info) => (
@@ -1832,228 +1904,216 @@ where
         UpdateState::Checking | UpdateState::Downloading { .. } | UpdateState::Installing
     );
 
+    let act_copy = on_action.clone();
+    let act_logs = on_action.clone();
+    let act_folders = on_action.clone();
+    let act_reset = on_action.clone();
+
+    let mut maintenance_rows = vec![stacked_row(
+        div()
+            .flex()
+            .flex_wrap()
+            .gap_2()
+            .child(grid_boxed_button(
+                "settings-copy-json",
+                px(30.0),
+                Some(IconName::Copy),
+                Some("COPY CONFIG JSON"),
+                Some("Copy active settings as formatted JSON"),
+                GridTone::Graphite,
+                false,
+                move |_, window, cx| act_copy(SettingsAction::CopyConfigJson, window, cx),
+            ))
+            .child(grid_boxed_button(
+                "settings-open-logs",
+                px(30.0),
+                Some(IconName::FolderOpen),
+                Some("OPEN LOGS FOLDER"),
+                Some("Open the diagnostic logs directory in Windows Explorer"),
+                GridTone::Graphite,
+                false,
+                move |_, window, cx| act_logs(SettingsAction::OpenLogsFolder, window, cx),
+            ))
+            .child(grid_boxed_button(
+                "settings-clear-folders",
+                px(30.0),
+                Some(IconName::Trash),
+                Some("CLEAR RECENT FOLDERS"),
+                Some("Clear saved destination folder history used by Pre-Flight and Move To"),
+                GridTone::Graphite,
+                false,
+                move |_, window, cx| act_folders(SettingsAction::ClearRecentFolders, window, cx),
+            )),
+    )];
+    if let Some(feedback) = state.system_feedback.as_ref() {
+        maintenance_rows.push(stacked_row(inline_feedback_banner(feedback)));
+    }
+
     div()
         .flex()
         .flex_col()
-        .gap_3()
-        .child(
-            div()
-                .p_3p5()
-                .bg(graphite_elevated())
-                .border_1()
-                .border_color(graphite_border())
-                .flex()
-                .items_center()
-                .justify_between()
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .child(
-                            div()
-                                .font_family(MONO_FONT)
-                                .text_size(TYPE_BODY)
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(silver_text())
-                                .child(concat!("POSTHAZE v", env!("CARGO_PKG_VERSION"))),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(silver_muted())
-                                .child("Signed GitHub Releases update channel"),
-                        ),
-                )
-                .child(
+        .gap_4()
+        .child(settings_section(
+            "Software Updates",
+            vec![
+                setting_row(
+                    concat!("Posthaze v", env!("CARGO_PKG_VERSION")),
+                    "Signed GitHub Releases update channel",
                     div()
                         .px_2()
                         .py_1()
                         .border_1()
                         .border_color(graphite_border())
+                        .bg(graphite_elevated())
                         .font_family(MONO_FONT)
                         .text_size(TYPE_MICRO)
                         .text_color(silver_muted())
                         .child(install_mode),
                 ),
-        )
-        .child(toggle_row(
-            "settings-auto-check-updates",
-            "Check for updates automatically",
-            "Check GitHub Releases at startup and every 24 hours.",
-            state.draft.auto_check_updates,
-            SettingsAction::ToggleAutoCheckUpdates,
-            on_action.clone(),
-        ))
-        .child(
-            div()
-                .p_3p5()
-                .bg(graphite_elevated())
-                .border_1()
-                .border_color(graphite_border())
-                .flex()
-                .flex_col()
-                .gap_2p5()
-                .child(
-                    div()
-                        .font_family(MONO_FONT)
-                        .text_size(TYPE_MICRO)
-                        .text_color(status_color)
-                        .child(status_text),
-                )
-                .when_some(progress_pct, |el, pct| {
-                    el.child(
-                        div()
-                            .h(px(6.0))
-                            .w_full()
-                            .bg(byte_track_bg())
-                            .border_1()
-                            .border_color(graphite_border())
-                            .child(
-                                div()
-                                    .h_full()
-                                    .w(relative(f32::from(pct) / 100.0))
-                                    .bg(selenium_amber()),
-                            ),
-                    )
-                })
-                .child(
+                toggle_row(
+                    "settings-auto-check-updates",
+                    "Check for Updates Automatically",
+                    "Check GitHub Releases at startup and every 24 hours.",
+                    state.draft.auto_check_updates,
+                    SettingsAction::ToggleAutoCheckUpdates,
+                    on_action.clone(),
+                ),
+                stacked_row(
                     div()
                         .flex()
-                        .items_center()
-                        .gap_2()
-                        .when(!is_busy, |el| {
-                            let act = on_action.clone();
-                            el.child(grid_boxed_button(
-                                "settings-check-updates",
-                                px(32.0),
-                                Some(IconName::RefreshCw),
-                                Some("CHECK NOW"),
-                                Some("Check GitHub Releases for a newer version"),
-                                GridTone::Graphite,
-                                false,
-                                move |_, window, cx| act(SettingsAction::CheckForUpdates, window, cx),
-                            ))
-                        })
-                        .when_some(
-                            available
-                                .as_ref()
-                                .filter(|_| !is_portable && matches!(update_state, UpdateState::Available(_))),
-                            |el, info| {
-                                let act = on_action.clone();
-                                let lbl = SharedString::from(format!("INSTALL v{}", info.version));
-                                el.child(
-                                    div()
-                                        .h(px(32.0))
-                                        .border_1()
-                                        .border_color(graphite_border())
-                                        .child(grid_cell_button_dyn(
-                                            "settings-install-update",
-                                            Some(IconName::Download),
-                                            Some(lbl),
-                                            Some("Download, verify signature, and install silently"),
-                                            GridTone::Primary,
-                                            CellBorder::None,
-                                            false,
-                                            move |_, window, cx| {
-                                                act(SettingsAction::InstallUpdate, window, cx)
-                                            },
-                                        )),
-                                )
-                            },
+                        .flex_col()
+                        .gap_2p5()
+                        .child(
+                            div()
+                                .font_family(MONO_FONT)
+                                .text_size(TYPE_MICRO)
+                                .text_color(status_color)
+                                .child(status_text),
                         )
-                        .when_some(available.as_ref(), |el, info| {
-                            let act = on_action.clone();
-                            let url = info.notes_url.clone();
-                            let label = if is_portable {
-                                "DOWNLOAD FROM GITHUB"
-                            } else {
-                                "RELEASE NOTES"
-                            };
-                            el.child(grid_boxed_button(
-                                "settings-release-notes",
-                                px(32.0),
-                                Some(IconName::Globe),
-                                Some(label),
-                                Some("Open release page in default browser"),
-                                GridTone::Graphite,
-                                false,
-                                move |_, window, cx| {
-                                    act(SettingsAction::OpenReleaseNotes(url.clone()), window, cx)
-                                },
-                            ))
-                        }),
+                        .when_some(progress_pct, |el, pct| {
+                            el.child(
+                                div()
+                                    .h(px(6.0))
+                                    .w_full()
+                                    .bg(byte_track_bg())
+                                    .border_1()
+                                    .border_color(graphite_border())
+                                    .child(
+                                        div()
+                                            .h_full()
+                                            .w(relative(f32::from(pct) / 100.0))
+                                            .bg(selenium_amber()),
+                                    ),
+                            )
+                        })
+                        .child(
+                            div()
+                                .flex()
+                                .flex_wrap()
+                                .items_center()
+                                .gap_2()
+                                .when(!is_busy, |el| {
+                                    let act = on_action.clone();
+                                    el.child(grid_boxed_button(
+                                        "settings-check-updates",
+                                        px(30.0),
+                                        Some(IconName::RefreshCw),
+                                        Some("CHECK NOW"),
+                                        Some("Check GitHub Releases for a newer version"),
+                                        GridTone::Graphite,
+                                        false,
+                                        move |_, window, cx| {
+                                            act(SettingsAction::CheckForUpdates, window, cx)
+                                        },
+                                    ))
+                                })
+                                .when_some(
+                                    available.as_ref().filter(|_| {
+                                        !is_portable
+                                            && matches!(update_state, UpdateState::Available(_))
+                                    }),
+                                    |el, info| {
+                                        let act = on_action.clone();
+                                        let lbl =
+                                            SharedString::from(format!("INSTALL v{}", info.version));
+                                        el.child(
+                                            div()
+                                                .h(px(30.0))
+                                                .border_1()
+                                                .border_color(graphite_border())
+                                                .child(grid_cell_button_dyn(
+                                                    "settings-install-update",
+                                                    Some(IconName::Download),
+                                                    Some(lbl),
+                                                    Some(
+                                                        "Download, verify signature, and install silently",
+                                                    ),
+                                                    GridTone::Primary,
+                                                    CellBorder::None,
+                                                    false,
+                                                    move |_, window, cx| {
+                                                        act(
+                                                            SettingsAction::InstallUpdate,
+                                                            window,
+                                                            cx,
+                                                        )
+                                                    },
+                                                )),
+                                        )
+                                    },
+                                )
+                                .when_some(available.as_ref(), |el, info| {
+                                    let act = on_action.clone();
+                                    let url = info.notes_url.clone();
+                                    let label = if is_portable {
+                                        "DOWNLOAD FROM GITHUB"
+                                    } else {
+                                        "RELEASE NOTES"
+                                    };
+                                    el.child(grid_boxed_button(
+                                        "settings-release-notes",
+                                        px(30.0),
+                                        Some(IconName::Globe),
+                                        Some(label),
+                                        Some("Open release page in default browser"),
+                                        GridTone::Graphite,
+                                        false,
+                                        move |_, window, cx| {
+                                            act(
+                                                SettingsAction::OpenReleaseNotes(url.clone()),
+                                                window,
+                                                cx,
+                                            )
+                                        },
+                                    ))
+                                }),
+                        ),
                 ),
-        )
-        .into_any_element()
-}
-
-fn render_reset_tab<F>(on_action: F) -> AnyElement
-where
-    F: Fn(SettingsAction, &mut Window, &mut App) + Clone + 'static,
-{
-    div()
-        .flex()
-        .flex_col()
-        .gap_3()
-        .child(
-            div()
-                .p_3p5()
-                .bg(graphite_elevated())
-                .border_1()
-                .border_color(graphite_border())
-                .text_xs()
-                .line_height(px(18.0))
-                .text_color(silver_muted())
-                .child("Export your active configuration as JSON, or restore save folder, collision and removal rules, proxy, speed limit, notifications, post-download command, and interface customization to factory defaults. Downloads in your Queue are kept untouched."),
-        )
-        .child(
-            div()
-                .flex()
-                .gap_2()
-                .child({
-                    let act = on_action.clone();
-                    grid_boxed_button(
-                        "settings-copy-json",
-                        px(32.0),
-                        Some(IconName::Copy),
-                        Some("COPY CONFIG JSON"),
-                        Some("Copy current settings as formatted JSON"),
-                        GridTone::Graphite,
-                        false,
-                        move |_, window, cx| {
-                            act(SettingsAction::CopyConfigJson, window, cx);
-                        },
-                    )
-                })
-                .child({
-                    let act = on_action.clone();
-                    grid_boxed_button(
-                        "settings-open-logs",
-                        px(32.0),
-                        Some(IconName::FolderOpen),
-                        Some("OPEN LOGS FOLDER"),
-                        Some("Open the diagnostic logs directory in Windows Explorer"),
-                        GridTone::Graphite,
-                        false,
-                        move |_, window, cx| {
-                            act(SettingsAction::OpenLogsFolder, window, cx);
-                        },
-                    )
-                })
-                .child(grid_boxed_button(
+            ],
+        ))
+        .child(settings_section(
+            "Diagnostics & Storage",
+            maintenance_rows,
+        ))
+        .child(settings_section(
+            "Factory Reset",
+            vec![setting_row(
+                "Restore Default Settings",
+                "Reset preferences, proxy, notifications, hooks, and appearance to defaults. Downloads in your queue remain untouched.",
+                grid_boxed_button(
                     "settings-reset-defaults",
-                    px(32.0),
+                    px(30.0),
                     Some(IconName::RotateCcw),
-                    Some("RESTORE DEFAULT SETTINGS"),
+                    Some("RESTORE DEFAULTS"),
                     None,
                     GridTone::Danger,
                     false,
                     move |_, window, cx| {
-                        on_action(SettingsAction::ResetToDefaults, window, cx);
+                        act_reset(SettingsAction::ResetToDefaults, window, cx);
                     },
-                )),
-        )
+                ),
+            )],
+        ))
         .into_any_element()
 }
 

@@ -1,22 +1,29 @@
 #!/usr/bin/env python3
-"""Generate HiDPI (200%) Chronophotographic Inno Setup wizard assets for Posthaze.
+"""Generate brand derived assets for Windows packaging and the Chrome extension.
 
-Produces four PNGs under packaging/windows/assets/:
-  - wizard-sidebar-light.png  (328x628, 2x 164x314)
-  - wizard-sidebar-dark.png   (328x628, 2x 164x314)
-  - wizard-small-light.png    (110x110, 2x 55x55)
-  - wizard-small-dark.png     (110x110, 2x 55x55)
+Produces:
+  - assets/posthaze.ico (multi-resolution 16..256 ICO from App Icon Flat)
+  - extensions/chrome/icons/icon-{16,32,48,128}.png (from App Icon Flat)
+  - packaging/windows/assets/wizard-sidebar-light.png  (328x628, 2x 164x314)
+  - packaging/windows/assets/wizard-sidebar-dark.png   (328x628, 2x 164x314)
+  - packaging/windows/assets/wizard-small-light.png    (110x110, 2x 55x55)
+  - packaging/windows/assets/wizard-small-dark.png     (110x110, 2x 55x55)
 
 Color tokens follow DESIGN.md ("Chronophotographic Interval Plate").
 """
 
 from __future__ import annotations
 
+import struct
+from io import BytesIO
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-LOGO_PATH = REPO_ROOT / "assets" / "posthaze_logo_no_back.png"
+LOGO_PATH = REPO_ROOT / "assets" / "Logo Light" / "Logo Light 256x256.png"
+FLAT_ICON_DIR = REPO_ROOT / "assets" / "App Icon Flat"
+ICO_PATH = REPO_ROOT / "assets" / "posthaze.ico"
+CHROME_ICONS_DIR = REPO_ROOT / "extensions" / "chrome" / "icons"
 OUT_DIR = REPO_ROOT / "packaging" / "windows" / "assets"
 
 AMBER = (0xE5, 0x8A, 0x35, 0xFF)       # selenium-amber #e58a35
@@ -175,15 +182,54 @@ def render_small_badge(theme: dict[str, tuple[int, int, int, int]], logo: Image.
     return img
 
 
+def load_flat_icon(size: int) -> Image.Image:
+    exact = FLAT_ICON_DIR / f"App Icon Flat {size}x{size}.png"
+    if exact.exists():
+        return Image.open(exact).convert("RGBA")
+    source_size = 32 if size <= 32 else 64
+    src = Image.open(FLAT_ICON_DIR / f"App Icon Flat {source_size}x{source_size}.png").convert("RGBA")
+    return src.resize((size, size), Image.Resampling.LANCZOS)
+
+
+def write_multi_size_ico(out_path: Path, sizes: list[int]) -> None:
+    """Write a Windows ICO containing exact PNG frames for each requested size."""
+    frames: list[tuple[int, bytes]] = []
+    for size in sizes:
+        buf = BytesIO()
+        load_flat_icon(size).save(buf, format="PNG")
+        frames.append((size, buf.getvalue()))
+
+    header = struct.pack("<HHH", 0, 1, len(frames))
+    offset = 6 + 16 * len(frames)
+    entries = bytearray()
+    payload = bytearray()
+    for size, data in frames:
+        dim = 0 if size >= 256 else size
+        entries.extend(struct.pack("<BBBBHHII", dim, dim, 0, 0, 1, 32, len(data), offset))
+        payload.extend(data)
+        offset += len(data)
+
+    out_path.write_bytes(header + entries + payload)
+
+
+def generate_chrome_icons() -> None:
+    CHROME_ICONS_DIR.mkdir(parents=True, exist_ok=True)
+    for size in (16, 32, 48, 128):
+        load_flat_icon(size).save(CHROME_ICONS_DIR / f"icon-{size}.png", format="PNG")
+
+
 def main() -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     logo = Image.open(LOGO_PATH).convert("RGBA")
+
+    write_multi_size_ico(ICO_PATH, [16, 24, 32, 48, 64, 128, 256])
+    generate_chrome_icons()
 
     render_sidebar(DARK_THEME, logo).save(OUT_DIR / "wizard-sidebar-dark.png", format="PNG")
     render_sidebar(LIGHT_THEME, logo).save(OUT_DIR / "wizard-sidebar-light.png", format="PNG")
     render_small_badge(DARK_THEME, logo).save(OUT_DIR / "wizard-small-dark.png", format="PNG")
     render_small_badge(LIGHT_THEME, logo).save(OUT_DIR / "wizard-small-light.png", format="PNG")
-    print(f"Generated 4 installer PNG assets in {OUT_DIR}")
+    print(f"Generated ICO ({ICO_PATH}), Chrome icons ({CHROME_ICONS_DIR}), and 4 installer PNGs ({OUT_DIR})")
 
 
 if __name__ == "__main__":

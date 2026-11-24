@@ -28,6 +28,40 @@ const _: () = assert!(WRITER_CHANNEL_CAPACITY >= 16 && WRITER_CHANNEL_CAPACITY <
 const CHECKPOINT_INTERVAL: Duration = Duration::from_secs(2);
 const CHECKPOINT_BYTES: u64 = 8 * 1024 * 1024;
 
+/// Minimum pre-allocated `.part` size (`5 MiB`) before enabling NTFS sparse mode to avoid
+/// synchronous zero-fill stalls when upper `Segment`s write far into the file.
+pub(crate) const SPARSE_MIN_SIZE: u64 = 5 * 1024 * 1024;
+
+#[cfg(windows)]
+fn set_sparse(file: &std::fs::File, sparse: bool) -> bool {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::IO::DeviceIoControl;
+    use windows_sys::Win32::System::Ioctl::{FILE_SET_SPARSE_BUFFER, FSCTL_SET_SPARSE};
+
+    let input = FILE_SET_SPARSE_BUFFER { SetSparse: sparse };
+    let mut returned = 0u32;
+    // SAFETY: `file` owns the handle and outlives this synchronous `DeviceIoControl` call;
+    // `input` is a valid stack `FILE_SET_SPARSE_BUFFER` and `returned` is a valid `u32`.
+    let ok = unsafe {
+        DeviceIoControl(
+            file.as_raw_handle(),
+            FSCTL_SET_SPARSE,
+            (&raw const input).cast(),
+            size_of::<FILE_SET_SPARSE_BUFFER>() as u32,
+            std::ptr::null_mut(),
+            0,
+            &mut returned,
+            std::ptr::null_mut(),
+        )
+    };
+    ok != 0
+}
+
+#[cfg(not(windows))]
+fn set_sparse(_file: &std::fs::File, _sparse: bool) -> bool {
+    false
+}
+
 pub(crate) type CheckpointSender = mpsc::Sender<Vec<(usize, u64)>>;
 
 /// Non-blocking, bounded free-list of fixed-capacity `Chunk` buffers shared within a single `Download`.
@@ -202,6 +236,7 @@ trait PositionalSink: Send + 'static {
     fn write_all_at(&mut self, offset: u64, buf: &[u8]) -> std::io::Result<()>;
     fn flush(&mut self) -> std::io::Result<()>;
     fn sync_all(&self) -> std::io::Result<()>;
+    fn clear_sparse(&self) {}
 }
 
 struct PositionalFile {
@@ -250,6 +285,19 @@ impl PositionalSink for PositionalFile {
     fn sync_all(&self) -> std::io::Result<()> {
         self.file.sync_all()
     }
+
+    fn clear_sparse(&self) {
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            const FILE_ATTRIBUTE_SPARSE_FILE: u32 = 0x200;
+            if let Ok(meta) = self.file.metadata()
+                && (meta.file_attributes() & FILE_ATTRIBUTE_SPARSE_FILE) != 0
+            {
+                let _ = set_sparse(&self.file, false);
+            }
+        }
+    }
 }
 
 /// Dedicated blocking file writer for a single `.part` file.
@@ -258,6 +306,7 @@ pub struct PartFileWriter {
     part_path: PathBuf,
     tx: mpsc::Sender<WriteChunk>,
     aborted: Arc<AtomicBool>,
+    clear_sparse_on_close: Arc<AtomicBool>,
     pool: Arc<ChunkBufferPool>,
     handle: JoinHandle<Result<HashMap<usize, u64>, std::io::Error>>,
 }
@@ -298,6 +347,9 @@ impl PartFileWriter {
             .open(&part_path)?;
 
         if let Some(len) = total_bytes {
+            if len >= SPARSE_MIN_SIZE {
+                let _ = set_sparse(&file, true);
+            }
             file.set_len(len)?;
         }
 
@@ -347,6 +399,8 @@ impl PartFileWriter {
         let (tx, mut rx) = mpsc::channel::<WriteChunk>(WRITER_CHANNEL_CAPACITY);
         let aborted = Arc::new(AtomicBool::new(false));
         let aborted_flag = Arc::clone(&aborted);
+        let clear_sparse_on_close = Arc::new(AtomicBool::new(false));
+        let clear_sparse_flag = Arc::clone(&clear_sparse_on_close);
         let pool = ChunkBufferPool::new(WRITER_CHANNEL_CAPACITY, CHUNK_BUFFER_SIZE);
 
         let handle = tokio::task::spawn_blocking(move || {
@@ -391,6 +445,9 @@ impl PartFileWriter {
             if aborted_flag.load(Ordering::Acquire) {
                 return Ok(seg_cursors);
             }
+            if clear_sparse_flag.load(Ordering::Acquire) {
+                sink.clear_sparse();
+            }
             sink.flush()?;
             if sync_on_complete {
                 sink.sync_all()?;
@@ -402,6 +459,7 @@ impl PartFileWriter {
             part_path,
             tx,
             aborted,
+            clear_sparse_on_close,
             pool,
             handle,
         }
@@ -458,6 +516,7 @@ impl PartFileWriter {
     /// Closes the writer channel, waits for flush/sync, and atomically renames `.part` to `final_path`.
     pub async fn finish(self, final_path: &Path) -> Result<(), EngineError> {
         let part_path = self.part_path.clone();
+        self.clear_sparse_on_close.store(true, Ordering::Release);
         let _ = self.flush_and_close().await?;
         tokio::fs::rename(&part_path, final_path).await?;
         Ok(())
@@ -876,5 +935,37 @@ mod tests {
         writer.write_segment_pooled(0, 0, queued).await.unwrap();
         drop(writer);
         drop(leased);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn sparse_attribute_set_for_large_part_and_cleared_on_finish() {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_SPARSE_FILE: u32 = 0x200;
+
+        let dir = TempDir::new().unwrap();
+        let part_path = dir.path().join("sparse.bin.part");
+        let final_path = dir.path().join("sparse.bin");
+        let len = SPARSE_MIN_SIZE + 4096;
+
+        let writer = PartFileWriter::spawn(part_path.clone(), Some(len)).unwrap();
+        let part_attrs = std::fs::metadata(&part_path).unwrap().file_attributes();
+        // On NTFS volumes, `.part` should be marked sparse before writing upper segments;
+        // on non-NTFS volumes (e.g. FAT32/exFAT), FSCTL_SET_SPARSE is a safe no-op.
+        writer
+            .write_segment_at(0, len - 16, Bytes::from_static(b"0123456789abcdef"))
+            .await
+            .unwrap();
+        writer.finish(&final_path).await.unwrap();
+
+        let final_meta = std::fs::metadata(&final_path).unwrap();
+        assert_eq!(final_meta.len(), len);
+        if (part_attrs & FILE_ATTRIBUTE_SPARSE_FILE) != 0 {
+            assert_eq!(
+                final_meta.file_attributes() & FILE_ATTRIBUTE_SPARSE_FILE,
+                0,
+                "final completed file should have NTFS sparse attribute cleared"
+            );
+        }
     }
 }

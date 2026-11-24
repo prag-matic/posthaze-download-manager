@@ -6,11 +6,26 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use posthaze_engine::{
-    DownloadEngine, DownloadId, DownloadRecord, DownloadRequest, EngineError, EngineEvent,
-    PreflightInfo, SegmentProgress, Settings,
+    DeleteFileMode, DownloadEngine, DownloadId, DownloadRecord, DownloadRequest, DownloadState,
+    EngineError, EngineEvent, FileChecksums, PreflightInfo, SegmentProgress, Settings,
 };
 use tokio::runtime::{Builder, Runtime};
 use tokio::sync::{broadcast, oneshot};
+
+/// Bundled duplicate-check and folder-history context loaded for Pre-Flight windows.
+#[derive(Debug, Clone)]
+pub(crate) struct PreflightContext {
+    pub duplicate: Option<DownloadRecord>,
+    pub duplicate_file_exists: bool,
+    pub recent_folders: Vec<PathBuf>,
+}
+
+/// Live conflict check snapshot run right before confirming a Pre-Flight download.
+#[derive(Debug, Clone)]
+pub(crate) struct ConfirmConflictCheck {
+    pub duplicate: Option<DownloadRecord>,
+    pub reserved_paths: Vec<PathBuf>,
+}
 
 /// Consistent point-in-time read of all `Download` records, `Settings`, and persisted `Segment` counts.
 #[derive(Debug, Clone)]
@@ -35,7 +50,7 @@ pub enum EngineCommand {
     RestartFresh(DownloadId),
     Delete {
         id: DownloadId,
-        delete_file: bool,
+        file_mode: Option<DeleteFileMode>,
     },
     UpdateSettings(Settings),
     RenameFile {
@@ -51,7 +66,7 @@ pub enum EngineCommand {
     /// Delete multiple `Download`s from the `Queue` (and optionally their files on disk).
     DeleteMany {
         ids: Vec<DownloadId>,
-        delete_file: bool,
+        file_mode: Option<DeleteFileMode>,
     },
 }
 
@@ -129,6 +144,14 @@ impl EngineBridge {
         })
     }
 
+    /// Loads the latest persisted [`DownloadRecord`] for a single `DownloadId`.
+    pub fn load_download(
+        &self,
+        id: DownloadId,
+    ) -> oneshot::Receiver<Result<Option<DownloadRecord>, EngineError>> {
+        self.spawn_task(|engine| async move { engine.get_download(&id).await })
+    }
+
     /// Runs a non-mutating pre-flight probe with optional custom headers.
     pub fn probe(
         &self,
@@ -141,9 +164,84 @@ impl EngineBridge {
         })
     }
 
-    /// Computes the `BLAKE3` hex digest of a completed `Download`'s file.
-    pub fn compute_blake3(&self, id: DownloadId) -> oneshot::Receiver<Result<String, EngineError>> {
-        self.spawn_task(|engine| async move { engine.compute_file_blake3(&id).await })
+    /// Computes standard + `BLAKE3` digests of a completed `Download`'s file in one pass.
+    pub fn compute_checksums(
+        &self,
+        id: DownloadId,
+    ) -> oneshot::Receiver<Result<FileChecksums, EngineError>> {
+        self.spawn_task(|engine| async move { engine.compute_file_checksums(&id).await })
+    }
+
+    /// Lists up to `limit` most recently used existing destination folders.
+    pub fn recent_folders(
+        &self,
+        limit: usize,
+    ) -> oneshot::Receiver<Result<Vec<PathBuf>, EngineError>> {
+        self.spawn_task(|engine| async move { engine.list_recent_folders(limit).await })
+    }
+
+    /// Clears all persisted destination folders from history.
+    pub fn clear_folder_history(&self) -> oneshot::Receiver<Result<(), EngineError>> {
+        self.spawn_task(|engine| async move { engine.clear_recent_folders().await })
+    }
+
+    /// Loads duplicate-URL/file info and verified recent folders together.
+    pub(crate) fn preflight_context(
+        &self,
+        urls: Vec<String>,
+        filename: Option<String>,
+        content_length: Option<u64>,
+        output_dir: Option<PathBuf>,
+        folder_limit: usize,
+    ) -> oneshot::Receiver<Result<PreflightContext, EngineError>> {
+        self.spawn_task(move |engine| async move {
+            let duplicate = pick_best_duplicate(
+                &engine,
+                &urls,
+                filename.as_deref(),
+                content_length,
+                output_dir.as_deref(),
+            )
+            .await?;
+            let dup_path = duplicate.as_ref().and_then(|d| d.output_path.clone());
+            let duplicate_file_exists = match dup_path {
+                Some(path) => tokio::task::spawn_blocking(move || path.is_file())
+                    .await
+                    .unwrap_or(false),
+                None => false,
+            };
+            let recent_folders = engine.list_recent_folders(folder_limit).await?;
+            Ok(PreflightContext {
+                duplicate,
+                duplicate_file_exists,
+                recent_folders,
+            })
+        })
+    }
+
+    /// Re-checks live duplicate URLs/files and reserved paths immediately before queueing a download.
+    pub(crate) fn check_confirm_conflicts(
+        &self,
+        urls: Vec<String>,
+        filename: Option<String>,
+        content_length: Option<u64>,
+        output_dir: Option<PathBuf>,
+    ) -> oneshot::Receiver<Result<ConfirmConflictCheck, EngineError>> {
+        self.spawn_task(move |engine| async move {
+            let duplicate = pick_best_duplicate(
+                &engine,
+                &urls,
+                filename.as_deref(),
+                content_length,
+                output_dir.as_deref(),
+            )
+            .await?;
+            let reserved_paths = engine.list_reserved_output_paths().await?;
+            Ok(ConfirmConflictCheck {
+                duplicate,
+                reserved_paths,
+            })
+        })
     }
 
     /// Executes a typed [`EngineCommand`] and returns the refreshed [`EngineSnapshot`].
@@ -176,8 +274,8 @@ impl EngineBridge {
                     let _ = engine.restart_fresh(&id).await?;
                     None
                 }
-                EngineCommand::Delete { id, delete_file } => {
-                    engine.delete(&id, delete_file).await?;
+                EngineCommand::Delete { id, file_mode } => {
+                    engine.delete_with_mode(&id, file_mode).await?;
                     None
                 }
                 EngineCommand::UpdateSettings(settings) => {
@@ -204,9 +302,9 @@ impl EngineBridge {
                     }
                     None
                 }
-                EngineCommand::DeleteMany { ids, delete_file } => {
+                EngineCommand::DeleteMany { ids, file_mode } => {
                     for id in ids {
-                        let _ = engine.delete(&id, delete_file).await;
+                        let _ = engine.delete_with_mode(&id, file_mode).await;
                     }
                     None
                 }
@@ -235,6 +333,52 @@ impl EngineBridge {
         });
         rx
     }
+}
+
+async fn pick_best_duplicate(
+    engine: &DownloadEngine,
+    urls: &[String],
+    filename: Option<&str>,
+    content_length: Option<u64>,
+    output_dir: Option<&std::path::Path>,
+) -> Result<Option<DownloadRecord>, EngineError> {
+    let rank = |s: DownloadState| match s {
+        DownloadState::Active | DownloadState::Probing => 0u8,
+        DownloadState::Queued => 1,
+        DownloadState::Paused => 2,
+        DownloadState::Failed => 3,
+        DownloadState::Completed => 4,
+        DownloadState::Cancelled => 5,
+    };
+    let mut best: Option<DownloadRecord> = None;
+    let mut seen = Vec::with_capacity(urls.len());
+    for url in urls {
+        let trimmed = url.trim();
+        if trimmed.is_empty() || seen.iter().any(|u: &String| u == trimmed) {
+            continue;
+        }
+        seen.push(trimmed.to_string());
+        if let Some(rec) = engine.find_download_by_url(trimmed).await? {
+            let take = match &best {
+                None => true,
+                Some(cur) => {
+                    (rank(rec.state), std::cmp::Reverse(rec.updated_at))
+                        < (rank(cur.state), std::cmp::Reverse(cur.updated_at))
+                }
+            };
+            if take {
+                best = Some(rec);
+            }
+        }
+    }
+    if best.is_none()
+        && let Some(first_url) = seen.first()
+    {
+        best = engine
+            .find_duplicate_download(first_url, filename, content_length, output_dir)
+            .await?;
+    }
+    Ok(best)
 }
 
 async fn read_snapshot(engine: &DownloadEngine) -> Result<EngineSnapshot, EngineError> {

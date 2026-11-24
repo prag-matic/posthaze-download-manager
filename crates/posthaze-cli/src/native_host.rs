@@ -1,9 +1,9 @@
-//! Chrome/Edge Native Messaging host (`posthaze-cli native-host`).
+//! Chrome/Edge Native Messaging host (`posthaze-cli native-host` or direct `chrome-extension://` invocation).
 //!
 //! Reads length-prefixed JSON messages (4-byte little-endian `u32` + UTF-8 JSON)
 //! from `stdin`, forwards download requests to a running `posthaze-ui` instance over
 //! `\\.\pipe\posthaze-browser-bridge`, or falls back to enqueuing directly into
-//! `posthaze-engine` when the desktop UI is closed.
+//! `posthaze-engine` when the desktop UI is closed (unless `requireUi` is set).
 
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
@@ -25,6 +25,12 @@ pub struct NativeRequest {
     pub kind: String,
     #[serde(default)]
     pub url: String,
+    #[serde(rename = "originalUrl", default)]
+    pub original_url: Option<String>,
+    #[serde(rename = "sourcePageUrl", default)]
+    pub source_page_url: Option<String>,
+    #[serde(rename = "requireUi", default)]
+    pub require_ui: bool,
     #[serde(default)]
     pub filename: Option<String>,
     #[serde(default)]
@@ -66,6 +72,15 @@ impl NativeResponse {
         Self {
             ok: false,
             mode: None,
+            message: None,
+            error: Some(error.into()),
+        }
+    }
+
+    fn failure_with_mode(mode: impl Into<String>, error: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            mode: Some(mode.into()),
             message: None,
             error: Some(error.into()),
         }
@@ -112,19 +127,29 @@ pub async fn run_native_host(db_path: PathBuf) -> ExitCode {
         Ok(Some(bytes)) => bytes,
         Ok(None) => return ExitCode::SUCCESS,
         Err(err) => {
-            let _ = send_response(&mut stdout, &NativeResponse::failure(err));
-            return ExitCode::FAILURE;
+            return match send_response(&mut stdout, &NativeResponse::failure(err)) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(write_err) => {
+                    eprintln!("{write_err}");
+                    ExitCode::FAILURE
+                }
+            };
         }
     };
 
     let req: NativeRequest = match serde_json::from_slice(&payload) {
         Ok(parsed) => parsed,
         Err(err) => {
-            let _ = send_response(
+            return match send_response(
                 &mut stdout,
                 &NativeResponse::failure(format!("invalid JSON request: {err}")),
-            );
-            return ExitCode::FAILURE;
+            ) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(write_err) => {
+                    eprintln!("{write_err}");
+                    ExitCode::FAILURE
+                }
+            };
         }
     };
 
@@ -134,11 +159,9 @@ pub async fn run_native_host(db_path: PathBuf) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    if resp.ok {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::FAILURE
-    }
+    // Always exit cleanly once a JSON frame has been flushed so Chromium delivers `{ ok: false }`
+    // instead of aborting `sendNativeMessage` with "Native host has exited.".
+    ExitCode::SUCCESS
 }
 
 fn send_response<W: Write>(writer: &mut W, resp: &NativeResponse) -> Result<(), String> {
@@ -147,15 +170,27 @@ fn send_response<W: Write>(writer: &mut W, resp: &NativeResponse) -> Result<(), 
 }
 
 async fn handle_request(req: NativeRequest, db_path: &PathBuf) -> NativeResponse {
+    #[cfg(windows)]
+    let pipe_name = PIPE_NAME;
+    #[cfg(not(windows))]
+    let pipe_name = "";
+    handle_request_with_pipe(req, db_path, pipe_name).await
+}
+
+async fn handle_request_with_pipe(
+    req: NativeRequest,
+    db_path: &PathBuf,
+    pipe_name: &str,
+) -> NativeResponse {
     if req.kind == "ping" {
-        return match try_forward_to_ui(&req).await {
+        return match try_forward_to_ui(&req, pipe_name).await {
             Ok(resp) => resp,
             Err(_) => NativeResponse::success("host-only", "Native host ready (UI not running)"),
         };
     }
 
     if req.kind == "show" {
-        if let Ok(resp) = try_forward_to_ui(&req).await {
+        if let Ok(resp) = try_forward_to_ui(&req, pipe_name).await {
             return resp;
         }
         return launch_ui_process();
@@ -165,8 +200,12 @@ async fn handle_request(req: NativeRequest, db_path: &PathBuf) -> NativeResponse
         return NativeResponse::failure("Only http:// and https:// URLs are supported.");
     }
 
-    if let Ok(resp) = try_forward_to_ui(&req).await {
+    if let Ok(resp) = try_forward_to_ui(&req, pipe_name).await {
         return resp;
+    }
+
+    if req.require_ui {
+        return NativeResponse::failure_with_mode("ui-offline", "Posthaze UI is not running");
     }
 
     // Fallback: stage into posthaze-engine as Paused when UI is not running.
@@ -203,13 +242,45 @@ async fn handle_request(req: NativeRequest, db_path: &PathBuf) -> NativeResponse
 }
 
 #[cfg(windows)]
-async fn try_forward_to_ui(req: &NativeRequest) -> Result<NativeResponse, String> {
+fn grant_foreground_to_pid(pid: u32) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow;
+
+    if pid != 0 {
+        // SAFETY: `AllowSetForegroundWindow` accepts any non-zero Win32 process ID safely.
+        unsafe {
+            AllowSetForegroundWindow(pid);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn grant_foreground_to_pipe_server(client: &tokio::net::windows::named_pipe::NamedPipeClient) {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::System::Pipes::GetNamedPipeServerProcessId;
+
+    let mut server_pid: u32 = 0;
+    // SAFETY: `client.as_raw_handle()` is a valid connected named pipe handle and `server_pid`
+    // is a valid stack out-pointer.
+    let ok = unsafe { GetNamedPipeServerProcessId(client.as_raw_handle(), &mut server_pid) };
+    if ok != 0 {
+        grant_foreground_to_pid(server_pid);
+    }
+}
+
+#[cfg(windows)]
+async fn try_forward_to_ui(req: &NativeRequest, pipe_name: &str) -> Result<NativeResponse, String> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::windows::named_pipe::ClientOptions;
 
     let mut client = ClientOptions::new()
-        .open(PIPE_NAME)
+        .open(pipe_name)
         .map_err(|err| format!("pipe connect failed: {err}"))?;
+
+    // Grant foreground activation before sending the command so Pre-Flight / MainWindow
+    // can reliably rise above Chrome when the UI receives it.
+    if req.kind != "ping" {
+        grant_foreground_to_pipe_server(&client);
+    }
 
     let mut line = serde_json::to_vec(req).map_err(|err| err.to_string())?;
     line.push(b'\n');
@@ -234,8 +305,42 @@ async fn try_forward_to_ui(req: &NativeRequest) -> Result<NativeResponse, String
 }
 
 #[cfg(not(windows))]
-async fn try_forward_to_ui(_req: &NativeRequest) -> Result<NativeResponse, String> {
+async fn try_forward_to_ui(_req: &NativeRequest, _pipe_name: &str) -> Result<NativeResponse, String> {
     Err("named pipe bridge is Windows-only".to_string())
+}
+
+fn spawn_ui_detached(ui_exe: &std::path::Path) -> io::Result<std::process::Child> {
+    let make_cmd = || {
+        let mut cmd = std::process::Command::new(ui_exe);
+        cmd.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        cmd
+    };
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+
+        let base_flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP;
+        // Break away from Chromium's Native Messaging Job Object when permitted so exiting
+        // `posthaze-cli` does not terminate the newly launched desktop UI; fall back if denied.
+        if let Ok(child) = make_cmd()
+            .creation_flags(base_flags | CREATE_BREAKAWAY_FROM_JOB)
+            .spawn()
+        {
+            return Ok(child);
+        }
+        make_cmd().creation_flags(base_flags).spawn()
+    }
+
+    #[cfg(not(windows))]
+    {
+        make_cmd().spawn()
+    }
 }
 
 fn launch_ui_process() -> NativeResponse {
@@ -254,19 +359,12 @@ fn launch_ui_process() -> NativeResponse {
     if !ui_exe.is_file() {
         return NativeResponse::failure(format!("{} not found", ui_exe.display()));
     }
-    let mut cmd = std::process::Command::new(&ui_exe);
-    cmd.stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt as _;
-        const DETACHED_PROCESS: u32 = 0x0000_0008;
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
-    }
-    match cmd.spawn() {
-        Ok(_) => NativeResponse::success("launched", "Launched Posthaze UI"),
+    match spawn_ui_detached(&ui_exe) {
+        Ok(_child) => {
+            #[cfg(windows)]
+            grant_foreground_to_pid(_child.id());
+            NativeResponse::success("launched", "Launched Posthaze UI")
+        }
         Err(err) => NativeResponse::failure(format!("Failed to launch Posthaze UI: {err}")),
     }
 }
@@ -281,6 +379,9 @@ mod tests {
         let req = NativeRequest {
             kind: "enqueue".to_string(),
             url: "https://example.com/archive.zip".to_string(),
+            original_url: Some("https://short.example/dl".to_string()),
+            source_page_url: Some("https://example.com/files".to_string()),
+            require_ui: true,
             filename: Some("archive.zip".to_string()),
             headers: vec![("Referer".to_string(), "https://example.com/".to_string())],
             total_bytes: Some(1024),
@@ -310,8 +411,38 @@ mod tests {
     }
 
     #[test]
-    fn parses_show_native_request() {
+    fn parses_show_and_require_ui_native_requests() {
         let decoded: NativeRequest = serde_json::from_str(r#"{"type":"show"}"#).unwrap();
         assert_eq!(decoded.kind, "show");
+        assert!(!decoded.require_ui);
+
+        let ui_req: NativeRequest =
+            serde_json::from_str(r#"{"type":"enqueue","url":"https://a.example/f.bin","requireUi":true}"#)
+                .unwrap();
+        assert!(ui_req.require_ui);
+    }
+
+    #[tokio::test]
+    async fn require_ui_returns_ui_offline_without_touching_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("state.db");
+        let req = NativeRequest {
+            kind: "enqueue".to_string(),
+            url: "https://example.com/archive.zip".to_string(),
+            original_url: None,
+            source_page_url: None,
+            require_ui: true,
+            filename: None,
+            headers: Vec::new(),
+            total_bytes: None,
+            single_stream: false,
+            skip_probe: false,
+        };
+        let resp =
+            handle_request_with_pipe(req, &db_path, r"\\.\pipe\posthaze-nonexistent-test-pipe")
+                .await;
+        assert!(!resp.ok);
+        assert_eq!(resp.mode.as_deref(), Some("ui-offline"));
+        assert!(!db_path.exists());
     }
 }

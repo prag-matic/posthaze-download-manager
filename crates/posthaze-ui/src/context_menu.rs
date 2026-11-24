@@ -11,7 +11,7 @@ use posthaze_engine::{DownloadId, DownloadState};
 use crate::theme::*;
 use crate::view_model::DownloadRowView;
 
-const MENU_WIDTH: f32 = 224.0;
+const MENU_WIDTH: f32 = 252.0;
 const MENU_ITEM_HEIGHT: f32 = 28.0;
 const MENU_EDGE_MARGIN: f32 = 8.0;
 
@@ -38,6 +38,7 @@ pub(crate) enum ContextMenuAction {
     MoveTo,
     RemoveFromList,
     DeleteFileAndEntry,
+    DeleteFilePermanently,
 }
 
 /// A single item or group divider in the context menu.
@@ -141,7 +142,7 @@ pub(crate) fn build_row_menu_items(row: &DownloadRowView) -> Vec<ContextMenuEntr
     if row.state == DownloadState::Completed {
         items.push(ContextMenuEntry::Item {
             action: ContextMenuAction::FileIntegrity,
-            label: "File Integrity (BLAKE3)",
+            label: "Verify Checksum / Integrity",
             icon: IconName::ShieldCheck,
             enabled: has_path,
             danger: false,
@@ -173,7 +174,14 @@ pub(crate) fn build_row_menu_items(row: &DownloadRowView) -> Vec<ContextMenuEntr
     });
     items.push(ContextMenuEntry::Item {
         action: ContextMenuAction::DeleteFileAndEntry,
-        label: "Delete File & Entry",
+        label: "Move File to Recycle Bin",
+        icon: IconName::Trash,
+        enabled: has_path,
+        danger: false,
+    });
+    items.push(ContextMenuEntry::Item {
+        action: ContextMenuAction::DeleteFilePermanently,
+        label: "Delete Permanently (Shift+Del)",
         icon: IconName::Trash,
         enabled: has_path,
         danger: true,
@@ -400,6 +408,16 @@ mod tests {
             e,
             ContextMenuEntry::Item {
                 action: ContextMenuAction::DeleteFileAndEntry,
+                label: "Move File to Recycle Bin",
+                enabled: true,
+                danger: false,
+                ..
+            }
+        )));
+        assert!(items.iter().any(|e| matches!(
+            e,
+            ContextMenuEntry::Item {
+                action: ContextMenuAction::DeleteFilePermanently,
                 enabled: true,
                 danger: true,
                 ..

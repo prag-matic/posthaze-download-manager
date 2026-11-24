@@ -17,6 +17,12 @@ pub struct BrowserDownloadRequest {
     pub kind: String,
     #[serde(default)]
     pub url: String,
+    #[serde(rename = "originalUrl", default)]
+    pub original_url: Option<String>,
+    #[serde(rename = "sourcePageUrl", default)]
+    pub source_page_url: Option<String>,
+    #[serde(rename = "requireUi", default)]
+    pub require_ui: bool,
     #[serde(default)]
     pub filename: Option<String>,
     #[serde(default)]
@@ -214,12 +220,15 @@ mod tests {
         assert_eq!(parse_pipe_command(r#"{"type":"ping"}"#).unwrap(), None);
 
         let Some(PipeCommand::Enqueue(req)) = parse_pipe_command(
-            r#"{"type":"enqueue","url":"https://example.com/a.zip","headers":[["Cookie","a=1"]],"totalBytes":4096,"singleStream":true,"skipProbe":true}"#,
+            r#"{"type":"enqueue","url":"https://example.com/a.zip","originalUrl":"https://short.example/a","sourcePageUrl":"https://example.com/list","requireUi":true,"headers":[["Cookie","a=1"]],"totalBytes":4096,"singleStream":true,"skipProbe":true}"#,
         )
         .unwrap() else {
             panic!("expected Enqueue command");
         };
         assert_eq!(req.url, "https://example.com/a.zip");
+        assert_eq!(req.original_url.as_deref(), Some("https://short.example/a"));
+        assert_eq!(req.source_page_url.as_deref(), Some("https://example.com/list"));
+        assert!(req.require_ui);
         assert_eq!(req.headers, vec![("Cookie".to_string(), "a=1".to_string())]);
         assert_eq!(req.total_bytes, Some(4096));
         assert!(req.single_stream);

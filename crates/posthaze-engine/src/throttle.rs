@@ -31,6 +31,11 @@ impl BandwidthLimiter {
         }
     }
 
+    /// Returns `true` when no global download bandwidth cap is active (`0`).
+    pub(crate) fn is_unlimited(&self) -> bool {
+        self.bytes_per_sec.load(Ordering::Relaxed) == 0
+    }
+
     /// Updates the rate limit dynamically in KiB/s (`0` = unlimited).
     pub(crate) fn set_limit_kib(&self, limit_kib: u64) {
         self.bytes_per_sec

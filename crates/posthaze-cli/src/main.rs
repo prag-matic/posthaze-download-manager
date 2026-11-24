@@ -167,8 +167,20 @@ enum Commands {
     },
 }
 
+fn is_browser_native_origin_arg(arg: &std::ffi::OsStr) -> bool {
+    arg.to_str()
+        .is_some_and(|s| s.starts_with("chrome-extension://") && s.ends_with('/'))
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|arg| is_browser_native_origin_arg(&arg))
+    {
+        return native_host::run_native_host(default_db_path()).await;
+    }
+
     let cli = Cli::parse();
 
     let db_path = cli.db.unwrap_or_else(default_db_path);
@@ -398,5 +410,19 @@ mod tests {
             Commands::Cancel { id } => assert_eq!(id, "xyz-789"),
             _ => panic!("expected Cancel"),
         }
+    }
+
+    #[test]
+    fn detects_chromium_native_host_origin_argument() {
+        use std::ffi::OsStr;
+
+        assert!(is_browser_native_origin_arg(OsStr::new(
+            "chrome-extension://eiophahfcjidkfgdddgejjglglaopahi/"
+        )));
+        assert!(!is_browser_native_origin_arg(OsStr::new("native-host")));
+        assert!(!is_browser_native_origin_arg(OsStr::new("download")));
+        assert!(!is_browser_native_origin_arg(OsStr::new(
+            "chrome-extension://incomplete"
+        )));
     }
 }

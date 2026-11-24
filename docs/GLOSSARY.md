@@ -45,3 +45,9 @@ The GitHub Releases feed queried by `posthaze-ui` for newer stable SemVer releas
 
 ### Update Signature
 An Ed25519 signature (`.sig`) published alongside the Windows installer on GitHub Releases and verified against embedded public keys in `posthaze-ui` before silent installation.
+
+### Integrity Checksum
+Post-completion file verification digests (`BLAKE3`, `SHA-256`, `SHA-512`, `SHA-1`, `MD5`, and `CRC32`) computed in a single sequential read pass via `DownloadEngine::compute_file_checksums` and optionally compared against a user-pasted digest or server-supplied `Repr-Digest` / `Content-MD5` header (distinct from HTTP `Validator` metadata used for resume checks).
+
+### Folder History
+A deduplicated list of recently confirmed `Download` output directories persisted in SQLite (`folder_history`) and surfaced as one-click quick-pick chips in the `Pre-Flight` window.

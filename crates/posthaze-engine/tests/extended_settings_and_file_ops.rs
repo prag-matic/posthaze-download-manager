@@ -37,6 +37,7 @@ async fn extended_settings_round_trip_and_categorize_helpers() {
         completion_cmd_path: "MpCmdRun.exe".to_string(),
         completion_cmd_args: "-Scan -ScanType 3 -File \"%path%\"".to_string(),
         notify_on_added: true,
+        notify_on_started: true,
         notify_on_completed: true,
         notify_on_failed: false,
         notify_only_inactive: false,

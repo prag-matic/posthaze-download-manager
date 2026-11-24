@@ -1,11 +1,16 @@
 param(
-    [Parameter(Mandatory = $true)]
-    [string]$ExtensionId,
+    [string]$ExtensionId = "eiophahfcjidkfgdddgejjglglaopahi",
     [ValidateSet("debug", "release")]
     [string]$Profile = "debug"
 )
 
 $ErrorActionPreference = "Stop"
+
+$defaultId = "eiophahfcjidkfgdddgejjglglaopahi"
+$trimmedId = $ExtensionId.Trim().TrimStart("chrome-extension://").TrimEnd("/")
+if ($trimmedId -notmatch '^[a-p]{32}$') {
+    throw "ExtensionId must be 32 lowercase letters (a-p). Got: '$ExtensionId'"
+}
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $hostExe = Join-Path $repoRoot "target\$Profile\posthaze-cli.exe"
@@ -16,32 +21,36 @@ if (-not (Test-Path $hostExe)) {
 $wrapperDir = Join-Path $env:LOCALAPPDATA "posthaze"
 New-Item -ItemType Directory -Force -Path $wrapperDir | Out-Null
 
-# Chrome Native Messaging does not pass CLI subcommands in manifest `path`,
-# so generate a tiny .cmd shim that invokes `posthaze-cli.exe native-host`.
-$shimPath = Join-Path $wrapperDir "posthaze-native-host.cmd"
-@"
-@echo off
-"$hostExe" native-host %*
-"@ | Set-Content -Path $shimPath -Encoding ASCII
+# Remove legacy .cmd shim if upgrading from <= 0.2.1; Chromium invokes posthaze-cli.exe directly.
+$legacyShimPath = Join-Path $wrapperDir "posthaze-native-host.cmd"
+if (Test-Path $legacyShimPath) {
+    Remove-Item -Path $legacyShimPath -Force
+}
+
+$allowedOrigins = @("chrome-extension://$trimmedId/")
+if ($trimmedId -ne $defaultId) {
+    $allowedOrigins += "chrome-extension://$defaultId/"
+}
 
 $manifestPath = Join-Path $wrapperDir "com.posthaze.host.json"
 $manifest = @{
     name = "com.posthaze.host"
     description = "Posthaze Download Manager Native Messaging Host"
-    path = $shimPath
+    path = $hostExe
     type = "stdio"
-    allowed_origins = @("chrome-extension://$ExtensionId/")
+    allowed_origins = $allowedOrigins
 } | ConvertTo-Json -Depth 3
 
 Set-Content -Path $manifestPath -Value $manifest -Encoding UTF8
 
 foreach ($regBase in @(
     "HKCU:\Software\Google\Chrome\NativeMessagingHosts",
-    "HKCU:\Software\Microsoft\Edge\NativeMessagingHosts"
+    "HKCU:\Software\Microsoft\Edge\NativeMessagingHosts",
+    "HKCU:\Software\BraveSoftware\Brave-Browser\NativeMessagingHosts"
 )) {
     $keyPath = Join-Path $regBase "com.posthaze.host"
     New-Item -Path $keyPath -Force | Out-Null
     Set-ItemProperty -Path $keyPath -Name "(Default)" -Value $manifestPath
 }
 
-Write-Host "Registered com.posthaze.host -> $manifestPath (Extension ID: $ExtensionId)"
+Write-Host "Registered com.posthaze.host -> $manifestPath (Extension IDs: $($allowedOrigins -join ', '))"

@@ -209,6 +209,19 @@ pub(crate) fn initial_os_appearance() -> gpui_kit::WindowAppearance {
     }
 }
 
+/// Returns `true` when the Windows taskbar / system shell is configured for Light mode
+/// (`HKCU\...\Personalize\SystemUsesLightTheme != 0`), defaulting to `false` (dark).
+pub(crate) fn system_uses_light_theme() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        read_personalize_dword("SystemUsesLightTheme").is_some_and(|v| v != 0)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        false
+    }
+}
+
 /// Checks whether native Windows 11 Mica translucency is currently available.
 #[allow(dead_code)]
 pub(crate) fn mica_availability() -> Result<(), MicaFallbackReason> {
@@ -882,32 +895,6 @@ pub(crate) fn open_directory_in_shell(dir: &Path) -> Result<(), String> {
     spawn_explorer(dir, "open folder")
 }
 
-/// Dispatches a non-blocking Windows Toast notification via PowerShell WinRT.
-pub(crate) fn spawn_windows_toast(title: &str, body: &str) {
-    #[cfg(target_os = "windows")]
-    {
-        let title_esc = title.replace('\'', "''");
-        let body_esc = body.replace('\'', "''");
-        let script = format!(
-            "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null; \
-             $template = [Windows.UI.Notifications.ToastTemplateType]::ToastText02; \
-             $xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent($template); \
-             $nodes = $xml.GetElementsByTagName('text'); \
-             $nodes.Item(0).AppendChild($xml.CreateTextNode('{title_esc}')) > $null; \
-             $nodes.Item(1).AppendChild($xml.CreateTextNode('{body_esc}')) > $null; \
-             $toast = [Windows.UI.Notifications.ToastNotification]::new($xml); \
-             [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Posthaze Download Manager').Show($toast)"
-        );
-        std::thread::spawn(move || {
-            let _ = std::process::Command::new("powershell.exe")
-                .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &script])
-                .spawn();
-        });
-    }
-    #[cfg(not(target_os = "windows"))]
-    let _ = (title, body);
-}
-
 /// Runs a configured external executable/antivirus hook asynchronously after completion.
 pub(crate) fn spawn_completion_hook(exe_path: &str, args_template: &str, file_path: &Path) {
     let trimmed = exe_path.trim();
@@ -920,14 +907,195 @@ pub(crate) fn spawn_completion_hook(exe_path: &str, args_template: &str, file_pa
     std::thread::spawn(move || {
         #[cfg(target_os = "windows")]
         {
+            use std::os::windows::process::CommandExt as _;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
             let full_cmd = format!("\"{exe}\" {args_line}");
             let _ = std::process::Command::new("cmd.exe")
                 .args(["/C", &full_cmd])
+                .creation_flags(CREATE_NO_WINDOW)
                 .spawn();
         }
         #[cfg(not(target_os = "windows"))]
         let _ = (exe, args_line);
     });
+}
+
+/// Aggregate progress state reflected onto the Windows taskbar button (`ITaskbarList3`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TaskbarProgressState {
+    None,
+    Indeterminate,
+    Normal { completed: u64, total: u64 },
+}
+
+/// Prevents Windows idle sleep (`PowerRequestSystemRequired`) while downloads are active,
+/// while still allowing the display to turn off and lock normally.
+pub(crate) fn set_keep_system_awake(enabled: bool) {
+    #[cfg(target_os = "windows")]
+    win32_power::set_keep_awake(enabled);
+    #[cfg(not(target_os = "windows"))]
+    let _ = enabled;
+}
+
+/// Updates the Windows taskbar progress bar on `window` via `ITaskbarList3`.
+pub(crate) fn sync_taskbar_progress(window: &gpui_kit::Window, state: TaskbarProgressState) {
+    #[cfg(target_os = "windows")]
+    win32_taskbar::sync(window, state);
+    #[cfg(not(target_os = "windows"))]
+    let _ = (window, state);
+}
+
+#[cfg(target_os = "windows")]
+mod win32_power {
+    use std::sync::{Mutex, OnceLock};
+
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Power::{
+        PowerClearRequest, PowerCreateRequest, PowerRequestSystemRequired, PowerSetRequest,
+    };
+    use windows_sys::Win32::System::Threading::{
+        POWER_REQUEST_CONTEXT_SIMPLE_STRING, REASON_CONTEXT, REASON_CONTEXT_0,
+    };
+
+    /// `POWER_REQUEST_CONTEXT_VERSION` (`0`) from `<winnt.h>`.
+    const POWER_REQUEST_CONTEXT_VERSION: u32 = 0;
+
+    struct PowerGuard {
+        handle: isize,
+        active: bool,
+    }
+
+    impl Drop for PowerGuard {
+        fn drop(&mut self) {
+            if self.handle != 0 {
+                let raw = self.handle as HANDLE;
+                if self.active {
+                    // SAFETY: `raw` is a valid power request handle created by `PowerCreateRequest`.
+                    unsafe {
+                        let _ = PowerClearRequest(raw, PowerRequestSystemRequired);
+                    }
+                }
+                // SAFETY: `raw` is owned by `PowerGuard` and closed once.
+                unsafe {
+                    let _ = CloseHandle(raw);
+                }
+            }
+        }
+    }
+
+    fn guard_cell() -> &'static Mutex<PowerGuard> {
+        static CELL: OnceLock<Mutex<PowerGuard>> = OnceLock::new();
+        CELL.get_or_init(|| {
+            let reason: Vec<u16> = "Posthaze is downloading\0".encode_utf16().collect();
+            let mut ctx = REASON_CONTEXT {
+                Version: POWER_REQUEST_CONTEXT_VERSION,
+                Flags: POWER_REQUEST_CONTEXT_SIMPLE_STRING,
+                Reason: REASON_CONTEXT_0 {
+                    SimpleReasonString: reason.as_ptr().cast_mut(),
+                },
+            };
+            // SAFETY: `ctx` points to a valid NUL-terminated UTF-16 string for the duration of the call.
+            let handle = unsafe { PowerCreateRequest(&raw mut ctx) };
+            let raw_int = if handle == INVALID_HANDLE_VALUE || handle.is_null() {
+                0
+            } else {
+                handle as isize
+            };
+            Mutex::new(PowerGuard {
+                handle: raw_int,
+                active: false,
+            })
+        })
+    }
+
+    pub(super) fn set_keep_awake(enabled: bool) {
+        let Ok(mut guard) = guard_cell().lock() else {
+            return;
+        };
+        if guard.handle == 0 || guard.active == enabled {
+            return;
+        }
+        let raw = guard.handle as HANDLE;
+        // SAFETY: `raw` was returned by `PowerCreateRequest` and remains valid for the process lifetime.
+        let ok = unsafe {
+            if enabled {
+                PowerSetRequest(raw, PowerRequestSystemRequired)
+            } else {
+                PowerClearRequest(raw, PowerRequestSystemRequired)
+            }
+        };
+        if ok != 0 {
+            guard.active = enabled;
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+mod win32_taskbar {
+    use std::cell::RefCell;
+    use std::ffi::c_void;
+
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::System::Com::{
+        CLSCTX_ALL, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
+    };
+    use windows::Win32::UI::Shell::{
+        ITaskbarList3, TBPF_INDETERMINATE, TBPF_NOPROGRESS, TBPF_NORMAL, TaskbarList,
+    };
+
+    use super::TaskbarProgressState;
+
+    thread_local! {
+        static TASKBAR: RefCell<Option<ITaskbarList3>> = const { RefCell::new(None) };
+    }
+
+    fn with_taskbar(f: impl FnOnce(&ITaskbarList3)) {
+        TASKBAR.with(|slot| {
+            let mut borrow = slot.borrow_mut();
+            if borrow.is_none() {
+                // SAFETY: Called on the GPUI UI thread; `CoInitializeEx` is idempotent on STA threads.
+                unsafe {
+                    let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+                    if let Ok(list) =
+                        CoCreateInstance::<_, ITaskbarList3>(&TaskbarList, None, CLSCTX_ALL)
+                        && list.HrInit().is_ok()
+                    {
+                        *borrow = Some(list);
+                    }
+                }
+            }
+            if let Some(list) = borrow.as_ref() {
+                f(list);
+            }
+        });
+    }
+
+    pub(super) fn sync(window: &gpui_kit::Window, state: TaskbarProgressState) {
+        let Ok(handle) = HasWindowHandle::window_handle(window) else {
+            return;
+        };
+        let RawWindowHandle::Win32(h) = handle.as_raw() else {
+            return;
+        };
+        let hwnd = HWND(h.hwnd.get() as *mut c_void);
+
+        with_taskbar(|list| unsafe {
+            match state {
+                TaskbarProgressState::None => {
+                    let _ = list.SetProgressState(hwnd, TBPF_NOPROGRESS);
+                }
+                TaskbarProgressState::Indeterminate => {
+                    let _ = list.SetProgressState(hwnd, TBPF_INDETERMINATE);
+                }
+                TaskbarProgressState::Normal { completed, total } => {
+                    let _ = list.SetProgressState(hwnd, TBPF_NORMAL);
+                    let _ = list.SetProgressValue(hwnd, completed, total.max(1));
+                }
+            }
+        });
+    }
 }
 
 #[cfg(test)]

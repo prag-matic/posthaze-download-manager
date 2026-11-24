@@ -1,5 +1,6 @@
 //! Pre-Flight Probe Confirmation Modal and Persisted Settings Modal.
 
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use gpui_kit::assets::IconName;
@@ -7,31 +8,67 @@ use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::Icon;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
-use posthaze_engine::{DownloadId, DownloadRequest, PreflightInfo};
+use posthaze_engine::{
+    ChecksumAlgorithm, DeleteFileMode, DownloadId, DownloadRequest, DownloadState, FileChecksums,
+    PreflightInfo, parse_expected_checksum,
+};
 
 use crate::curl_parser::mask_header_summary;
+use crate::errors::describe_error;
 use crate::grid_cells::{
     CellBorder, GridTone, grid_cell_button, grid_kv_row_with_bg, grid_modal_footer,
 };
 use crate::theme::*;
 use crate::view_model::format_bytes;
 
-/// Active confirmation prompt for destructive or collision-override queue/record actions.
+/// Action dispatched from the duplicate-URL banner inside Pre-Flight.
+#[derive(Debug, Clone)]
+pub(crate) enum DuplicateBannerAction {
+    ShowExisting(DownloadId),
+    ResumeExisting(DownloadId),
+    OpenFile(PathBuf),
+}
+
+/// Existing queue entry matching the URL currently opened in Pre-Flight.
+#[derive(Debug, Clone)]
+pub(crate) struct DuplicateMatch {
+    pub id: DownloadId,
+    pub state: DownloadState,
+    pub filename: String,
+    pub output_path: Option<PathBuf>,
+    pub file_exists: bool,
+    pub bytes_downloaded: u64,
+    pub content_length: Option<u64>,
+}
+
+/// Active confirmation prompt for destructive, collision-override, or duplicate-transfer actions.
 pub(crate) enum ConfirmAction {
     DeleteDownload {
         id: DownloadId,
         filename: String,
-        delete_file: bool,
+        file_mode: Option<DeleteFileMode>,
+        has_disk_file: bool,
+        allow_mode_switch: bool,
     },
     DeleteMultiple {
         ids: Vec<DownloadId>,
-        delete_file: bool,
+        file_mode: Option<DeleteFileMode>,
+        has_disk_file: bool,
+        allow_mode_switch: bool,
     },
     ClearCompleted { count: usize },
     OverwriteCollision {
         request: Box<DownloadRequest>,
         start_immediately: bool,
         filename: String,
+    },
+    DuplicateOngoing {
+        existing_id: DownloadId,
+        existing_state: DownloadState,
+        existing_filename: String,
+        pending_request: Box<DownloadRequest>,
+        start_immediately: bool,
+        disambiguated_path: PathBuf,
     },
 }
 
@@ -77,10 +114,14 @@ pub(crate) enum PreflightModalState {
         extension_locked: bool,
         locked_extension: Option<String>,
         workers: usize,
+        default_dir: Box<PathBuf>,
+        dir_dropdown_open: bool,
+        duplicate_match: Option<Box<DuplicateMatch>>,
+        recent_folders: Vec<PathBuf>,
     },
 }
 
-/// Active modal for completed-file operations (`Rename`, `Move`, `File Integrity`).
+/// Active modal for completed-file operations (`Rename`, `Move`, `Verify Checksum`).
 pub(crate) enum FileOpModalState {
     Rename {
         id: DownloadId,
@@ -90,18 +131,24 @@ pub(crate) enum FileOpModalState {
     Move {
         id: DownloadId,
         input: Entity<InputState>,
+        default_dir: PathBuf,
+        recent_folders: Vec<PathBuf>,
+        dropdown_open: bool,
         error: Option<String>,
     },
     Integrity {
         filename: String,
-        digest: Option<String>,
+        expected_input: Entity<InputState>,
+        checksums: Option<FileChecksums>,
+        server_digest: Option<(ChecksumAlgorithm, String)>,
         error: Option<String>,
     },
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn render_preflight_card<F1, F2, F3, F4, F5, F6, F7>(
+pub(crate) fn render_preflight_card<F1, F2, F3, F4, F5, F6, F7, F8, F9, F10>(
     state: &PreflightModalState,
+    cx: &App,
     show_add_paused: bool,
     on_close: F1,
     on_retry: F2,
@@ -110,6 +157,9 @@ pub(crate) fn render_preflight_card<F1, F2, F3, F4, F5, F6, F7>(
     on_edit_url: F5,
     on_browse_dir: F6,
     on_toggle_ext_lock: F7,
+    on_toggle_dir_dropdown: F8,
+    on_pick_recent_dir: F9,
+    on_open_duplicate: F10,
 ) -> AnyElement
 where
     F1: Fn(&mut Window, &mut App) + Clone + 'static,
@@ -117,8 +167,11 @@ where
     F3: Fn(isize, &mut Window, &mut App) + Clone + 'static,
     F4: Fn(bool, &mut Window, &mut App) + Clone + 'static,
     F5: Fn(String, &mut Window, &mut App) + 'static,
-    F6: Fn(&mut Window, &mut App) + 'static,
+    F6: Fn(&mut Window, &mut App) + Clone + 'static,
     F7: Fn(&mut Window, &mut App) + 'static,
+    F8: Fn(&mut Window, &mut App) + 'static,
+    F9: Fn(PathBuf, &mut Window, &mut App) + Clone + 'static,
+    F10: Fn(DuplicateBannerAction, &mut Window, &mut App) + Clone + 'static,
 {
     match state {
         PreflightModalState::Probing { url, headers } => div()
@@ -242,7 +295,7 @@ where
             let url_retry = url.clone();
             let headers_retry = headers.clone();
             let url_edit = url.clone();
-            let is_forbidden = message.contains("403");
+            let diag = describe_error(message, false);
             div()
                 .w_full()
                 .flex_1()
@@ -277,7 +330,7 @@ where
                                 .line_height(px(18.0))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(errata_vermilion())
-                                .child("Could Not Reach File"),
+                                .child(diag.headline),
                         ),
                 )
                 .child(
@@ -286,7 +339,7 @@ where
                         .text_size(TYPE_BODY)
                         .line_height(px(16.0))
                         .text_color(silver_text())
-                        .child(message.clone()),
+                        .child(diag.detail),
                 )
                 .child(
                     div()
@@ -297,7 +350,7 @@ where
                         .truncate()
                         .child(url.clone()),
                 )
-                .when(is_forbidden, |el| {
+                .when_some(diag.tip, |el, tip| {
                     el.child(
                         div()
                             .p_2()
@@ -308,7 +361,7 @@ where
                             .text_size(TYPE_MICRO)
                             .line_height(px(14.0))
                             .text_color(silver_muted())
-                            .child("Tip: Use DevTools -> Copy as cURL if this site requires a browser session."),
+                            .child(tip),
                     )
                 }),
                 )
@@ -368,7 +421,12 @@ where
             extension_locked,
             locked_extension,
             workers,
+            default_dir,
+            dir_dropdown_open,
+            duplicate_match,
+            recent_folders,
         } => {
+            let current_dir_text = dir_input.read(cx).value();
             let size_label = info
                 .content_length
                 .map(format_bytes)
@@ -423,111 +481,313 @@ where
                         .w_full()
                         .flex_1()
                         .min_h_0()
-                        .p_2p5()
+                        .px_4()
+                        .py_3()
                         .bg(paper_bg())
                         .flex()
                         .flex_col()
-                        .gap_1()
                 .when(*active_tab == PreflightTab::General, |el| {
                     el.child(
                         div()
                             .flex()
-                            .items_center()
-                            .justify_between()
-                            .gap_2()
+                            .flex_col()
+                            .gap_0p5()
+                            .mb_3()
                             .child(
                                 div()
-                                    .text_size(px(14.0))
-                                    .line_height(px(18.0))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(silver_text())
-                                    .child("Add Download"),
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .text_size(px(14.0))
+                                            .line_height(px(18.0))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(silver_text())
+                                            .child("Add Download"),
+                                    )
+                                    .child(
+                                        div()
+                                            .px_1p5()
+                                            .py_0p5()
+                                            .rounded(px(3.0))
+                                            .bg(graphite_elevated())
+                                            .border_1()
+                                            .border_color(graphite_border())
+                                            .font_family(MONO_FONT)
+                                            .text_size(TYPE_MICRO)
+                                            .line_height(px(13.0))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(if info.supports_ranges {
+                                                silver_text()
+                                            } else {
+                                                silver_muted()
+                                            })
+                                            .child(proto_label),
+                                    ),
                             )
                             .child(
                                 div()
-                                    .px_1p5()
-                                    .py_0p5()
-                                    .rounded(px(3.0))
-                                    .bg(graphite_elevated())
-                                    .border_1()
-                                    .border_color(graphite_border())
                                     .font_family(MONO_FONT)
                                     .text_size(TYPE_MICRO)
-                                    .line_height(px(13.0))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(if info.supports_ranges {
-                                        silver_text()
-                                    } else {
-                                        silver_muted()
-                                    })
-                                    .child(proto_label),
+                                    .line_height(px(14.0))
+                                    .text_color(silver_muted())
+                                    .truncate()
+                                    .child(info.final_url.clone()),
                             ),
                     )
                     .child(
                         div()
-                            .font_family(MONO_FONT)
-                            .text_size(TYPE_MICRO)
-                            .line_height(px(14.0))
-                            .text_color(silver_muted())
-                            .truncate()
-                            .child(info.final_url.clone()),
+                            .w_full()
+                            .flex()
+                            .flex_col()
+                            .gap_1p5()
+                            .child(compact_input_row_with_action(
+                                "FILE",
+                                filename_input,
+                                Some(
+                                    div()
+                                        .id("pf-ext-lock")
+                                        .h_full()
+                                        .px_2p5()
+                                        .border_l_1()
+                                        .border_color(graphite_border())
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .font_family(MONO_FONT)
+                                        .text_size(TYPE_MICRO)
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .cursor_pointer()
+                                        .when(ext_is_locked && ext_has_value, |el| {
+                                            el.bg(graphite_elevated())
+                                                .text_color(selenium_amber())
+                                                .hover(|s| s.bg(paper_hover()))
+                                        })
+                                        .when(!(ext_is_locked && ext_has_value), |el| {
+                                            el.bg(graphite_bg())
+                                                .text_color(silver_muted())
+                                                .hover(|s| {
+                                                    s.bg(paper_hover()).text_color(silver_text())
+                                                })
+                                        })
+                                        .tooltip(move |window, cx| {
+                                            gpui_kit::component::tooltip::Tooltip::new(ext_tooltip)
+                                                .build(window, cx)
+                                        })
+                                        .on_click(move |_, window, cx| on_toggle_ext_lock(window, cx))
+                                        .child(ext_badge_label.clone())
+                                        .into_any_element(),
+                                ),
+                            ))
+                            .child(
+                                div()
+                                    .w_full()
+                                    .flex()
+                                    .flex_col()
+                                    .child(compact_input_row_with_action(
+                                        "SAVE TO",
+                                        dir_input,
+                                        Some(
+                                            div()
+                                                .h_full()
+                                                .flex()
+                                                .items_center()
+                                                .child(grid_cell_button(
+                                                    "pf-dir-dropdown",
+                                                    Some(if *dir_dropdown_open {
+                                                        IconName::ChevronUp
+                                                    } else {
+                                                        IconName::ChevronDown
+                                                    }),
+                                                    None,
+                                                    Some("Choose default or recent save folder"),
+                                                    GridTone::Graphite,
+                                                    CellBorder::Left,
+                                                    true,
+                                                    move |_, window, cx| {
+                                                        on_toggle_dir_dropdown(window, cx)
+                                                    },
+                                                ))
+                                                .child(grid_cell_button(
+                                                    "pf-browse-dir",
+                                                    Some(IconName::FolderOpen),
+                                                    None,
+                                                    Some("Choose another save folder"),
+                                                    GridTone::Graphite,
+                                                    CellBorder::Left,
+                                                    true,
+                                                    move |_, window, cx| on_browse_dir(window, cx),
+                                                ))
+                                                .into_any_element(),
+                                        ),
+                                    ))
+                                    .when(*dir_dropdown_open, |el| {
+                                        el.child(render_folder_dropdown_panel(
+                                            "pf-dir-menu",
+                                            default_dir.as_path(),
+                                            recent_folders,
+                                            &current_dir_text,
+                                            on_pick_recent_dir.clone(),
+                                        ))
+                                    }),
+                            ),
                     )
-                    .child(compact_input_row_with_action(
-                        "FILE",
-                        filename_input,
-                        Some(
+                    .when_some(duplicate_match.clone(), |el, dup| {
+                        let dup_id = dup.id.clone();
+                        let is_failed = dup.state == DownloadState::Failed;
+                        let is_paused = dup.state == DownloadState::Paused;
+                        let is_completed_present =
+                            dup.state == DownloadState::Completed && dup.file_exists;
+                        let progress_note = match dup.content_length {
+                            Some(total) if total > 0 && dup.state != DownloadState::Completed => {
+                                format!(" ({}/{})", format_bytes(dup.bytes_downloaded), format_bytes(total))
+                            }
+                            Some(total) if total > 0 => format!(" ({})", format_bytes(total)),
+                            _ if dup.bytes_downloaded > 0 => format!(" ({})", format_bytes(dup.bytes_downloaded)),
+                            _ => String::new(),
+                        };
+                        let banner_text = match dup.state {
+                            DownloadState::Completed if dup.file_exists => {
+                                format!("Already downloaded{progress_note}: {}", dup.filename)
+                            }
+                            DownloadState::Completed => {
+                                format!("Downloaded earlier (file moved/deleted): {}", dup.filename)
+                            }
+                            DownloadState::Active | DownloadState::Probing | DownloadState::Queued => {
+                                format!("Transfer {} {progress_note}: {}", dup.state.as_str(), dup.filename)
+                            }
+                            _ => format!("Already in queue ({}){progress_note}: {}", dup.state.as_str(), dup.filename),
+                        };
+                        let tip_text = match &dup.output_path {
+                            Some(path) if dup.state == DownloadState::Completed && !dup.file_exists => {
+                                format!("Recorded path missing on disk: {}", path.to_string_lossy())
+                            }
+                            Some(path) => format!("Existing path: {}", path.to_string_lossy()),
+                            None => format!("Matched queue entry {}", dup.id.as_str()),
+                        };
+                        let dot_color = if is_failed {
+                            errata_vermilion()
+                        } else if is_completed_present {
+                            halide_emerald()
+                        } else {
+                            selenium_amber()
+                        };
+                        let on_dup_primary = on_open_duplicate.clone();
+                        let on_dup_secondary = on_open_duplicate.clone();
+                        let primary_action = if is_completed_present {
+                            dup.output_path
+                                .clone()
+                                .map(DuplicateBannerAction::OpenFile)
+                                .unwrap_or_else(|| DuplicateBannerAction::ShowExisting(dup_id.clone()))
+                        } else if is_paused || is_failed {
+                            DuplicateBannerAction::ResumeExisting(dup_id.clone())
+                        } else {
+                            DuplicateBannerAction::ShowExisting(dup_id.clone())
+                        };
+                        let primary_label = if is_completed_present {
+                            "OPEN FILE"
+                        } else if is_paused {
+                            "RESUME"
+                        } else if is_failed {
+                            "RETRY"
+                        } else {
+                            "SHOW"
+                        };
+                        el.child(
                             div()
-                                .id("pf-ext-lock")
-                                .h_full()
-                                .px_2()
-                                .border_l_1()
+                                .id("pf-dup-banner")
+                                .mt_2()
+                                .px_2p5()
+                                .py_1p5()
+                                .rounded(px(3.0))
+                                .bg(graphite_elevated())
+                                .border_1()
                                 .border_color(graphite_border())
                                 .flex()
                                 .items_center()
-                                .justify_center()
-                                .font_family(MONO_FONT)
-                                .text_size(TYPE_MICRO)
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .cursor_pointer()
-                                .when(ext_is_locked && ext_has_value, |el| {
-                                    el.bg(selenium_amber())
-                                        .text_color(active_theme().accent_foreground.hsla())
-                                        .hover(|s| s.opacity(0.9))
-                                })
-                                .when(!(ext_is_locked && ext_has_value), |el| {
-                                    el.bg(graphite_elevated())
-                                        .text_color(silver_muted())
-                                        .hover(|s| {
-                                            s.bg(selenium_amber())
-                                                .text_color(active_theme().accent_foreground.hsla())
-                                        })
-                                })
+                                .justify_between()
+                                .gap_2()
                                 .tooltip(move |window, cx| {
-                                    gpui_kit::component::tooltip::Tooltip::new(ext_tooltip)
+                                    gpui_kit::component::tooltip::Tooltip::new(tip_text.clone())
                                         .build(window, cx)
                                 })
-                                .on_click(move |_, window, cx| on_toggle_ext_lock(window, cx))
-                                .child(ext_badge_label.clone())
-                                .into_any_element(),
-                        ),
-                    ))
-                    .child(compact_input_row_with_action(
-                        "SAVE TO",
-                        dir_input,
-                        Some(
-                            grid_cell_button(
-                                "pf-browse-dir",
-                                Some(IconName::FolderOpen),
-                                None,
-                                Some("Choose destination folder"),
-                                GridTone::Graphite,
-                                CellBorder::Left,
-                                true,
-                                move |_, window, cx| on_browse_dir(window, cx),
-                            )
-                            .into_any_element(),
-                        ),
-                    ))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .flex()
+                                        .items_center()
+                                        .gap_2()
+                                        .child(
+                                            div()
+                                                .w(px(6.0))
+                                                .h(px(6.0))
+                                                .flex_shrink_0()
+                                                .rounded(px(3.0))
+                                                .bg(dot_color),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .font_family(MONO_FONT)
+                                                .text_size(TYPE_MICRO)
+                                                .text_color(silver_text())
+                                                .truncate()
+                                                .child(banner_text),
+                                        ),
+                                )
+                                .when(is_completed_present, |row| {
+                                    let show_id = dup_id.clone();
+                                    row.child(
+                                        div()
+                                            .id("pf-show-duplicate-secondary")
+                                            .px_1p5()
+                                            .py_0p5()
+                                            .rounded(px(2.0))
+                                            .font_family(MONO_FONT)
+                                            .text_size(TYPE_MICRO)
+                                            .text_color(silver_muted())
+                                            .cursor_pointer()
+                                            .hover(|s| s.text_color(silver_text()))
+                                            .on_click(move |_, window, cx| {
+                                                on_dup_secondary(
+                                                    DuplicateBannerAction::ShowExisting(
+                                                        show_id.clone(),
+                                                    ),
+                                                    window,
+                                                    cx,
+                                                );
+                                            })
+                                            .child("SHOW"),
+                                    )
+                                })
+                                .child(
+                                    div()
+                                        .id("pf-open-duplicate")
+                                        .px_2()
+                                        .py_0p5()
+                                        .rounded(px(2.0))
+                                        .bg(graphite_bg())
+                                        .border_1()
+                                        .border_color(graphite_border())
+                                        .font_family(MONO_FONT)
+                                        .text_size(TYPE_MICRO)
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(silver_text())
+                                        .cursor_pointer()
+                                        .hover(|s| {
+                                            s.bg(paper_hover()).border_color(selenium_amber())
+                                        })
+                                        .on_click(move |_, window, cx| {
+                                            on_dup_primary(primary_action.clone(), window, cx);
+                                        })
+                                        .child(primary_label),
+                                ),
+                        )
+                    })
                 })
                 .when(*active_tab == PreflightTab::Options, |el| {
                     el.child(
@@ -733,16 +993,26 @@ where
     .into_any_element()
 }
 
-pub(crate) fn render_file_op_modal<F1, F2, F3>(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn render_file_op_modal<F1, F2, F3, F4, F5, F6, F7>(
     state: &FileOpModalState,
+    cx: &App,
     on_cancel: F1,
     on_confirm: F2,
     on_copy_hash: F3,
+    on_paste_expected: F4,
+    on_toggle_move_dropdown: F5,
+    on_pick_move_dir: F6,
+    on_browse_move_dir: F7,
 ) -> AnyElement
 where
     F1: Fn(&mut Window, &mut App) + Clone + 'static,
     F2: Fn(&mut Window, &mut App) + 'static,
-    F3: Fn(String, &mut Window, &mut App) + 'static,
+    F3: Fn(&'static str, String, &mut Window, &mut App) + Clone + 'static,
+    F4: Fn(&mut Window, &mut App) + 'static,
+    F5: Fn(&mut Window, &mut App) + 'static,
+    F6: Fn(PathBuf, &mut Window, &mut App) + Clone + 'static,
+    F7: Fn(&mut Window, &mut App) + Clone + 'static,
 {
     let on_backdrop_close = on_cancel.clone();
     let card = match state {
@@ -757,132 +1027,338 @@ where
             on_cancel,
             on_confirm,
         ),
-        FileOpModalState::Move { input, error, .. } => file_op_form_card(
-            "Move Completed File",
-            "Destination Directory",
-            "Move File",
-            IconName::FolderOpen,
-            px(480.0),
+        FileOpModalState::Move {
             input,
-            error.as_deref(),
-            on_cancel,
-            on_confirm,
-        ),
+            default_dir,
+            recent_folders,
+            dropdown_open,
+            error,
+            ..
+        } => {
+            let current_dir_text = input.read(cx).value();
+            let body = div()
+                .child(
+                    div()
+                        .text_size(TYPE_HEADING)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(silver_text())
+                        .child("Move Completed File"),
+                )
+                .when_some(error.as_deref().map(str::to_string), |el, err| {
+                    el.child(
+                        div()
+                            .font_family(MONO_FONT)
+                            .text_size(TYPE_MICRO)
+                            .text_color(errata_vermilion())
+                            .child(err),
+                    )
+                })
+                .child(
+                    div()
+                        .w_full()
+                        .flex()
+                        .flex_col()
+                        .child(compact_input_row_with_action(
+                            "SAVE TO",
+                            input,
+                            Some(
+                                div()
+                                    .h_full()
+                                    .flex()
+                                    .items_center()
+                                    .child(grid_cell_button(
+                                        "move-dir-dropdown",
+                                        Some(if *dropdown_open {
+                                            IconName::ChevronUp
+                                        } else {
+                                            IconName::ChevronDown
+                                        }),
+                                        None,
+                                        Some("Choose default or recent save folder"),
+                                        GridTone::Graphite,
+                                        CellBorder::Left,
+                                        true,
+                                        move |_, window, cx| on_toggle_move_dropdown(window, cx),
+                                    ))
+                                    .child(grid_cell_button(
+                                        "move-browse-dir",
+                                        Some(IconName::FolderOpen),
+                                        None,
+                                        Some("Choose another save folder"),
+                                        GridTone::Graphite,
+                                        CellBorder::Left,
+                                        true,
+                                        move |_, window, cx| on_browse_move_dir(window, cx),
+                                    ))
+                                    .into_any_element(),
+                            ),
+                        ))
+                        .when(*dropdown_open, |el| {
+                            el.child(render_folder_dropdown_panel(
+                                "move-dir-menu",
+                                default_dir,
+                                recent_folders,
+                                &current_dir_text,
+                                on_pick_move_dir,
+                            ))
+                        }),
+                );
+            let footer = grid_modal_footer(GridTone::Graphite)
+                .child(grid_cell_button(
+                    "fileop-cancel",
+                    Some(IconName::X),
+                    Some("CANCEL"),
+                    None,
+                    GridTone::Graphite,
+                    CellBorder::Left,
+                    false,
+                    move |_, window, cx| on_cancel(window, cx),
+                ))
+                .child(grid_cell_button(
+                    "fileop-save",
+                    Some(IconName::FolderOpen),
+                    Some("Move File"),
+                    None,
+                    GridTone::Primary,
+                    CellBorder::Left,
+                    false,
+                    move |_, window, cx| on_confirm(window, cx),
+                ));
+            modal_plate_card(px(520.0), graphite_border(), body, footer)
+        }
         FileOpModalState::Integrity {
             filename,
-            digest,
+            expected_input,
+            checksums,
+            server_digest,
             error,
-        } => div()
-            .w(px(520.0))
-            .p_5()
-            .bg(modal_bg())
-            .border_1()
-            .border_color(graphite_border())
-            .rounded(px(6.0))
-            .shadow_lg()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .child(
+        } => {
+            let expected_raw = expected_input.read(cx).value();
+            let parsed_expected = parse_expected_checksum(&expected_raw)
+                .or_else(|| server_digest.as_ref().map(|(a, h)| (Some(*a), h.clone())));
+            let verdict = match (checksums.as_ref(), parsed_expected.as_ref()) {
+                (Some(sums), Some((algo, hex))) => match sums.match_expected(*algo, hex) {
+                    Some(matched) => Some((true, format!("MATCH ({})", matched.label()))),
+                    None => Some((
+                        false,
+                        format!(
+                            "MISMATCH ({})",
+                            algo.map_or("SHA-256 / BLAKE3", |a| a.label())
+                        ),
+                    )),
+                },
+                (None, Some(_)) => None,
+                _ if !expected_raw.trim().is_empty() => {
+                    Some((false, "Unrecognized checksum format (expected 8/32/40/64/128 hex)".to_string()))
+                }
+                _ => None,
+            };
+
+            let copy_row = |label: &'static str, value: String, id_key: &'static str| {
+                let on_copy = on_copy_hash.clone();
+                let value_for_copy = value.clone();
                 div()
-                    .text_size(TYPE_HEADING)
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(silver_text())
-                    .child("File Integrity (BLAKE3)"),
-            )
-            .child(
-                div()
-                    .font_family(MONO_FONT)
-                    .text_size(TYPE_MICRO)
-                    .text_color(silver_muted())
-                    .truncate()
-                    .child(filename.clone()),
-            )
-            .when_some(error.clone(), |el, err| {
-                el.child(
-                    div()
-                        .font_family(MONO_FONT)
-                        .text_size(TYPE_MICRO)
-                        .text_color(errata_vermilion())
-                        .child(err),
-                )
-            })
-            .child(
-                div()
-                    .p_2p5()
                     .bg(table_header_bg())
                     .border_1()
                     .border_color(graphite_border())
                     .rounded(px(4.0))
-                    .font_family(MONO_FONT)
-                    .text_size(TYPE_MICRO)
-                    .text_color(if digest.is_some() {
-                        halide_emerald()
-                    } else {
-                        selenium_amber()
-                    })
+                    .overflow_hidden()
+                    .flex()
+                    .items_stretch()
                     .child(
-                        digest
-                            .clone()
-                            .unwrap_or_else(|| "Computing BLAKE3 digest...".to_string()),
-                    ),
-            )
-            .child(
-                grid_modal_footer(GridTone::Graphite)
-                    .when_some(digest.clone(), |el, hash| {
-                        el.child(grid_cell_button(
-                            "hash-copy",
-                            Some(IconName::Copy),
-                            Some("COPY BLAKE3"),
-                            None,
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .px_2p5()
+                            .py_1p5()
+                            .flex()
+                            .flex_col()
+                            .gap_0p5()
+                            .child(
+                                div()
+                                    .font_family(MONO_FONT)
+                                    .text_size(TYPE_MICRO)
+                                    .text_color(silver_muted())
+                                    .child(label),
+                            )
+                            .child(
+                                div()
+                                    .font_family(MONO_FONT)
+                                    .text_size(TYPE_MICRO)
+                                    .text_color(halide_emerald())
+                                    .truncate()
+                                    .child(value),
+                            ),
+                    )
+                    .child(grid_cell_button(
+                        id_key,
+                        Some(IconName::Copy),
+                        Some("COPY"),
+                        None,
+                        GridTone::Graphite,
+                        CellBorder::Left,
+                        false,
+                        move |_, window, cx| {
+                            on_copy(label, value_for_copy.clone(), window, cx);
+                        },
+                    ))
+            };
+
+            let body = div()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            div()
+                                .text_size(TYPE_HEADING)
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(silver_text())
+                                .child("Verify Checksum / File Integrity"),
+                        )
+                        .when_some(verdict, |el, (matched, text)| {
+                            el.child(
+                                div()
+                                    .px_2()
+                                    .py_0p5()
+                                    .rounded(px(3.0))
+                                    .bg(graphite_elevated())
+                                    .border_1()
+                                    .border_color(if matched {
+                                        halide_emerald()
+                                    } else {
+                                        errata_vermilion()
+                                    })
+                                    .font_family(MONO_FONT)
+                                    .text_size(TYPE_MICRO)
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(if matched {
+                                        halide_emerald()
+                                    } else {
+                                        errata_vermilion()
+                                    })
+                                    .child(text),
+                            )
+                        }),
+                )
+                .child(
+                    div()
+                        .font_family(MONO_FONT)
+                        .text_size(TYPE_MICRO)
+                        .text_color(silver_muted())
+                        .truncate()
+                        .child(filename.clone()),
+                )
+                .child(compact_input_row_with_action(
+                    "EXPECT",
+                    expected_input,
+                    Some(
+                        grid_cell_button(
+                            "hash-paste-expected",
+                            Some(IconName::Clipboard),
+                            Some("PASTE"),
+                            Some("Paste expected SHA-256 / SHA-512 / MD5 / CRC32 / BLAKE3 hash"),
                             GridTone::Graphite,
                             CellBorder::Left,
                             false,
-                            move |_, window, cx| {
-                                on_copy_hash(hash.clone(), window, cx);
-                            },
-                        ))
-                    })
-                    .child(grid_cell_button(
-                        "hash-close",
-                        Some(IconName::Check),
-                        Some("CLOSE"),
-                        None,
-                        GridTone::Primary,
-                        CellBorder::Left,
-                        false,
-                        move |_, window, cx| on_cancel(window, cx),
-                    )),
-            ),
+                            move |_, window, cx| on_paste_expected(window, cx),
+                        )
+                        .into_any_element(),
+                    ),
+                ))
+                .when_some(error.clone(), |el, err| {
+                    el.child(
+                        div()
+                            .font_family(MONO_FONT)
+                            .text_size(TYPE_MICRO)
+                            .text_color(errata_vermilion())
+                            .child(err),
+                    )
+                })
+                .when_some(checksums.clone(), |el, sums| {
+                    el.child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1p5()
+                            .child(copy_row("SHA-256", sums.sha256, "copy-sha256"))
+                            .child(copy_row("BLAKE3", sums.blake3, "copy-blake3"))
+                            .child(copy_row("MD5", sums.md5, "copy-md5"))
+                            .child(copy_row("CRC32", sums.crc32, "copy-crc32")),
+                    )
+                })
+                .when(checksums.is_none() && error.is_none(), |el| {
+                    el.child(
+                        div()
+                            .p_2p5()
+                            .bg(table_header_bg())
+                            .border_1()
+                            .border_color(graphite_border())
+                            .rounded(px(4.0))
+                            .font_family(MONO_FONT)
+                            .text_size(TYPE_MICRO)
+                            .text_color(selenium_amber())
+                            .child("Computing SHA-256, BLAKE3, SHA-512, MD5, and CRC32 digests..."),
+                    )
+                });
+            let footer = grid_modal_footer(GridTone::Graphite).child(grid_cell_button(
+                "hash-close",
+                Some(IconName::Check),
+                Some("CLOSE"),
+                None,
+                GridTone::Primary,
+                CellBorder::Left,
+                false,
+                move |_, window, cx| on_cancel(window, cx),
+            ));
+            modal_plate_card(px(580.0), graphite_border(), body, footer)
+        }
     };
 
     modal_backdrop(card, on_backdrop_close)
 }
 
-pub(crate) fn render_confirm_modal<F1, F2>(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn render_confirm_modal<F1, F2, F3, F4>(
     action: &ConfirmAction,
     on_cancel: F1,
     on_confirm: F2,
+    on_change_file_mode: F3,
+    on_alt_confirm: F4,
 ) -> AnyElement
 where
     F1: Fn(&mut Window, &mut App) + Clone + 'static,
     F2: Fn(&mut Window, &mut App) + 'static,
+    F3: Fn(Option<DeleteFileMode>, &mut Window, &mut App) + Clone + 'static,
+    F4: Fn(&mut Window, &mut App) + 'static,
 {
     let (title, detail, confirm_label) = match action {
         ConfirmAction::DeleteDownload {
             filename,
-            delete_file: true,
+            file_mode: Some(DeleteFileMode::RecycleBin),
             ..
         } => (
-            "Delete File & Entry",
+            "Move File to Recycle Bin",
             format!(
-                "Permanently delete \"{filename}\" from disk and remove it from the list? This cannot be undone."
+                "Move \"{filename}\" to the Windows Recycle Bin and remove it from the list?"
             ),
-            "Delete File",
+            "Move to Recycle Bin",
         ),
         ConfirmAction::DeleteDownload {
             filename,
-            delete_file: false,
+            file_mode: Some(DeleteFileMode::Permanent),
+            ..
+        } => (
+            "Permanently Delete File",
+            format!(
+                "Permanently delete \"{filename}\" from disk (bypassing Recycle Bin)? This cannot be undone."
+            ),
+            "Delete Permanently",
+        ),
+        ConfirmAction::DeleteDownload {
+            filename,
+            file_mode: None,
             ..
         } => (
             "Remove Download",
@@ -893,18 +1369,32 @@ where
         ),
         ConfirmAction::DeleteMultiple {
             ids,
-            delete_file: true,
+            file_mode: Some(DeleteFileMode::RecycleBin),
+            ..
         } => (
-            "Delete Selected Files",
+            "Move Selected Files to Recycle Bin",
             format!(
-                "Permanently delete {} selected download(s) from disk and remove them from the list? This cannot be undone.",
+                "Move {} selected download(s) to the Windows Recycle Bin and remove them from the list?",
                 ids.len()
             ),
-            "Delete Files",
+            "Move to Recycle Bin",
         ),
         ConfirmAction::DeleteMultiple {
             ids,
-            delete_file: false,
+            file_mode: Some(DeleteFileMode::Permanent),
+            ..
+        } => (
+            "Permanently Delete Selected Files",
+            format!(
+                "Permanently delete {} selected download(s) from disk (bypassing Recycle Bin)? This cannot be undone.",
+                ids.len()
+            ),
+            "Delete Permanently",
+        ),
+        ConfirmAction::DeleteMultiple {
+            ids,
+            file_mode: None,
+            ..
         } => (
             "Remove Selected Downloads",
             format!(
@@ -927,20 +1417,82 @@ where
             ),
             "Overwrite",
         ),
+        ConfirmAction::DuplicateOngoing {
+            existing_state,
+            existing_filename,
+            disambiguated_path,
+            ..
+        } => {
+            let new_name = disambiguated_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("separate copy");
+            let is_paused = *existing_state == DownloadState::Paused;
+            (
+                if is_paused {
+                    "Paused Transfer Already Exists"
+                } else {
+                    "Download Already in Progress"
+                },
+                format!(
+                    "\"{existing_filename}\" is currently {} in your queue. {} it instead, or save a separate copy as \"{new_name}\"?",
+                    existing_state.as_str(),
+                    if is_paused { "Resume" } else { "Show" },
+                ),
+                if is_paused {
+                    "RESUME EXISTING"
+                } else {
+                    "SHOW ONGOING"
+                },
+            )
+        }
+    };
+
+    let (active_mode, show_mode_selector) = match action {
+        ConfirmAction::DeleteDownload {
+            file_mode,
+            has_disk_file,
+            allow_mode_switch,
+            ..
+        }
+        | ConfirmAction::DeleteMultiple {
+            file_mode,
+            has_disk_file,
+            allow_mode_switch,
+            ..
+        } => (*file_mode, *has_disk_file && *allow_mode_switch),
+        ConfirmAction::ClearCompleted { .. }
+        | ConfirmAction::OverwriteCollision { .. }
+        | ConfirmAction::DuplicateOngoing { .. } => (None, false),
+    };
+
+    let is_duplicate_ongoing = matches!(action, ConfirmAction::DuplicateOngoing { .. });
+    let (accent_color, confirm_tone) = match action {
+        ConfirmAction::DeleteDownload {
+            file_mode: Some(DeleteFileMode::Permanent),
+            ..
+        }
+        | ConfirmAction::DeleteMultiple {
+            file_mode: Some(DeleteFileMode::Permanent),
+            ..
+        }
+        | ConfirmAction::OverwriteCollision { .. } => (errata_vermilion(), GridTone::Danger),
+        ConfirmAction::DeleteDownload {
+            file_mode: Some(DeleteFileMode::RecycleBin),
+            ..
+        }
+        | ConfirmAction::DeleteMultiple {
+            file_mode: Some(DeleteFileMode::RecycleBin),
+            ..
+        }
+        | ConfirmAction::DuplicateOngoing { .. } => (selenium_amber(), GridTone::Primary),
+        ConfirmAction::DeleteDownload { .. }
+        | ConfirmAction::DeleteMultiple { .. }
+        | ConfirmAction::ClearCompleted { .. } => (graphite_border(), GridTone::Danger),
     };
 
     let on_backdrop_close = on_cancel.clone();
-    let card = div()
-        .w(px(440.0))
-        .p_5()
-        .bg(modal_bg())
-        .border_1()
-        .border_color(errata_vermilion())
-        .rounded(px(6.0))
-        .shadow_lg()
-        .flex()
-        .flex_col()
-        .gap_3()
+    let body = div()
         .child(
             div()
                 .flex()
@@ -949,7 +1501,11 @@ where
                 .child(
                     Icon::new(IconName::TriangleAlert)
                         .size(px(16.0))
-                        .text_color(errata_vermilion()),
+                        .text_color(if confirm_tone == GridTone::Danger {
+                            errata_vermilion()
+                        } else {
+                            selenium_amber()
+                        }),
                 )
                 .child(
                     div()
@@ -967,29 +1523,135 @@ where
                 .text_color(silver_muted())
                 .child(detail),
         )
-        .child(
-            grid_modal_footer(GridTone::Graphite)
-                .child(grid_cell_button(
-                    "confirm-cancel",
-                    Some(IconName::X),
-                    Some("CANCEL"),
-                    None,
-                    GridTone::Graphite,
-                    CellBorder::Left,
-                    false,
-                    move |_, window, cx| on_cancel(window, cx),
-                ))
-                .child(grid_cell_button(
-                    "confirm-proceed",
-                    Some(IconName::Trash),
-                    Some(confirm_label),
-                    None,
-                    GridTone::Danger,
-                    CellBorder::Left,
-                    false,
-                    move |_, window, cx| on_confirm(window, cx),
-                )),
-        );
+        .when(show_mode_selector, |el| {
+            let mode_chip = |id: &'static str,
+                             label: &'static str,
+                             target: Option<DeleteFileMode>,
+                             danger: bool| {
+                let selected = active_mode == target;
+                let cb = on_change_file_mode.clone();
+                div()
+                    .id(id)
+                    .flex_1()
+                    .h(px(28.0))
+                    .px_2()
+                    .border_1()
+                    .border_color(if selected {
+                        if danger {
+                            errata_vermilion()
+                        } else {
+                            selenium_amber()
+                        }
+                    } else {
+                        graphite_border()
+                    })
+                    .bg(if selected {
+                        if danger {
+                            errata_vermilion()
+                        } else {
+                            selenium_amber()
+                        }
+                    } else {
+                        graphite_elevated()
+                    })
+                    .rounded(px(3.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .font_family(MONO_FONT)
+                    .text_size(TYPE_MICRO)
+                    .font_weight(if selected {
+                        FontWeight::BOLD
+                    } else {
+                        FontWeight::MEDIUM
+                    })
+                    .text_color(if selected {
+                        if danger {
+                            gpui_kit::white()
+                        } else {
+                            active_theme().accent_foreground.hsla()
+                        }
+                    } else if danger {
+                        errata_vermilion()
+                    } else {
+                        silver_text()
+                    })
+                    .cursor_pointer()
+                    .on_click(move |_, window, cx| cb(target, window, cx))
+                    .child(label)
+            };
+
+            el.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1p5()
+                    .child(
+                        div()
+                            .font_family(MONO_FONT)
+                            .text_size(TYPE_MICRO)
+                            .text_color(silver_muted())
+                            .child("COMPLETED FILE ON DISK"),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1p5()
+                            .child(mode_chip("confirm-mode-keep", "KEEP ON DISK", None, false))
+                            .child(mode_chip(
+                                "confirm-mode-recycle",
+                                "RECYCLE BIN",
+                                Some(DeleteFileMode::RecycleBin),
+                                false,
+                            ))
+                            .child(mode_chip(
+                                "confirm-mode-permanent",
+                                "PERMANENT",
+                                Some(DeleteFileMode::Permanent),
+                                true,
+                            )),
+                    ),
+            )
+        });
+    let footer = grid_modal_footer(GridTone::Graphite)
+        .child(grid_cell_button(
+            "confirm-cancel",
+            Some(IconName::X),
+            Some("CANCEL"),
+            None,
+            GridTone::Graphite,
+            CellBorder::Left,
+            false,
+            move |_, window, cx| on_cancel(window, cx),
+        ))
+        .when(is_duplicate_ongoing, |footer| {
+            footer.child(grid_cell_button(
+                "confirm-alt",
+                Some(IconName::Download),
+                Some("SEPARATE COPY"),
+                Some("Download a separate copy under an auto-renamed filename"),
+                GridTone::Graphite,
+                CellBorder::Left,
+                false,
+                move |_, window, cx| on_alt_confirm(window, cx),
+            ))
+        })
+        .child(grid_cell_button(
+            "confirm-proceed",
+            Some(if is_duplicate_ongoing {
+                IconName::ArrowUpRight
+            } else {
+                IconName::Trash
+            }),
+            Some(confirm_label),
+            None,
+            confirm_tone,
+            CellBorder::Left,
+            false,
+            move |_, window, cx| on_confirm(window, cx),
+        ));
+    let card = modal_plate_card(px(460.0), accent_color, body, footer);
 
     modal_backdrop(card, on_backdrop_close)
 }
@@ -1010,17 +1672,7 @@ where
     F1: Fn(&mut Window, &mut App) + 'static,
     F2: Fn(&mut Window, &mut App) + 'static,
 {
-    div()
-        .w(width)
-        .p_5()
-        .bg(modal_bg())
-        .border_1()
-        .border_color(graphite_border())
-        .rounded(px(6.0))
-        .shadow_lg()
-        .flex()
-        .flex_col()
-        .gap_3()
+    let body = div()
         .child(
             div()
                 .text_size(TYPE_HEADING)
@@ -1037,30 +1689,45 @@ where
                     .child(err),
             )
         })
-        .child(labeled_input(input_label, input))
-        .child(
-            grid_modal_footer(GridTone::Graphite)
-                .child(grid_cell_button(
-                    "fileop-cancel",
-                    Some(IconName::X),
-                    Some("CANCEL"),
-                    None,
-                    GridTone::Graphite,
-                    CellBorder::Left,
-                    false,
-                    move |_, window, cx| on_cancel(window, cx),
-                ))
-                .child(grid_cell_button(
-                    "fileop-save",
-                    Some(confirm_icon),
-                    Some(confirm_label),
-                    None,
-                    GridTone::Primary,
-                    CellBorder::Left,
-                    false,
-                    move |_, window, cx| on_confirm(window, cx),
-                )),
-        )
+        .child(labeled_input(input_label, input));
+    let footer = grid_modal_footer(GridTone::Graphite)
+        .child(grid_cell_button(
+            "fileop-cancel",
+            Some(IconName::X),
+            Some("CANCEL"),
+            None,
+            GridTone::Graphite,
+            CellBorder::Left,
+            false,
+            move |_, window, cx| on_cancel(window, cx),
+        ))
+        .child(grid_cell_button(
+            "fileop-save",
+            Some(confirm_icon),
+            Some(confirm_label),
+            None,
+            GridTone::Primary,
+            CellBorder::Left,
+            false,
+            move |_, window, cx| on_confirm(window, cx),
+        ));
+    modal_plate_card(width, graphite_border(), body, footer)
+}
+
+/// Outer plate shell for in-window modals with padded body content and a flush full-bleed footer.
+fn modal_plate_card(width: Pixels, border_color: Hsla, body: Div, footer: Div) -> Div {
+    div()
+        .w(width)
+        .bg(modal_bg())
+        .border_1()
+        .border_color(border_color)
+        .rounded(px(6.0))
+        .shadow_lg()
+        .overflow_hidden()
+        .flex()
+        .flex_col()
+        .child(body.w_full().p_5().flex().flex_col().gap_3())
+        .child(footer.bg(graphite_bg()))
 }
 
 fn compact_input_row(label: &'static str, state: &Entity<InputState>) -> impl IntoElement {
@@ -1105,6 +1772,241 @@ fn compact_input_row_with_action(
                 .child(Input::new(state).appearance(false)),
         )
         .when_some(trailing_action, |el, action| el.child(action))
+}
+
+pub(crate) fn folder_paths_equal(a: &Path, b: &Path) -> bool {
+    let norm = |p: &Path| {
+        let s = p.to_string_lossy();
+        let trimmed = s.trim().trim_end_matches(['/', '\\']);
+        let base = if trimmed.is_empty() { s.trim() } else { trimmed };
+        if cfg!(windows) {
+            base.to_ascii_lowercase()
+        } else {
+            base.to_string()
+        }
+    };
+    norm(a) == norm(b)
+}
+
+pub(crate) fn format_folder_entry_label(folder: &Path, all: &[PathBuf]) -> String {
+    let leaf = folder
+        .file_name()
+        .and_then(|n| n.to_str())
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| folder.to_string_lossy().to_string());
+    let dup_count = all
+        .iter()
+        .filter(|other| {
+            let other_leaf = other
+                .file_name()
+                .and_then(|n| n.to_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| other.to_str().unwrap_or(""));
+            if cfg!(windows) {
+                other_leaf.eq_ignore_ascii_case(&leaf)
+            } else {
+                other_leaf == leaf
+            }
+        })
+        .count();
+    if dup_count > 1
+        && let Some(parent) = folder.parent()
+        && let Some(hint) = parent
+            .file_name()
+            .and_then(|n| n.to_str())
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                let s = parent.to_string_lossy();
+                let trimmed = s.trim_end_matches(['/', '\\']);
+                (!trimmed.is_empty()).then_some(trimmed).map(|_| "")
+            })
+    {
+        if !hint.is_empty() {
+            return format!("{leaf} ({hint})");
+        }
+        let drive = parent.to_string_lossy();
+        let clean = drive.trim_end_matches(['/', '\\']);
+        if !clean.is_empty() {
+            return format!("{leaf} ({clean})");
+        }
+    }
+    leaf
+}
+
+pub(crate) fn folder_dropdown_extra_height(default_dir: &Path, recent_folders: &[PathBuf]) -> f32 {
+    let extra_recent = recent_folders
+        .iter()
+        .filter(|f| !folder_paths_equal(f, default_dir))
+        .take(5)
+        .count();
+    let default_row_and_borders = 30.0;
+    if extra_recent == 0 {
+        default_row_and_borders + 25.0
+    } else {
+        default_row_and_borders + 21.0 + (extra_recent as f32) * 26.0
+    }
+}
+
+fn render_folder_dropdown_panel<F1>(
+    id_prefix: &'static str,
+    default_dir: &Path,
+    recent_folders: &[PathBuf],
+    current_dir_text: &str,
+    on_pick: F1,
+) -> AnyElement
+where
+    F1: Fn(PathBuf, &mut Window, &mut App) + Clone + 'static,
+{
+    let current_path = PathBuf::from(current_dir_text.trim());
+    let filtered_recent: Vec<PathBuf> = recent_folders
+        .iter()
+        .filter(|f| !folder_paths_equal(f, default_dir))
+        .take(5)
+        .cloned()
+        .collect();
+    let mut all_for_labels = Vec::with_capacity(1 + filtered_recent.len());
+    all_for_labels.push(default_dir.to_path_buf());
+    all_for_labels.extend(filtered_recent.iter().cloned());
+
+    let folder_row = |row_idx: usize,
+                      folder: PathBuf,
+                      role_hint: Option<&'static str>,
+                      label: String,
+                      selected: bool| {
+        let pick_cb = on_pick.clone();
+        let full_path = folder.to_string_lossy().to_string();
+        let tip_path = full_path.clone();
+        div()
+            .id((id_prefix, row_idx))
+            .h(px(26.0))
+            .px_2p5()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_2()
+            .cursor_pointer()
+            .bg(if selected {
+                paper_selected()
+            } else {
+                Hsla::transparent_black()
+            })
+            .hover(|s| s.bg(paper_hover()))
+            .tooltip(move |window, cx| {
+                gpui_kit::component::tooltip::Tooltip::new(tip_path.clone()).build(window, cx)
+            })
+            .on_click(move |_, window, cx| pick_cb(folder.clone(), window, cx))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1p5()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .w(px(12.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .when(selected, |el| {
+                                el.child(
+                                    Icon::new(IconName::Check)
+                                        .size(px(11.0))
+                                        .text_color(selenium_amber()),
+                                )
+                            }),
+                    )
+                    .child(
+                        div()
+                            .font_family(MONO_FONT)
+                            .text_size(TYPE_MICRO)
+                            .font_weight(if selected {
+                                FontWeight::MEDIUM
+                            } else {
+                                FontWeight::NORMAL
+                            })
+                            .text_color(silver_text())
+                            .child(label),
+                    )
+                    .when_some(role_hint, |el, tag| {
+                        el.child(
+                            div()
+                                .font_family(MONO_FONT)
+                                .text_size(px(9.5))
+                                .text_color(silver_muted().opacity(0.65))
+                                .child(tag),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .font_family(MONO_FONT)
+                    .text_size(TYPE_MICRO)
+                    .text_color(silver_muted())
+                    .text_right()
+                    .truncate()
+                    .child(full_path),
+            )
+    };
+
+    let def_label = format_folder_entry_label(default_dir, &all_for_labels);
+    let def_selected = folder_paths_equal(default_dir, &current_path);
+
+    div()
+        .id((id_prefix, 999usize))
+        .w_full()
+        .bg(context_menu_bg())
+        .border_b_1()
+        .border_l_1()
+        .border_r_1()
+        .border_color(graphite_border())
+        .flex()
+        .flex_col()
+        .overflow_hidden()
+        .child(folder_row(
+            0,
+            default_dir.to_path_buf(),
+            Some("DEFAULT"),
+            def_label,
+            def_selected,
+        ))
+        .when(filtered_recent.is_empty(), |el| {
+            el.child(div().w_full().h(px(1.0)).bg(graphite_border()))
+                .child(
+                    div()
+                        .h(px(24.0))
+                        .px_2p5()
+                        .flex()
+                        .items_center()
+                        .font_family(MONO_FONT)
+                        .text_size(TYPE_MICRO)
+                        .text_color(silver_muted().opacity(0.7))
+                        .child("Use the folder button to save to another location"),
+                )
+        })
+        .when(!filtered_recent.is_empty(), |el| {
+            el.child(div().w_full().h(px(1.0)).bg(graphite_border()))
+                .child(
+                    div()
+                        .h(px(20.0))
+                        .px_2p5()
+                        .bg(graphite_elevated())
+                        .flex()
+                        .items_center()
+                        .font_family(MONO_FONT)
+                        .text_size(px(9.0))
+                        .text_color(silver_muted())
+                        .child("RECENT LOCATIONS"),
+                )
+                .children(filtered_recent.into_iter().enumerate().map(|(i, folder)| {
+                    let lbl = format_folder_entry_label(&folder, &all_for_labels);
+                    let sel = folder_paths_equal(&folder, &current_path);
+                    folder_row(i + 1, folder, None, lbl, sel)
+                }))
+        })
+        .into_any_element()
 }
 
 pub(crate) fn labeled_input(label: &'static str, state: &Entity<InputState>) -> impl IntoElement {
@@ -1160,7 +2062,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::split_filename_extension;
+    use std::path::PathBuf;
+
+    use super::{folder_paths_equal, format_folder_entry_label, split_filename_extension};
 
     #[test]
     fn splits_standard_and_edge_case_extensions() {
@@ -1180,5 +2084,26 @@ mod tests {
             split_filename_extension("archive."),
             ("archive.".to_string(), None)
         );
+    }
+
+    #[test]
+    fn folder_paths_equal_and_disambiguation_handle_slashes_and_duplicate_leafs() {
+        let a = PathBuf::from(r"E:\Downloads\");
+        let b = PathBuf::from(r"e:\downloads");
+        assert!(folder_paths_equal(&a, &b));
+
+        let c_dl = PathBuf::from(r"C:\Users\alice\Downloads");
+        let e_dl = PathBuf::from(r"E:\Media\Downloads");
+        let iso = PathBuf::from(r"E:\ISOs");
+        let list = vec![c_dl.clone(), e_dl.clone(), iso.clone()];
+        assert_eq!(
+            format_folder_entry_label(&c_dl, &list),
+            "Downloads (alice)"
+        );
+        assert_eq!(
+            format_folder_entry_label(&e_dl, &list),
+            "Downloads (Media)"
+        );
+        assert_eq!(format_folder_entry_label(&iso, &list), "ISOs");
     }
 }

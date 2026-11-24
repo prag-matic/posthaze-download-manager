@@ -1,0 +1,11 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+<mask id="stroke0_8_123" fill="white">
+<path d="M23.3281 22.8503L23.3281 41.1497H39.5662L45.279 31.2548L39.7768 22.8503L23.3281 22.8503Z" fill-rule="evenodd" clip-rule="evenodd"/>
+</mask>
+<path d="M23.3281 22.8503L23.3281 41.1497H39.5662L45.279 31.2548L39.7768 22.8503L23.3281 22.8503Z" stroke-width="8.21602" stroke="white" mask="url(#stroke0_8_123)"/>
+<mask id="stroke1_8_123" fill="white">
+<path d="M17.6018 17.124L17.6018 46.876H42.8723L52 31.0664L42.8723 17.124L17.6018 17.124Z" fill-rule="evenodd" clip-rule="evenodd"/>
+</mask>
+<path d="M17.6018 17.124L17.6018 46.876H42.8723L52 31.0664L42.8723 17.124L17.6018 17.124Z" stroke-width="8.21602" stroke="white" mask="url(#stroke1_8_123)"/>
+<path d="M12 17.124H15.9835L15.9835 46.876H12L12 17.124Z" fill="white"/>
+</svg>

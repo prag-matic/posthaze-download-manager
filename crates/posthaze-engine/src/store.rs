@@ -395,7 +395,8 @@ impl DownloadStore {
         Ok(())
     }
 
-    /// Persists writer-acknowledged `Segment` cursors and updates the `Download` state and byte count.
+    /// Persists writer-acknowledged `Segment` cursors (upserting any dynamically split
+    /// `Segment`s) and updates the `Download` state and byte count.
     ///
     /// Returns the total `bytes_downloaded` summed from persisted `Segment` rows.
     pub(crate) async fn finalize_writer_checkpoint(
@@ -404,9 +405,12 @@ impl DownloadStore {
         state: DownloadState,
         error_message: Option<&str>,
         writer_cursors: &HashMap<usize, u64>,
+        split_segments: &[SegmentCheckpoint],
     ) -> Result<u64, EngineError> {
         let mut tx = self.pool.begin().await?;
         let now = unix_now();
+
+        upsert_segments_in_tx(&mut tx, id, split_segments).await?;
 
         for (&segment_index, &cursor) in writer_cursors {
             sqlx::query(
@@ -490,43 +494,6 @@ impl DownloadStore {
         Ok(())
     }
 
-    /// Atomically updates the bisected `Segment`'s `end_offset` and inserts the stolen `Segment`.
-    pub(crate) async fn split_segment(
-        &self,
-        id: &DownloadId,
-        target_index: usize,
-        new_end: u64,
-        stolen_index: usize,
-        stolen_start: u64,
-        stolen_end: u64,
-    ) -> Result<(), EngineError> {
-        let mut tx = self.pool.begin().await?;
-        sqlx::query(
-            "UPDATE segments SET end_offset = ? WHERE download_id = ? AND segment_index = ?",
-        )
-        .bind(new_end as i64)
-        .bind(id.as_str())
-        .bind(target_index as i64)
-        .execute(&mut *tx)
-        .await?;
-
-        sqlx::query(
-            "INSERT INTO segments (
-                download_id, segment_index, start_offset, cursor_offset, end_offset, completed
-             ) VALUES (?, ?, ?, ?, ?, 0)",
-        )
-        .bind(id.as_str())
-        .bind(stolen_index as i64)
-        .bind(stolen_start as i64)
-        .bind(stolen_start as i64)
-        .bind(stolen_end as i64)
-        .execute(&mut *tx)
-        .await?;
-
-        tx.commit().await?;
-        Ok(())
-    }
-
     /// Reconciles stale `Queued`, `Active`, and `Probing` rows left behind by an ungraceful process exit.
     pub(crate) async fn reconcile_crashed_downloads(&self) -> Result<(), EngineError> {
         let now = unix_now();
@@ -559,17 +526,21 @@ impl DownloadStore {
         Ok(())
     }
 
-    /// Persists a writer-acknowledged `Checkpoint` without allowing `cursor_offset` to regress.
+    /// Persists a writer-acknowledged `Checkpoint` (upserting any dynamically split `Segment`s)
+    /// without allowing `cursor_offset` to regress.
     pub(crate) async fn apply_writer_checkpoint(
         &self,
         id: &DownloadId,
         segment_cursors: &[(usize, u64)],
+        split_segments: &[SegmentCheckpoint],
     ) -> Result<(), EngineError> {
-        if segment_cursors.is_empty() {
+        if segment_cursors.is_empty() && split_segments.is_empty() {
             return Ok(());
         }
 
         let mut tx = self.pool.begin().await?;
+        upsert_segments_in_tx(&mut tx, id, split_segments).await?;
+
         for &(segment_index, cursor) in segment_cursors {
             sqlx::query(
                 "UPDATE segments
@@ -659,6 +630,250 @@ impl DownloadStore {
         Ok(counts)
     }
 
+    /// Finds the highest-priority non-cancelled `DownloadRecord` matching `url` (`url` or
+    /// `final_url`), prioritizing ongoing/paused transfers over historical completed entries.
+    pub(crate) async fn find_download_by_url(
+        &self,
+        url: &str,
+    ) -> Result<Option<DownloadRecord>, EngineError> {
+        let trimmed = url.trim();
+        let no_frag = trimmed.split('#').next().unwrap_or(trimmed);
+        let sql = format!(
+            "SELECT {DOWNLOAD_SELECT_COLUMNS}
+             FROM downloads
+             WHERE (
+                url = ? OR url = ? OR url LIKE ? OR
+                final_url = ? OR final_url = ? OR final_url LIKE ?
+             ) AND state != ?
+             ORDER BY
+                CASE state
+                    WHEN 'Active' THEN 0
+                    WHEN 'Probing' THEN 0
+                    WHEN 'Queued' THEN 1
+                    WHEN 'Paused' THEN 2
+                    WHEN 'Failed' THEN 3
+                    ELSE 4
+                END,
+                updated_at DESC,
+                rowid DESC
+             LIMIT 1"
+        );
+        let frag_like = format!("{no_frag}#%");
+        let row = sqlx::query(&sql)
+            .bind(trimmed)
+            .bind(no_frag)
+            .bind(&frag_like)
+            .bind(trimmed)
+            .bind(no_frag)
+            .bind(&frag_like)
+            .bind(DownloadState::Cancelled.as_str())
+            .fetch_optional(&self.pool)
+            .await?;
+        row.map(row_to_record).transpose()
+    }
+
+    /// Finds the highest-priority non-cancelled `DownloadRecord` matching `filename` (ignoring
+    /// ` (N)` disambiguation counters) with the same `content_length` (or same `output_dir` when
+    /// `content_length` is unknown), catching rotating-token CDN URLs and auto-renamed duplicates.
+    pub(crate) async fn find_duplicate_by_file(
+        &self,
+        filename: &str,
+        content_length: Option<u64>,
+        output_dir: Option<&Path>,
+    ) -> Result<Option<DownloadRecord>, EngineError> {
+        let target_key = crate::model::canonical_filename_key(filename);
+        if target_key.is_empty() {
+            return Ok(None);
+        }
+        let target_dir_norm = output_dir.map(normalize_folder_path);
+        let sql = format!(
+            "SELECT {DOWNLOAD_SELECT_COLUMNS}
+             FROM downloads
+             WHERE state != ?
+             ORDER BY
+                CASE state
+                    WHEN 'Active' THEN 0
+                    WHEN 'Probing' THEN 0
+                    WHEN 'Queued' THEN 1
+                    WHEN 'Paused' THEN 2
+                    WHEN 'Failed' THEN 3
+                    ELSE 4
+                END,
+                updated_at DESC,
+                rowid DESC"
+        );
+        let rows = sqlx::query(&sql)
+            .bind(DownloadState::Cancelled.as_str())
+            .fetch_all(&self.pool)
+            .await?;
+
+        for row in rows {
+            let rec = row_to_record(row)?;
+            let Some(rec_name) = rec
+                .output_path
+                .as_deref()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_str())
+                .filter(|s| !s.is_empty())
+            else {
+                continue;
+            };
+            if crate::model::canonical_filename_key(rec_name) != target_key {
+                continue;
+            }
+            let size_match = match (content_length.filter(|&v| v > 0), rec.content_length) {
+                (Some(a), Some(b)) => a == b,
+                _ => match (&target_dir_norm, rec.output_dir.as_deref()) {
+                    (Some(dir_a), Some(dir_b)) => {
+                        let norm_b = normalize_folder_path(dir_b);
+                        if cfg!(windows) {
+                            dir_a.eq_ignore_ascii_case(&norm_b)
+                        } else {
+                            *dir_a == norm_b
+                        }
+                    }
+                    _ => false,
+                },
+            };
+            if size_match {
+                return Ok(Some(rec));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Lists output paths currently claimed by ongoing, queued, paused, or resumable-failed
+    /// `Download`s (excluding `exclude_id`) so new transfers never collide on `.part` files.
+    pub(crate) async fn list_reserved_output_paths(
+        &self,
+        exclude_id: Option<&DownloadId>,
+    ) -> Result<Vec<PathBuf>, EngineError> {
+        let rows = if let Some(id) = exclude_id {
+            sqlx::query(
+                "SELECT output_path FROM downloads
+                 WHERE id != ?
+                   AND output_path IS NOT NULL
+                   AND (state IN (?, ?, ?, ?)
+                        OR (state = ? AND part_path IS NOT NULL))",
+            )
+            .bind(id.as_str())
+            .bind(DownloadState::Queued.as_str())
+            .bind(DownloadState::Probing.as_str())
+            .bind(DownloadState::Active.as_str())
+            .bind(DownloadState::Paused.as_str())
+            .bind(DownloadState::Failed.as_str())
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                "SELECT output_path FROM downloads
+                 WHERE output_path IS NOT NULL
+                   AND (state IN (?, ?, ?, ?)
+                        OR (state = ? AND part_path IS NOT NULL))",
+            )
+            .bind(DownloadState::Queued.as_str())
+            .bind(DownloadState::Probing.as_str())
+            .bind(DownloadState::Active.as_str())
+            .bind(DownloadState::Paused.as_str())
+            .bind(DownloadState::Failed.as_str())
+            .fetch_all(&self.pool)
+            .await?
+        };
+        Ok(rows
+            .into_iter()
+            .filter_map(|r| r.try_get::<String, _>("output_path").ok())
+            .map(PathBuf::from)
+            .collect())
+    }
+
+    /// Records `dir` in `folder_history` (normalized & deduplicated) and prunes older entries
+    /// beyond the 10 most recent.
+    pub(crate) async fn record_folder_history(&self, dir: &Path) -> Result<(), EngineError> {
+        let dir_str = normalize_folder_path(dir);
+        if dir_str.is_empty() {
+            return Ok(());
+        }
+        let now = unix_now();
+        let mut tx = self.pool.begin().await?;
+        if cfg!(windows) {
+            sqlx::query("DELETE FROM folder_history WHERE LOWER(path) = LOWER(?) AND path != ?")
+                .bind(&dir_str)
+                .bind(&dir_str)
+                .execute(&mut *tx)
+                .await?;
+        }
+        sqlx::query(
+            "INSERT INTO folder_history (path, last_used_at) VALUES (?, ?)
+             ON CONFLICT(path) DO UPDATE SET last_used_at = excluded.last_used_at",
+        )
+        .bind(&dir_str)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            "DELETE FROM folder_history
+             WHERE path NOT IN (
+                 SELECT path FROM folder_history ORDER BY last_used_at DESC LIMIT 10
+             )",
+        )
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Lists up to `limit` most recently used existing destination folders and prunes missing ones.
+    pub(crate) async fn list_recent_folders(&self, limit: usize) -> Result<Vec<PathBuf>, EngineError> {
+        let rows = sqlx::query(
+            "SELECT path FROM folder_history ORDER BY last_used_at DESC, rowid DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let raw_paths: Vec<String> = rows
+            .into_iter()
+            .filter_map(|r| r.try_get::<String, _>("path").ok())
+            .collect();
+        if raw_paths.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let (valid, stale) = tokio::task::spawn_blocking(move || {
+            let mut valid = Vec::with_capacity(limit.max(1));
+            let mut stale = Vec::new();
+            for p in raw_paths {
+                let pb = PathBuf::from(&p);
+                if pb.is_dir() {
+                    if valid.len() < limit.max(1) {
+                        valid.push(pb);
+                    }
+                } else {
+                    stale.push(p);
+                }
+            }
+            (valid, stale)
+        })
+        .await
+        .map_err(|e| EngineError::Writer(format!("folder history check task failed: {e}")))?;
+
+        for dead in stale {
+            let _ = sqlx::query("DELETE FROM folder_history WHERE path = ?")
+                .bind(dead)
+                .execute(&self.pool)
+                .await;
+        }
+        Ok(valid)
+    }
+
+    /// Removes all saved entries from `folder_history`.
+    pub(crate) async fn clear_folder_history(&self) -> Result<(), EngineError> {
+        sqlx::query("DELETE FROM folder_history")
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// Fetches a single `DownloadRecord` by `DownloadId`.
     pub(crate) async fn get_download(
         &self,
@@ -706,7 +921,7 @@ impl DownloadStore {
                     proxy_mode, proxy_url, download_speed_limit_kib, auto_categorize_folders,
                     collision_policy, delete_action_default, auto_retry_count,
                     completion_cmd_enabled, completion_cmd_path, completion_cmd_args,
-                    notify_on_added, notify_on_completed, notify_on_failed, notify_only_inactive,
+                    notify_on_added, notify_on_started, notify_on_completed, notify_on_failed, notify_only_inactive,
                     ui_click_row_opens_inspector, ui_show_add_paused, ui_zoom_percent, ui_theme,
                     ui_table_density, ui_show_speed_col, ui_show_eta_col, ui_show_segs_col,
                     ui_show_toolbar_labels, ui_show_scrollbar_minimap,
@@ -746,6 +961,7 @@ impl DownloadStore {
         let completion_cmd_path: String = row.try_get("completion_cmd_path")?;
         let completion_cmd_args: String = row.try_get("completion_cmd_args")?;
         let notify_on_added = row.try_get::<i64, _>("notify_on_added")? != 0;
+        let notify_on_started = row.try_get::<i64, _>("notify_on_started")? != 0;
         let notify_on_completed = row.try_get::<i64, _>("notify_on_completed")? != 0;
         let notify_on_failed = row.try_get::<i64, _>("notify_on_failed")? != 0;
         let notify_only_inactive = row.try_get::<i64, _>("notify_only_inactive")? != 0;
@@ -796,6 +1012,7 @@ impl DownloadStore {
             completion_cmd_path,
             completion_cmd_args,
             notify_on_added,
+            notify_on_started,
             notify_on_completed,
             notify_on_failed,
             notify_only_inactive,
@@ -838,6 +1055,7 @@ impl DownloadStore {
                  completion_cmd_path = ?,
                  completion_cmd_args = ?,
                  notify_on_added = ?,
+                 notify_on_started = ?,
                  notify_on_completed = ?,
                  notify_on_failed = ?,
                  notify_only_inactive = ?,
@@ -875,6 +1093,7 @@ impl DownloadStore {
         .bind(&settings.completion_cmd_path)
         .bind(&settings.completion_cmd_args)
         .bind(i64::from(settings.notify_on_added))
+        .bind(i64::from(settings.notify_on_started))
         .bind(i64::from(settings.notify_on_completed))
         .bind(i64::from(settings.notify_on_failed))
         .bind(i64::from(settings.notify_only_inactive))
@@ -965,6 +1184,53 @@ impl DownloadStore {
         tx.commit().await?;
         Ok(())
     }
+}
+
+async fn upsert_segments_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    id: &DownloadId,
+    segments: &[SegmentCheckpoint],
+) -> Result<(), EngineError> {
+    for seg in segments {
+        sqlx::query(
+            "INSERT INTO segments (
+                download_id, segment_index, start_offset, cursor_offset, end_offset, completed
+             ) VALUES (?, ?, ?, ?, ?, ?)
+             ON CONFLICT(download_id, segment_index) DO UPDATE SET
+                end_offset = excluded.end_offset,
+                cursor_offset = MAX(segments.cursor_offset, excluded.cursor_offset),
+                completed = CASE
+                    WHEN excluded.end_offset IS NOT NULL
+                         AND MAX(segments.cursor_offset, excluded.cursor_offset) >= excluded.end_offset
+                    THEN 1
+                    ELSE MAX(segments.completed, excluded.completed)
+                END",
+        )
+        .bind(id.as_str())
+        .bind(seg.segment_index as i64)
+        .bind(seg.start as i64)
+        .bind(seg.cursor as i64)
+        .bind(seg.end.map(|v| v as i64))
+        .bind(i64::from(seg.completed))
+        .execute(&mut **tx)
+        .await?;
+    }
+    Ok(())
+}
+
+fn normalize_folder_path(dir: &Path) -> String {
+    let raw = dir.to_string_lossy().trim().to_string();
+    if raw.is_empty() {
+        return String::new();
+    }
+    let bytes = raw.as_bytes();
+    if bytes.len() == 3 && bytes[1] == b':' && (bytes[2] == b'\\' || bytes[2] == b'/') {
+        return format!("{}:\\", raw.chars().next().unwrap_or('C'));
+    }
+    if raw == "/" || raw == "\\" {
+        return raw;
+    }
+    raw.trim_end_matches(['/', '\\']).to_string()
 }
 
 fn row_to_record(row: SqliteRow) -> Result<DownloadRecord, EngineError> {
@@ -1065,6 +1331,7 @@ mod tests {
             supports_ranges: true,
             etag: None,
             last_modified: None,
+            server_digest: None,
         };
         store
             .record_probed_and_activate(

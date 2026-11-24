@@ -7,7 +7,9 @@ use gpui_kit::component::input::InputState;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use posthaze_engine::{
-    CollisionPolicy, DownloadRequest, PreflightInfo, Settings, resolve_target_path,
+    CollisionPolicy, DownloadId, DownloadRequest, DownloadState, PreflightInfo, Settings,
+    disambiguate_output_path_with_reserved, resolve_target_path,
+    resolve_target_path_with_reserved,
 };
 
 use crate::PosthazeApp;
@@ -15,10 +17,12 @@ use crate::assets::BRAND_LOGO_SVG;
 use crate::bridge::{EngineBridge, EngineCommand};
 use crate::curl_parser::{find_header_value, set_or_remove_header};
 use crate::modals::{
-    ConfirmAction, PreflightModalState, PreflightTab, render_confirm_modal, render_preflight_card,
+    ConfirmAction, DuplicateBannerAction, DuplicateMatch, PreflightModalState, PreflightTab,
+    folder_dropdown_extra_height, render_confirm_modal, render_preflight_card,
     split_filename_extension,
 };
-use crate::platform_hooks::spawn_windows_toast;
+use crate::notifications::ToastRequest;
+use crate::platform_hooks::open_file_in_shell;
 use crate::theme::*;
 
 /// Optional browser-capture metadata and transfer hints for [`PreflightWindow`].
@@ -28,6 +32,10 @@ pub(crate) struct PreflightHints {
     pub(crate) total_bytes: Option<u64>,
     pub(crate) single_stream: bool,
     pub(crate) skip_probe: bool,
+    #[allow(dead_code)]
+    pub(crate) original_url: Option<String>,
+    #[allow(dead_code)]
+    pub(crate) source_page_url: Option<String>,
 }
 
 /// Standalone pre-flight probe & confirmation window for a single `Download` URL.
@@ -42,6 +50,7 @@ pub(crate) struct PreflightWindow {
     main_app: WeakEntity<PosthazeApp>,
     _appearance_subscription: Subscription,
     probe_generation: u64,
+    confirm_in_flight: bool,
 }
 
 impl PreflightWindow {
@@ -58,7 +67,7 @@ impl PreflightWindow {
         cascade_idx: usize,
         cx: &mut App,
     ) {
-        let mut bounds = Bounds::centered(None, size(px(460.0), px(198.0)), cx);
+        let mut bounds = Bounds::centered(None, size(px(460.0), px(216.0)), cx);
         let cascade = ((cascade_idx % 6) as f32) * 28.0;
         bounds.origin.x += px(cascade);
         bounds.origin.y += px(cascade);
@@ -161,6 +170,7 @@ impl PreflightWindow {
             main_app,
             _appearance_subscription,
             probe_generation: 0,
+            confirm_in_flight: false,
         };
         if this.hints.skip_probe {
             let suggested_filename = this
@@ -187,6 +197,7 @@ impl PreflightWindow {
                 supports_ranges: false,
                 etag: None,
                 last_modified: None,
+                server_digest: None,
             };
             this.apply_probe_info(info, headers, window, cx);
         } else {
@@ -253,6 +264,10 @@ impl PreflightWindow {
         } else {
             1
         };
+        let original_url = info.original_url.clone();
+        let final_url = info.final_url.clone();
+        let suggested_name = info.suggested_filename.clone();
+        let probed_length = info.content_length;
         self.state = PreflightModalState::Resolved {
             info: Box::new(info),
             filename_input,
@@ -265,7 +280,86 @@ impl PreflightWindow {
             extension_locked,
             locked_extension: probed_ext,
             workers,
+            default_dir: Box::new(self.settings.default_output_dir.clone()),
+            dir_dropdown_open: false,
+            duplicate_match: None,
+            recent_folders: Vec::new(),
         };
+        self.sync_height(window);
+
+        let generation = self.probe_generation;
+        let window_handle = window.window_handle();
+        let ctx_rx = self.bridge.preflight_context(
+            vec![final_url, original_url],
+            Some(suggested_name),
+            probed_length,
+            Some(base_dir),
+            6,
+        );
+
+        cx.spawn(async move |this, cx| {
+            let ctx_res = ctx_rx.await;
+            let _ = cx.update_window(window_handle, |_, window, cx| {
+                let _ = this.update(cx, |win, cx| {
+                    if win.probe_generation != generation {
+                        return;
+                    }
+                    let Ok(Ok(ctx_data)) = ctx_res else {
+                        return;
+                    };
+                    if let PreflightModalState::Resolved {
+                        duplicate_match,
+                        recent_folders,
+                        ..
+                    } = &mut win.state
+                    {
+                        *duplicate_match = ctx_data.duplicate.map(|rec| {
+                            Box::new(DuplicateMatch {
+                                filename: crate::view_model::derive_display_filename(&rec),
+                                id: rec.id,
+                                state: rec.state,
+                                output_path: rec.output_path,
+                                file_exists: ctx_data.duplicate_file_exists,
+                                bytes_downloaded: rec.bytes_downloaded,
+                                content_length: rec.content_length,
+                            })
+                        });
+                        *recent_folders = ctx_data.recent_folders;
+                        win.sync_height(window);
+                        cx.notify();
+                    }
+                });
+            });
+        })
+        .detach();
+    }
+
+    fn sync_height(&self, window: &mut Window) {
+        let target_h = match &self.state {
+            PreflightModalState::Probing { .. } => 216.0,
+            PreflightModalState::Error { .. } => 244.0,
+            PreflightModalState::Resolved {
+                active_tab,
+                default_dir,
+                dir_dropdown_open,
+                duplicate_match,
+                recent_folders,
+                ..
+            } => match active_tab {
+                PreflightTab::General => {
+                    let mut h = 216.0;
+                    if *dir_dropdown_open {
+                        h += folder_dropdown_extra_height(default_dir.as_path(), recent_folders);
+                    }
+                    if duplicate_match.is_some() {
+                        h += 46.0;
+                    }
+                    h
+                }
+                PreflightTab::Options => 272.0,
+            },
+        };
+        window.resize(size(px(460.0), px(target_h)));
     }
 
     fn begin_probe(
@@ -281,6 +375,7 @@ impl PreflightWindow {
             url: url.clone(),
             headers: headers.clone(),
         };
+        self.sync_height(window);
         cx.notify();
 
         let out_dir = self.settings.default_output_dir.clone();
@@ -305,6 +400,7 @@ impl PreflightWindow {
                                 headers,
                                 message: err.to_string(),
                             };
+                            win.sync_height(window);
                         }
                         Err(_) => {
                             win.state = PreflightModalState::Error {
@@ -312,6 +408,7 @@ impl PreflightWindow {
                                 headers,
                                 message: "Probe worker channel closed unexpectedly.".to_string(),
                             };
+                            win.sync_height(window);
                         }
                     }
                     cx.notify();
@@ -327,6 +424,9 @@ impl PreflightWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.confirm_in_flight {
+            return;
+        }
         let PreflightModalState::Resolved {
             info,
             filename_input,
@@ -368,15 +468,6 @@ impl PreflightWindow {
         };
 
         let mut req = DownloadRequest::new(info.original_url.clone(), &out_dir);
-        let mut ask_overwrite_name: Option<String> = None;
-        if !filename.is_empty() {
-            let resolution =
-                resolve_target_path(&out_dir, &filename, self.settings.collision_policy);
-            if resolution.needs_overwrite_prompt {
-                ask_overwrite_name = Some(filename.clone());
-            }
-            req.output_path = Some(resolution.path);
-        }
         req.max_workers = if info.supports_ranges && !self.hints.single_stream && !self.hints.skip_probe {
             *workers
         } else {
@@ -386,44 +477,170 @@ impl PreflightWindow {
         req.headers = final_headers;
         req.known_content_length = info.content_length;
         req.skip_probe = self.hints.skip_probe;
-
-        if let Some(collision_name) = ask_overwrite_name {
-            self.overwrite_confirm = Some(ConfirmAction::OverwriteCollision {
-                request: Box::new(req),
-                start_immediately,
-                filename: collision_name,
-            });
-            cx.notify();
-            return;
+        if !self.hints.skip_probe {
+            req.preflight_probe = Some(info.as_ref().clone());
         }
 
-        if self.settings.notify_on_added {
-            let allow_notify = !self.settings.notify_only_inactive || !window.is_window_active();
-            if allow_notify {
-                spawn_windows_toast(
-                    "Posthaze — Download Added",
-                    &format!(
-                        "Queued {}",
-                        if filename.is_empty() {
-                            "download"
-                        } else {
-                            &filename
-                        }
-                    ),
-                );
+        let target_name = if filename.is_empty() {
+            info.suggested_filename.clone()
+        } else {
+            filename.clone()
+        };
+        let urls = vec![info.final_url.clone(), info.original_url.clone()];
+        let generation = self.probe_generation;
+        let window_handle = window.window_handle();
+        self.confirm_in_flight = true;
+        let conflict_rx = self.bridge.check_confirm_conflicts(
+            urls,
+            Some(target_name.clone()),
+            info.content_length,
+            Some(out_dir.clone()),
+        );
+
+        cx.spawn(async move |this, cx| {
+            let conflict = conflict_rx.await.ok().and_then(Result::ok);
+            let _ = cx.update_window(window_handle, |_, window, cx| {
+                let _ = this.update(cx, |win, cx| {
+                    win.confirm_in_flight = false;
+                    if win.probe_generation != generation {
+                        return;
+                    }
+                    let reserved = conflict
+                        .as_ref()
+                        .map(|c| c.reserved_paths.as_slice())
+                        .unwrap_or(&[]);
+                    let dup_ongoing = conflict
+                        .as_ref()
+                        .and_then(|c| c.duplicate.as_ref())
+                        .filter(|rec| {
+                            matches!(
+                                rec.state,
+                                DownloadState::Active
+                                    | DownloadState::Probing
+                                    | DownloadState::Queued
+                                    | DownloadState::Paused
+                            )
+                        });
+
+                    let resolution = resolve_target_path_with_reserved(
+                        &out_dir,
+                        &target_name,
+                        win.settings.collision_policy,
+                        reserved,
+                    );
+                    if !filename.is_empty() {
+                        req.output_path = Some(resolution.path.clone());
+                    }
+
+                    if let Some(dup) = dup_ongoing {
+                        let disambiguated_path = disambiguate_output_path_with_reserved(
+                            &out_dir,
+                            &target_name,
+                            reserved,
+                        );
+                        win.overwrite_confirm = Some(ConfirmAction::DuplicateOngoing {
+                            existing_id: dup.id.clone(),
+                            existing_state: dup.state,
+                            existing_filename: crate::view_model::derive_display_filename(dup),
+                            pending_request: Box::new(req),
+                            start_immediately,
+                            disambiguated_path,
+                        });
+                        cx.notify();
+                        return;
+                    }
+
+                    if resolution.needs_overwrite_prompt && !filename.is_empty() {
+                        win.overwrite_confirm = Some(ConfirmAction::OverwriteCollision {
+                            request: Box::new(req),
+                            start_immediately,
+                            filename,
+                        });
+                        cx.notify();
+                        return;
+                    }
+
+                    win.dispatch_and_close(
+                        req,
+                        start_immediately,
+                        Some(filename),
+                        window,
+                        cx,
+                    );
+                });
+            });
+        })
+        .detach();
+    }
+
+    fn handle_duplicate_action(
+        &self,
+        action: DuplicateBannerAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match action {
+            DuplicateBannerAction::OpenFile(path) => {
+                let bridge = self.bridge.clone();
+                bridge.runtime().spawn_blocking(move || {
+                    let _ = open_file_in_shell(&path);
+                });
+                window.remove_window();
+            }
+            DuplicateBannerAction::ShowExisting(id) => {
+                self.focus_existing_in_main(id, false, cx);
+                window.remove_window();
+            }
+            DuplicateBannerAction::ResumeExisting(id) => {
+                self.focus_existing_in_main(id, true, cx);
+                window.remove_window();
             }
         }
+    }
 
-        self.dispatch_and_close(req, start_immediately, window, cx);
+    fn focus_existing_in_main(&self, id: DownloadId, resume: bool, cx: &mut App) {
+        let main_win = self.main_window;
+        let main_app = self.main_app.clone();
+        let _ = main_win.update(cx, |_, mw, cx| {
+            let _ = main_app.update(cx, |app, cx| {
+                app.select_and_reveal_download(id.clone(), cx);
+                if resume {
+                    app.resume_download(id.clone(), cx);
+                }
+                cx.notify();
+            });
+            mw.activate_window();
+        });
     }
 
     fn dispatch_and_close(
         &self,
         req: DownloadRequest,
         start_immediately: bool,
+        filename_hint: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let allow_added_toast =
+            self.settings.notify_on_added && (!self.settings.notify_only_inactive || !window.is_window_active());
+        let resolved_name = filename_hint
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| {
+                req.output_path
+                    .as_deref()
+                    .and_then(|p| p.file_name())
+                    .and_then(|n| n.to_str())
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| "Download".to_string());
+        let output_dir = req
+            .output_path
+            .as_deref()
+            .and_then(|p| p.parent())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| req.output_dir.clone());
+        let total_bytes = req.known_content_length;
+
         let cmd = if start_immediately {
             EngineCommand::Start { request: req }
         } else {
@@ -435,6 +652,14 @@ impl PreflightWindow {
             if let Ok(Ok(res)) = rx.await {
                 let created_id = res.created_id;
                 let _ = main_app.update(cx, |app, cx| {
+                    if allow_added_toast {
+                        app.notify_toast(ToastRequest::Queued {
+                            id: created_id.clone(),
+                            filename: resolved_name,
+                            output_dir: Some(output_dir),
+                            total_bytes,
+                        });
+                    }
                     if let Some(id) = created_id
                         && (start_immediately || app.queue.selected_id.is_none())
                     {
@@ -465,10 +690,17 @@ impl PreflightWindow {
                 {
                     let chosen_str = chosen.to_string_lossy().to_string();
                     let _ = this.update(cx, |win, cx| {
-                        if let PreflightModalState::Resolved { dir_input, .. } = &win.state {
+                        if let PreflightModalState::Resolved {
+                            dir_input,
+                            dir_dropdown_open,
+                            ..
+                        } = &mut win.state
+                        {
+                            *dir_dropdown_open = false;
                             dir_input.update(cx, |st, cx| {
                                 st.set_value(chosen_str, window, cx);
                             });
+                            win.sync_height(window);
                             cx.notify();
                         }
                     });
@@ -520,15 +752,16 @@ impl PreflightWindow {
     }
 
     fn select_tab(&mut self, tab: PreflightTab, window: &mut Window, cx: &mut Context<Self>) {
-        if let PreflightModalState::Resolved { active_tab, .. } = &mut self.state
+        if let PreflightModalState::Resolved {
+            active_tab,
+            dir_dropdown_open,
+            ..
+        } = &mut self.state
             && *active_tab != tab
         {
             *active_tab = tab;
-            let target_h = match tab {
-                PreflightTab::General => 198.0,
-                PreflightTab::Options => 264.0,
-            };
-            window.resize(size(px(460.0), px(target_h)));
+            *dir_dropdown_open = false;
+            self.sync_height(window);
             cx.notify();
         }
     }
@@ -561,8 +794,7 @@ impl PreflightWindow {
                             .child(
                                 svg()
                                     .path(BRAND_LOGO_SVG)
-                                    .w(px(15.0))
-                                    .h(px(13.0))
+                                    .size(px(22.0))
                                     .text_color(selenium_amber()),
                             )
                             .child(
@@ -682,9 +914,13 @@ impl Render for PreflightWindow {
         let entity_edit = cx.entity().clone();
         let entity_browse_dir = cx.entity().clone();
         let entity_ext_lock = cx.entity().clone();
+        let entity_toggle_dropdown = cx.entity().clone();
+        let entity_recent_dir = cx.entity().clone();
+        let entity_open_dup = cx.entity().clone();
 
         let card = render_preflight_card(
             &self.state,
+            cx,
             show_add_paused,
             |window, _| {
                 window.remove_window();
@@ -726,6 +962,13 @@ impl Render for PreflightWindow {
             },
             move |window, cx| {
                 entity_browse_dir.update(cx, |win, cx| {
+                    if let PreflightModalState::Resolved {
+                        dir_dropdown_open, ..
+                    } = &mut win.state
+                    {
+                        *dir_dropdown_open = false;
+                        win.sync_height(window);
+                    }
                     win.browse_destination_dir(window, cx);
                 });
             },
@@ -734,11 +977,47 @@ impl Render for PreflightWindow {
                     win.toggle_extension_lock(window, cx);
                 });
             },
+            move |window, cx| {
+                entity_toggle_dropdown.update(cx, |win, cx| {
+                    if let PreflightModalState::Resolved {
+                        dir_dropdown_open, ..
+                    } = &mut win.state
+                    {
+                        *dir_dropdown_open = !*dir_dropdown_open;
+                        win.sync_height(window);
+                        cx.notify();
+                    }
+                });
+            },
+            move |folder, window, cx| {
+                entity_recent_dir.update(cx, |win, cx| {
+                    if let PreflightModalState::Resolved {
+                        dir_input,
+                        dir_dropdown_open,
+                        ..
+                    } = &mut win.state
+                    {
+                        let value = folder.to_string_lossy().to_string();
+                        *dir_dropdown_open = false;
+                        dir_input.update(cx, |st, cx| {
+                            st.set_value(value, window, cx);
+                        });
+                        win.sync_height(window);
+                        cx.notify();
+                    }
+                });
+            },
+            move |action, window, cx| {
+                entity_open_dup.update(cx, |win, cx| {
+                    win.handle_duplicate_action(action, window, cx);
+                });
+            },
         );
 
         let overwrite_overlay = self.overwrite_confirm.as_ref().map(|action| {
             let e_cancel = cx.entity().clone();
             let e_confirm = cx.entity().clone();
+            let e_alt = cx.entity().clone();
             render_confirm_modal(
                 action,
                 move |_, cx| {
@@ -749,13 +1028,59 @@ impl Render for PreflightWindow {
                 },
                 move |window, cx| {
                     e_confirm.update(cx, |win, cx| {
-                        if let Some(ConfirmAction::OverwriteCollision {
-                            request,
+                        match win.overwrite_confirm.take() {
+                            Some(ConfirmAction::OverwriteCollision {
+                                request,
+                                start_immediately,
+                                filename,
+                            }) => {
+                                win.dispatch_and_close(
+                                    *request,
+                                    start_immediately,
+                                    Some(filename),
+                                    window,
+                                    cx,
+                                );
+                            }
+                            Some(ConfirmAction::DuplicateOngoing {
+                                existing_id,
+                                existing_state,
+                                ..
+                            }) => {
+                                win.focus_existing_in_main(
+                                    existing_id,
+                                    existing_state == DownloadState::Paused,
+                                    cx,
+                                );
+                                window.remove_window();
+                            }
+                            _ => {}
+                        }
+                    });
+                },
+                |_, _, _| {},
+                move |window, cx| {
+                    e_alt.update(cx, |win, cx| {
+                        if let Some(ConfirmAction::DuplicateOngoing {
+                            mut pending_request,
                             start_immediately,
+                            disambiguated_path,
                             ..
                         }) = win.overwrite_confirm.take()
                         {
-                            win.dispatch_and_close(*request, start_immediately, window, cx);
+                            let fname = disambiguated_path
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("download")
+                                .to_string();
+                            pending_request.output_path = Some(disambiguated_path);
+                            win.dispatch_and_close(
+                                *pending_request,
+                                start_immediately,
+                                Some(fname),
+                                window,
+                                cx,
+                            );
                         }
                     });
                 },
@@ -774,19 +1099,53 @@ impl Render for PreflightWindow {
                 if key == "escape" {
                     if win.overwrite_confirm.take().is_some() {
                         cx.notify();
+                    } else if let PreflightModalState::Resolved {
+                        dir_dropdown_open, ..
+                    } = &mut win.state
+                        && *dir_dropdown_open
+                    {
+                        *dir_dropdown_open = false;
+                        win.sync_height(window);
+                        cx.notify();
                     } else {
                         window.remove_window();
                     }
                 } else if key == "enter" {
-                    if let Some(ConfirmAction::OverwriteCollision {
-                        request,
-                        start_immediately,
-                        ..
-                    }) = win.overwrite_confirm.take()
-                    {
-                        win.dispatch_and_close(*request, start_immediately, window, cx);
-                    } else if matches!(win.state, PreflightModalState::Resolved { .. }) {
-                        win.confirm_preflight(true, window, cx);
+                    match win.overwrite_confirm.take() {
+                        Some(ConfirmAction::OverwriteCollision {
+                            request,
+                            start_immediately,
+                            ..
+                        }) => {
+                            let filename_hint = request
+                                .output_path
+                                .as_ref()
+                                .and_then(|p| p.file_name())
+                                .map(|n| n.to_string_lossy().into_owned());
+                            win.dispatch_and_close(
+                                *request,
+                                start_immediately,
+                                filename_hint,
+                                window,
+                                cx,
+                            );
+                        }
+                        Some(ConfirmAction::DuplicateOngoing {
+                            existing_id,
+                            existing_state,
+                            ..
+                        }) => {
+                            win.focus_existing_in_main(
+                                existing_id,
+                                existing_state == DownloadState::Paused,
+                                cx,
+                            );
+                            window.remove_window();
+                        }
+                        _ if matches!(win.state, PreflightModalState::Resolved { .. }) => {
+                            win.confirm_preflight(true, window, cx);
+                        }
+                        _ => {}
                     }
                 }
             }))

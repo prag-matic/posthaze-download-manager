@@ -7,6 +7,8 @@ use tokio::sync::mpsc;
 pub(crate) enum TrayAction {
     /// Toggle visibility / foreground activation of the main Posthaze window.
     ToggleShowHide,
+    /// Open or foreground the standalone `SettingsWindow`.
+    OpenSettings,
     /// Pause all `Active` `Download`s in the `Queue`.
     PauseAll,
     /// Exit the application cleanly regardless of Close-to-Tray.
@@ -17,22 +19,53 @@ pub(crate) enum TrayAction {
 #[cfg(target_os = "windows")]
 pub(crate) struct TrayHandle {
     _tray: tray_icon::TrayIcon,
+    last_light_taskbar: bool,
 }
 
 /// Placeholder tray handle on non-Windows targets.
 #[cfg(not(target_os = "windows"))]
 pub(crate) struct TrayHandle;
 
+impl TrayHandle {
+    /// Updates the tray icon polarity if Windows' `SystemUsesLightTheme` setting changed.
+    pub(crate) fn sync_system_theme(&mut self) {
+        #[cfg(target_os = "windows")]
+        {
+            let light_taskbar = crate::platform_hooks::system_uses_light_theme();
+            if light_taskbar != self.last_light_taskbar {
+                if let Some(icon) = load_tray_icon(light_taskbar) {
+                    let _ = self._tray.set_icon(Some(icon));
+                }
+                self.last_light_taskbar = light_taskbar;
+            }
+        }
+    }
+}
+
 #[cfg(target_os = "windows")]
-fn load_tray_icon() -> Option<tray_icon::Icon> {
+fn load_tray_icon(light_taskbar: bool) -> Option<tray_icon::Icon> {
     use image::imageops::FilterType;
     use tray_icon::Icon;
 
-    const TRAY_ICON_PNG: &[u8] = include_bytes!("../../../assets/posthaze_logo_no_back.png");
-    if let Ok(img) = image::load_from_memory(TRAY_ICON_PNG) {
-        let resized = img.resize_exact(32, 32, FilterType::Lanczos3).to_rgba8();
-        let (w, h) = resized.dimensions();
-        if let Ok(icon) = Icon::from_rgba(resized.into_raw(), w, h) {
+    // Dark ink on light taskbars; light ink on dark taskbars.
+    const TRAY_ICON_LIGHT_PNG: &[u8] =
+        include_bytes!("../../../assets/Logo Light/Logo Light 32x32.png");
+    const TRAY_ICON_DARK_PNG: &[u8] =
+        include_bytes!("../../../assets/Logo Dark/Logo Dark 32x32.png");
+
+    let bytes = if light_taskbar {
+        TRAY_ICON_DARK_PNG
+    } else {
+        TRAY_ICON_LIGHT_PNG
+    };
+    if let Ok(img) = image::load_from_memory(bytes) {
+        let rgba = if img.width() == 32 && img.height() == 32 {
+            img.to_rgba8()
+        } else {
+            img.resize_exact(32, 32, FilterType::Lanczos3).to_rgba8()
+        };
+        let (w, h) = rgba.dimensions();
+        if let Ok(icon) = Icon::from_rgba(rgba.into_raw(), w, h) {
             return Some(icon);
         }
     }
@@ -46,18 +79,22 @@ pub(crate) fn init_tray() -> Option<(TrayHandle, mpsc::UnboundedReceiver<TrayAct
     use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
     use tray_icon::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
-    let icon = load_tray_icon()?;
+    let light_taskbar = crate::platform_hooks::system_uses_light_theme();
+    let icon = load_tray_icon(light_taskbar)?;
 
     let show_item = MenuItem::new("Show / Hide Posthaze", true, None);
+    let settings_item = MenuItem::new("Settings...", true, None);
     let pause_item = MenuItem::new("Pause All Downloads", true, None);
     let quit_item = MenuItem::new("Quit Posthaze", true, None);
 
     let show_id = show_item.id().clone();
+    let settings_id = settings_item.id().clone();
     let pause_id = pause_item.id().clone();
     let quit_id = quit_item.id().clone();
 
     let menu = Menu::new();
     let _ = menu.append(&show_item);
+    let _ = menu.append(&settings_item);
     let _ = menu.append(&pause_item);
     let _ = menu.append(&PredefinedMenuItem::separator());
     let _ = menu.append(&quit_item);
@@ -75,6 +112,8 @@ pub(crate) fn init_tray() -> Option<(TrayHandle, mpsc::UnboundedReceiver<TrayAct
     MenuEvent::set_event_handler(Some(move |ev: MenuEvent| {
         let action = if ev.id == show_id {
             Some(TrayAction::ToggleShowHide)
+        } else if ev.id == settings_id {
+            Some(TrayAction::OpenSettings)
         } else if ev.id == pause_id {
             Some(TrayAction::PauseAll)
         } else if ev.id == quit_id {
@@ -98,7 +137,13 @@ pub(crate) fn init_tray() -> Option<(TrayHandle, mpsc::UnboundedReceiver<TrayAct
         }
     }));
 
-    Some((TrayHandle { _tray: tray }, rx))
+    Some((
+        TrayHandle {
+            _tray: tray,
+            last_light_taskbar: light_taskbar,
+        },
+        rx,
+    ))
 }
 
 /// No-op tray initialization on non-Windows targets.
@@ -113,6 +158,7 @@ mod tests {
 
     #[test]
     fn loads_embedded_tray_icon_rgba() {
-        assert!(load_tray_icon().is_some());
+        assert!(load_tray_icon(false).is_some());
+        assert!(load_tray_icon(true).is_some());
     }
 }
