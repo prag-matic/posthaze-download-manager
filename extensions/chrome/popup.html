@@ -9,55 +9,76 @@
       --bg: #141311;
       --elevated: #1b1a17;
       --surface: #1e1d1a;
-      --border: #2a2825;
+      --surface-hover: #262420;
+      --border: rgba(234, 230, 223, 0.08);
+      --border-strong: rgba(234, 230, 223, 0.14);
       --text: #eae6df;
+      --secondary: #b9b3a8;
       --muted: #9b968d;
       --accent: #e58a35;
+      --accent-hover: #d97724;
       --accent-fg: #141311;
-      --ok: #22c55e;
-      --err: #ef4444;
+      --ok: #4cc38a;
+      --err: #e5484d;
+      --radius: 4px;
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      width: 312px;
+      width: 320px;
       background: var(--bg);
       color: var(--text);
-      font: 12px/1.4 "Segoe UI", system-ui, sans-serif;
+      font: 13px/1.45 "Segoe UI", system-ui, sans-serif;
     }
     .header {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 8px 10px;
+      padding: 12px;
       background: var(--elevated);
       border-bottom: 1px solid var(--border);
     }
     .brand {
       display: flex;
       align-items: center;
-      gap: 7px;
+      gap: 8px;
     }
     .brand img { width: 16px; height: 16px; }
     .title {
-      font-family: Consolas, monospace;
-      font-weight: 700;
-      letter-spacing: 0.05em;
-      font-size: 11px;
+      font-weight: 600;
+      font-size: 13px;
+      color: var(--text);
     }
     .pill {
-      padding: 2px 6px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      border-radius: var(--radius);
       border: 1px solid var(--border);
       background: var(--bg);
       font-family: Consolas, monospace;
-      font-size: 10px;
+      font-variant-numeric: tabular-nums;
+      font-size: 11px;
+      line-height: 1;
       color: var(--muted);
     }
-    .pill.online { border-color: var(--ok); color: var(--ok); }
-    .pill.host { border-color: var(--accent); color: var(--accent); }
-    .pill.offline { border-color: var(--err); color: var(--err); }
+    .pill::before {
+      content: "";
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--muted);
+      flex-shrink: 0;
+    }
+    .pill.online { color: var(--ok); }
+    .pill.online::before { background: var(--ok); }
+    .pill.host { color: var(--accent); }
+    .pill.host::before { background: var(--accent); }
+    .pill.offline { color: var(--err); }
+    .pill.offline::before { background: var(--err); }
     .body {
-      padding: 10px;
+      padding: 12px;
       display: flex;
       flex-direction: column;
       gap: 8px;
@@ -67,14 +88,24 @@
       align-items: center;
       justify-content: space-between;
       gap: 8px;
-      padding: 7px 9px;
+      min-height: 36px;
+      padding: 8px 12px;
+      border-radius: var(--radius);
       background: var(--surface);
       border: 1px solid var(--border);
       cursor: pointer;
+      transition: background-color 140ms cubic-bezier(0.22, 1, 0.36, 1),
+        border-color 140ms cubic-bezier(0.22, 1, 0.36, 1);
+    }
+    .row:hover {
+      background: var(--surface-hover);
+      border-color: var(--border-strong);
     }
     .row input[type="checkbox"] {
       accent-color: var(--accent);
       margin: 0;
+      width: 16px;
+      height: 16px;
     }
     .site-btn {
       width: 100%;
@@ -82,20 +113,19 @@
       font: inherit;
       text-align: left;
     }
-    .site-btn:hover { border-color: var(--accent); }
     .site-btn[hidden] { display: none; }
     .site-host {
       min-width: 0;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
-      color: var(--muted);
+      font-family: Consolas, monospace;
+      font-size: 12px;
+      color: var(--secondary);
     }
     .site-action {
-      font-family: Consolas, monospace;
-      font-size: 10px;
-      font-weight: 600;
-      letter-spacing: 0.03em;
+      font-size: 12px;
+      font-weight: 500;
       color: var(--accent);
       flex-shrink: 0;
     }
@@ -106,64 +136,88 @@
       display: grid;
       grid-template-columns: 1fr 1fr;
       border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
     }
     .btn {
-      height: 30px;
+      height: 32px;
+      padding: 0 12px;
       border: 0;
       background: var(--elevated);
       color: var(--text);
-      font-family: Consolas, monospace;
-      font-size: 10.5px;
-      font-weight: 600;
-      letter-spacing: 0.03em;
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 500;
       cursor: pointer;
+      transition: background-color 140ms cubic-bezier(0.22, 1, 0.36, 1),
+        color 140ms cubic-bezier(0.22, 1, 0.36, 1),
+        transform 120ms cubic-bezier(0.22, 1, 0.36, 1);
     }
     .btn + .btn { border-left: 1px solid var(--border); }
+    .btn:hover { background: var(--surface-hover); }
+    .btn:active { transform: scale(0.98); }
     .btn.primary {
       background: var(--accent);
       color: var(--accent-fg);
+      font-weight: 600;
     }
-    .btn:hover { filter: brightness(1.08); }
+    .btn.primary:hover { background: var(--accent-hover); }
+    .row:focus-visible,
+    .btn:focus-visible,
+    details.filters summary:focus-visible,
+    .field input:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: -2px;
+    }
     details.filters {
       border: 1px solid var(--border);
+      border-radius: var(--radius);
       background: var(--surface);
+      overflow: hidden;
     }
     details.filters summary {
       list-style: none;
-      padding: 6px 9px;
-      font-family: Consolas, monospace;
-      font-size: 10.5px;
+      padding: 8px 12px;
+      font-size: 12px;
+      font-weight: 500;
       color: var(--muted);
       cursor: pointer;
       user-select: none;
+      transition: color 140ms cubic-bezier(0.22, 1, 0.36, 1),
+        background-color 140ms cubic-bezier(0.22, 1, 0.36, 1);
+    }
+    details.filters summary:hover {
+      color: var(--text);
+      background: var(--surface-hover);
     }
     details.filters[open] summary {
       border-bottom: 1px solid var(--border);
       color: var(--text);
     }
     .filter-grid {
-      padding: 8px 9px;
+      padding: 8px 12px;
       display: flex;
       flex-direction: column;
-      gap: 6px;
+      gap: 8px;
     }
     .field {
       display: flex;
       align-items: center;
       border: 1px solid var(--border);
+      border-radius: var(--radius);
       background: var(--bg);
-      height: 26px;
+      height: 32px;
+      overflow: hidden;
     }
     .field label {
-      width: 90px;
-      padding: 0 7px;
+      width: 88px;
+      padding: 0 8px;
       height: 100%;
       display: flex;
       align-items: center;
       background: var(--elevated);
       border-right: 1px solid var(--border);
-      font-family: Consolas, monospace;
-      font-size: 10px;
+      font-size: 12px;
       color: var(--muted);
       flex-shrink: 0;
     }
@@ -173,30 +227,33 @@
       height: 100%;
       border: 0;
       outline: 0;
-      padding: 0 7px;
+      padding: 0 8px;
       background: transparent;
       color: var(--text);
       font-family: Consolas, monospace;
-      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+      font-size: 12px;
     }
     .status {
-      padding: 7px 9px;
+      padding: 8px 12px;
+      border-radius: var(--radius);
       background: var(--surface);
       border: 1px solid var(--border);
       color: var(--muted);
       font-family: Consolas, monospace;
-      font-size: 10.5px;
+      font-size: 11px;
+      line-height: 1.45;
       word-break: break-word;
     }
     .status.ok { border-left: 2px solid var(--ok); color: var(--text); }
     .status.err { border-left: 2px solid var(--err); color: var(--err); }
     .status-url {
       color: var(--muted);
-      font-size: 10px;
+      font-size: 11px;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-      margin-bottom: 2px;
+      margin-bottom: 4px;
     }
   </style>
 </head>
@@ -204,9 +261,9 @@
   <div class="header">
     <div class="brand">
       <img src="icons/icon-32.png" alt="Posthaze" />
-      <span class="title">POSTHAZE BRIDGE</span>
+      <span class="title">Posthaze Bridge</span>
     </div>
-    <span id="host-pill" class="pill">CHECKING</span>
+    <span id="host-pill" class="pill">Checking</span>
   </div>
 
   <div class="body">
@@ -217,33 +274,33 @@
 
     <button id="site-exclude-btn" class="row site-btn" type="button" hidden>
       <span id="site-exclude-host" class="site-host"></span>
-      <span id="site-exclude-label" class="site-action">EXCLUDE SITE</span>
+      <span id="site-exclude-label" class="site-action">Exclude site</span>
     </button>
 
     <div class="actions">
-      <button id="open-ui-btn" class="btn primary" type="button">OPEN POSTHAZE</button>
-      <button id="ping-btn" class="btn" type="button">PING HOST</button>
+      <button id="open-ui-btn" class="btn primary" type="button">Open Posthaze</button>
+      <button id="ping-btn" class="btn" type="button">Ping host</button>
     </div>
 
     <details class="filters">
-      <summary>CAPTURE FILTERS</summary>
+      <summary>Capture filters</summary>
       <div class="filter-grid">
         <div class="field">
-          <label for="min-size">MIN MIB</label>
+          <label for="min-size">Min MiB</label>
           <input id="min-size" type="number" min="0" step="0.5" placeholder="0" />
         </div>
         <div class="field">
-          <label for="skip-ext">SKIP EXT</label>
+          <label for="skip-ext">Skip ext</label>
           <input id="skip-ext" type="text" placeholder="svg, crx, xpi, html, htm" />
         </div>
         <div class="field">
-          <label for="skip-dom">SKIP HOST</label>
+          <label for="skip-dom">Skip host</label>
           <input id="skip-dom" type="text" placeholder="localhost, 127.0.0.1" />
         </div>
       </div>
     </details>
 
-    <div id="status-box" class="status">Ready.</div>
+    <div id="status-box" class="status">Ready</div>
   </div>
 
   <script type="module" src="popup.js"></script>

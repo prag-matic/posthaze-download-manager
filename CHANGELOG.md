@@ -3,6 +3,20 @@
 All notable changes to Posthaze Download Manager are documented in this file.
 When a `vX.Y.Z` tag is pushed, `.github/workflows/release.yml` automatically uses the matching `## [X.Y.Z]` section below as the GitHub Release notes (falling back to GitHub's auto-generated notes if no section is present).
 
+## [0.2.3] - 2026-11-24
+
+### What's New
+- **Customizable Download Categories & Rule Routing:**
+  - Added persistent download categories (`Archives`, `Video`, `Audio`, `Documents`, `Programs`, `General`, plus custom categories) with file-extension rules, host/URL wildcard patterns, dynamic `<Default Save Folder>\<Category>` routing, custom destination overrides, and per-category `"remember last selected folder"` memory.
+  - Added a toggleable **Prioritize host / URL rules over extensions** precedence switch (enabled by default), extension-conflict detection, and a live **Rule Tester** in **Settings → Downloads**.
+  - Added a searchable category picker drawer, inline chip-style **File types** and **Host / URL** rule editors, a **Category** selector in **Add Download / Pre-Flight**, and a live **Category** filter in the main queue toolbar.
+- **Server File Timestamps:** Added optional **Set file creation date as provided by the server** (`HTTP Last-Modified`) support to preserve server file timestamps on completed downloads.
+- **Metallic App Icon:** Updated the desktop executable icon (`posthaze.ico`), embedded UI app icon, and Chrome extension icons (`16px`–`128px`) to the brushed-steel metallic Posthaze icon.
+
+### Polish & Fixes
+- **Mica & Hairline Alignment:** Aligned the titlebar-to-sidebar vertical divider seams in both the main window and standalone Settings window, and extended Windows 11 Mica translucency cleanly into the Settings content panel.
+- **Extension Popup Consistency:** Refined the Chrome Browser Capture popup spacing, typography, and hairline grid framing.
+
 ## [0.2.2] - 2026-11-24
 
 ### What's New

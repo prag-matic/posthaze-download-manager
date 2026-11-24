@@ -20,7 +20,7 @@ When a probe resolves (`PreflightModalState::Resolved`), the `TitleBar` exposes 
 
 | Tab | Window Size | Contents |
 | :--- | :--- | :--- |
-| **`ADD DOWNLOAD`** | `460 × 216` (expands dynamically for duplicate banner or `SAVE TO ▾` dropdown) | File title + `HTTP 206` / `HTTP 200` size badge, truncated final URL, `FILE` row with extension lock toggle, `SAVE TO` row with integrated **Directory Dropdown** (`Default Folder` + verified `Recent Locations`) and native folder picker button, plus an optional calm inline **Duplicate URL** notice (`SHOW` / `RESUME` / `RETRY` / `OPEN FILE`). |
+| **`ADD DOWNLOAD`** | `460 × 252` (expands dynamically for duplicate banner, `CATEGORY ▾`, or `SAVE TO ▾` dropdown) | File title + `HTTP 206` / `HTTP 200` size badge, truncated final URL, `FILE` row with extension lock toggle, `CATEGORY` selector (`AUTO` indicator when matched by rule) with instant category-folder switching, `SAVE TO` row with integrated **Directory Dropdown** (`Default Folder` + verified `Recent Locations`) and native folder picker button, plus an optional calm inline **Duplicate URL** notice (`SHOW` / `RESUME` / `RETRY` / `OPEN FILE`). |
 | **`OPTIONS`** | `460 × 272` | Unified `N PARALLEL SEGMENTS` + per-segment chunk size + `- / N / +` worker stepper above the `8px` **Graduated Segment Ruler**, followed by flat `COOKIE`, `REFERER`, and `AGENT` request header inputs (with `cURL` badge when pre-populated). |
 
 ---

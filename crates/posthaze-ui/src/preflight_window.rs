@@ -7,8 +7,9 @@ use gpui_kit::component::input::InputState;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use posthaze_engine::{
-    CollisionPolicy, DownloadId, DownloadRequest, DownloadState, PreflightInfo, Settings,
-    disambiguate_output_path_with_reserved, resolve_target_path,
+    CollisionPolicy, DownloadCategory, DownloadId, DownloadRequest, DownloadState,
+    GENERAL_CATEGORY_ID, PreflightInfo, Settings, disambiguate_output_path_with_reserved,
+    effective_category_dir, resolve_category, resolve_target_path,
     resolve_target_path_with_reserved,
 };
 
@@ -18,8 +19,8 @@ use crate::bridge::{EngineBridge, EngineCommand};
 use crate::curl_parser::{find_header_value, set_or_remove_header};
 use crate::modals::{
     ConfirmAction, DuplicateBannerAction, DuplicateMatch, PreflightModalState, PreflightTab,
-    folder_dropdown_extra_height, render_confirm_modal, render_preflight_card,
-    split_filename_extension,
+    category_dropdown_extra_height, folder_dropdown_extra_height, render_confirm_modal,
+    render_preflight_card, split_filename_extension,
 };
 use crate::notifications::ToastRequest;
 use crate::platform_hooks::open_file_in_shell;
@@ -42,6 +43,7 @@ pub(crate) struct PreflightHints {
 pub(crate) struct PreflightWindow {
     bridge: EngineBridge,
     settings: Settings,
+    categories: Vec<DownloadCategory>,
     hints: PreflightHints,
     state: PreflightModalState,
     overwrite_confirm: Option<ConfirmAction>,
@@ -59,6 +61,7 @@ impl PreflightWindow {
     pub(crate) fn open(
         bridge: EngineBridge,
         settings: Settings,
+        categories: Vec<DownloadCategory>,
         url: String,
         headers: Vec<(String, String)>,
         hints: PreflightHints,
@@ -67,7 +70,7 @@ impl PreflightWindow {
         cascade_idx: usize,
         cx: &mut App,
     ) {
-        let mut bounds = Bounds::centered(None, size(px(460.0), px(216.0)), cx);
+        let mut bounds = Bounds::centered(None, size(px(460.0), px(252.0)), cx);
         let cascade = ((cascade_idx % 6) as f32) * 28.0;
         bounds.origin.x += px(cascade);
         bounds.origin.y += px(cascade);
@@ -92,6 +95,7 @@ impl PreflightWindow {
                 Self::new(
                     bridge,
                     settings,
+                    categories,
                     url,
                     headers,
                     hints,
@@ -132,6 +136,7 @@ impl PreflightWindow {
     fn new(
         bridge: EngineBridge,
         settings: Settings,
+        categories: Vec<DownloadCategory>,
         url: String,
         headers: Vec<(String, String)>,
         hints: PreflightHints,
@@ -159,6 +164,7 @@ impl PreflightWindow {
         let mut this = Self {
             bridge,
             settings,
+            categories,
             hints,
             state: PreflightModalState::Probing {
                 url: url.clone(),
@@ -214,8 +220,30 @@ impl PreflightWindow {
         cx: &mut Context<Self>,
     ) {
         let default_workers = self.settings.max_workers.clamp(1, 32);
-        let initial_name = if self.settings.collision_policy == CollisionPolicy::Rename {
+        let matched_category = resolve_category(
+            &self.categories,
+            &info.suggested_filename,
+            Some(&info.final_url),
+            self.settings.category_url_rule_precedence,
+        )
+        .cloned();
+        let matched_cat_id = matched_category
+            .as_ref()
+            .map(|c| c.id.clone())
+            .unwrap_or_else(|| GENERAL_CATEGORY_ID.to_string());
+        let base_dir = if self.settings.auto_categorize_folders
+            && let Some(cat) = matched_category.as_ref()
+        {
+            effective_category_dir(cat, &self.settings.default_output_dir)
+        } else {
             info.disambiguated_output_path
+                .parent()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| self.settings.default_output_dir.clone())
+        };
+        let initial_name = if self.settings.collision_policy == CollisionPolicy::Rename {
+            resolve_target_path(&base_dir, &info.suggested_filename, CollisionPolicy::Rename)
+                .path
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or(&info.suggested_filename)
@@ -223,11 +251,6 @@ impl PreflightWindow {
         } else {
             info.suggested_filename.clone()
         };
-        let base_dir = info
-            .disambiguated_output_path
-            .parent()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| self.settings.default_output_dir.clone());
         let (stem, probed_ext) = split_filename_extension(&initial_name);
         let extension_locked = self.settings.ui_lock_file_extension && probed_ext.is_some();
         let display_name = if extension_locked { stem } else { initial_name };
@@ -282,6 +305,10 @@ impl PreflightWindow {
             workers,
             default_dir: Box::new(self.settings.default_output_dir.clone()),
             dir_dropdown_open: false,
+            categories: self.categories.clone(),
+            selected_category_id: matched_cat_id.clone(),
+            auto_matched_category_id: matched_cat_id,
+            category_dropdown_open: false,
             duplicate_match: None,
             recent_folders: Vec::new(),
         };
@@ -310,6 +337,7 @@ impl PreflightWindow {
                     if let PreflightModalState::Resolved {
                         duplicate_match,
                         recent_folders,
+                        categories,
                         ..
                     } = &mut win.state
                     {
@@ -325,6 +353,10 @@ impl PreflightWindow {
                             })
                         });
                         *recent_folders = ctx_data.recent_folders;
+                        if !ctx_data.categories.is_empty() {
+                            *categories = ctx_data.categories.clone();
+                            win.categories = ctx_data.categories;
+                        }
                         win.sync_height(window);
                         cx.notify();
                     }
@@ -342,12 +374,17 @@ impl PreflightWindow {
                 active_tab,
                 default_dir,
                 dir_dropdown_open,
+                categories,
+                category_dropdown_open,
                 duplicate_match,
                 recent_folders,
                 ..
             } => match active_tab {
                 PreflightTab::General => {
-                    let mut h = 216.0;
+                    let mut h = 252.0;
+                    if *category_dropdown_open {
+                        h += category_dropdown_extra_height(categories);
+                    }
                     if *dir_dropdown_open {
                         h += folder_dropdown_extra_height(default_dir.as_path(), recent_folders);
                     }
@@ -438,11 +475,14 @@ impl PreflightWindow {
             extension_locked,
             locked_extension,
             workers,
+            selected_category_id,
             ..
         } = &self.state
         else {
             return;
         };
+
+        let selected_category_id = selected_category_id.clone();
 
         let raw_name = filename_input.read(cx).value().trim().to_string();
         let filename = match (*extension_locked, locked_extension.as_deref()) {
@@ -477,6 +517,7 @@ impl PreflightWindow {
         req.headers = final_headers;
         req.known_content_length = info.content_length;
         req.skip_probe = self.hints.skip_probe;
+        req.category_id = Some(selected_category_id);
         if !self.hints.skip_probe {
             req.preflight_probe = Some(info.as_ref().clone());
         }
@@ -755,12 +796,14 @@ impl PreflightWindow {
         if let PreflightModalState::Resolved {
             active_tab,
             dir_dropdown_open,
+            category_dropdown_open,
             ..
         } = &mut self.state
             && *active_tab != tab
         {
             *active_tab = tab;
             *dir_dropdown_open = false;
+            *category_dropdown_open = false;
             self.sync_height(window);
             cx.notify();
         }
@@ -917,11 +960,14 @@ impl Render for PreflightWindow {
         let entity_toggle_dropdown = cx.entity().clone();
         let entity_recent_dir = cx.entity().clone();
         let entity_open_dup = cx.entity().clone();
+        let entity_toggle_cat = cx.entity().clone();
+        let entity_pick_cat = cx.entity().clone();
 
         let card = render_preflight_card(
             &self.state,
             cx,
             show_add_paused,
+            self.settings.auto_categorize_folders,
             |window, _| {
                 window.remove_window();
             },
@@ -980,10 +1026,15 @@ impl Render for PreflightWindow {
             move |window, cx| {
                 entity_toggle_dropdown.update(cx, |win, cx| {
                     if let PreflightModalState::Resolved {
-                        dir_dropdown_open, ..
+                        dir_dropdown_open,
+                        category_dropdown_open,
+                        ..
                     } = &mut win.state
                     {
                         *dir_dropdown_open = !*dir_dropdown_open;
+                        if *dir_dropdown_open {
+                            *category_dropdown_open = false;
+                        }
                         win.sync_height(window);
                         cx.notify();
                     }
@@ -1010,6 +1061,48 @@ impl Render for PreflightWindow {
             move |action, window, cx| {
                 entity_open_dup.update(cx, |win, cx| {
                     win.handle_duplicate_action(action, window, cx);
+                });
+            },
+            move |window, cx| {
+                entity_toggle_cat.update(cx, |win, cx| {
+                    if let PreflightModalState::Resolved {
+                        category_dropdown_open,
+                        dir_dropdown_open,
+                        ..
+                    } = &mut win.state
+                    {
+                        *category_dropdown_open = !*category_dropdown_open;
+                        if *category_dropdown_open {
+                            *dir_dropdown_open = false;
+                        }
+                        win.sync_height(window);
+                        cx.notify();
+                    }
+                });
+            },
+            move |cat_id, window, cx| {
+                entity_pick_cat.update(cx, |win, cx| {
+                    if let PreflightModalState::Resolved {
+                        categories,
+                        selected_category_id,
+                        category_dropdown_open,
+                        dir_input,
+                        default_dir,
+                        ..
+                    } = &mut win.state
+                    {
+                        *selected_category_id = cat_id.clone();
+                        *category_dropdown_open = false;
+                        if let Some(cat) = categories.iter().find(|c| c.id == cat_id) {
+                            let next_dir = effective_category_dir(cat, default_dir.as_path());
+                            let value = next_dir.to_string_lossy().to_string();
+                            dir_input.update(cx, |st, cx| {
+                                st.set_value(value, window, cx);
+                            });
+                        }
+                        win.sync_height(window);
+                        cx.notify();
+                    }
                 });
             },
         );

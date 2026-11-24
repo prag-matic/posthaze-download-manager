@@ -9,6 +9,7 @@ mod queue;
 mod runner;
 mod store;
 mod throttle;
+mod timestamps;
 mod transfer;
 /// Dedicated blocking `.part` file writer used by `DownloadEngine` and benchmarks.
 pub mod writer;
@@ -16,6 +17,7 @@ pub mod writer;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tokio::sync::{Mutex, broadcast, watch};
@@ -91,6 +93,8 @@ pub struct DownloadEngine {
     active: Arc<Mutex<HashMap<DownloadId, ActiveControl>>>,
     queue: Arc<QueueCoordinator>,
     ephemeral_settings: Arc<Mutex<Settings>>,
+    ephemeral_categories: Arc<Mutex<Vec<DownloadCategory>>>,
+    set_file_time_from_server: Arc<AtomicBool>,
     event_tx: broadcast::Sender<EngineEvent>,
 }
 
@@ -116,6 +120,7 @@ impl DownloadEngine {
                     String::new(),
                 ),
             };
+        let set_file_time_from_server = Arc::new(AtomicBool::new(settings.set_file_time_from_server));
         Self {
             client: Arc::new(std::sync::RwLock::new(HttpClientState {
                 client,
@@ -128,6 +133,8 @@ impl DownloadEngine {
             active: Arc::new(Mutex::new(HashMap::new())),
             queue: Arc::new(QueueCoordinator::new(settings.max_concurrent_downloads)),
             ephemeral_settings: Arc::new(Mutex::new(settings)),
+            ephemeral_categories: Arc::new(Mutex::new(default_builtin_categories())),
+            set_file_time_from_server,
             event_tx,
         }
     }
@@ -223,6 +230,7 @@ impl DownloadEngine {
     pub async fn start(&self, mut request: DownloadRequest) -> Result<DownloadHandle, EngineError> {
         let id = DownloadId::new();
         if let Some(store) = &self.store {
+            self.apply_category_routing_and_memory(store, &mut request).await;
             reserve_non_conflicting_output_path(store, &mut request).await;
             store.insert_queued(&id, &request).await?;
             let folder = request
@@ -248,6 +256,7 @@ impl DownloadEngine {
             ));
         };
         let id = DownloadId::new();
+        self.apply_category_routing_and_memory(store, &mut request).await;
         reserve_non_conflicting_output_path(store, &mut request).await;
         store.insert_paused(&id, &request).await?;
         let folder = request
@@ -266,6 +275,73 @@ impl DownloadEngine {
         Ok(id)
     }
 
+    async fn apply_category_routing_and_memory(
+        &self,
+        store: &DownloadStore,
+        request: &mut DownloadRequest,
+    ) {
+        let Ok(settings) = store.get_settings().await else {
+            return;
+        };
+        let Ok(categories) = store.list_categories().await else {
+            return;
+        };
+
+        if request.category_id.is_none() && settings.auto_categorize_folders {
+            let candidate_name = request
+                .preflight_probe
+                .as_ref()
+                .map(|p| p.suggested_filename.clone())
+                .or_else(|| {
+                    request
+                        .output_path
+                        .as_deref()
+                        .and_then(|p| p.file_name())
+                        .and_then(|n| n.to_str())
+                        .map(str::to_string)
+                })
+                .unwrap_or_else(|| crate::probe::fallback_filename_from_url(&request.url));
+            let candidate_url = request
+                .preflight_probe
+                .as_ref()
+                .map(|p| p.final_url.as_str())
+                .unwrap_or(&request.url);
+            if let Some(cat) = resolve_category(
+                &categories,
+                &candidate_name,
+                Some(candidate_url),
+                settings.category_url_rule_precedence,
+            ) {
+                request.category_id = Some(cat.id.clone());
+                if request.output_path.is_none()
+                    && request.output_dir == settings.default_output_dir
+                {
+                    request.output_dir =
+                        effective_category_dir(cat, &settings.default_output_dir);
+                }
+            }
+        }
+
+        if let Some(cat_id) = request.category_id.as_deref()
+            && let Some(cat) = categories.iter().find(|c| c.id == cat_id)
+            && cat.remember_last_folder
+        {
+            let chosen_dir = request
+                .output_path
+                .as_deref()
+                .and_then(|p| p.parent())
+                .unwrap_or(&request.output_dir);
+            let current_dir = effective_category_dir(cat, &settings.default_output_dir);
+            if !chosen_dir.as_os_str().is_empty()
+                && chosen_dir != current_dir
+                && let Ok(true) = store.update_category_output_dir(cat_id, chosen_dir).await
+                && let Ok(updated) = store.list_categories().await
+            {
+                let _ = self.event_tx.send(EngineEvent::CategoriesUpdated(updated));
+            }
+        }
+    }
+
     fn runner_context(&self, store: Option<DownloadStore>) -> RunnerContext {
         RunnerContext {
             client: self.http_client(),
@@ -274,6 +350,7 @@ impl DownloadEngine {
             active: Arc::clone(&self.active),
             queue: Arc::clone(&self.queue),
             event_tx: self.event_tx.clone(),
+            set_file_time_from_server: Arc::clone(&self.set_file_time_from_server),
         }
     }
 
@@ -499,6 +576,7 @@ impl DownloadEngine {
             skip_probe: false,
             probe_via_get: false,
             preflight_probe: None,
+            category_id: record.category_id,
         };
 
         Ok(self.spawn_fresh_download(id.clone(), req).await)
@@ -639,9 +717,54 @@ impl DownloadEngine {
         }
         self.limiter.set_limit_kib(settings.download_speed_limit_kib);
         self.queue.set_max_concurrent(settings.max_concurrent_downloads);
+        self.set_file_time_from_server
+            .store(settings.set_file_time_from_server, Ordering::Release);
         let _ = self.event_tx.send(EngineEvent::SettingsUpdated(settings));
         let _ = self.event_tx.send(EngineEvent::QueueUpdated);
         Ok(())
+    }
+
+    /// Lists all configured [`DownloadCategory`] rules ordered by evaluation priority.
+    pub async fn list_categories(&self) -> Result<Vec<DownloadCategory>, EngineError> {
+        match &self.store {
+            Some(store) => store.list_categories().await,
+            None => Ok(self.ephemeral_categories.lock().await.clone()),
+        }
+    }
+
+    /// Validates and persists the full [`DownloadCategory`] list, emitting
+    /// [`EngineEvent::CategoriesUpdated`].
+    pub async fn save_categories(
+        &self,
+        categories: Vec<DownloadCategory>,
+    ) -> Result<Vec<DownloadCategory>, EngineError> {
+        let saved = match &self.store {
+            Some(store) => store.replace_categories(&categories).await?,
+            None => {
+                let mut guard = self.ephemeral_categories.lock().await;
+                *guard = categories;
+                guard.clone()
+            }
+        };
+        let _ = self.event_tx.send(EngineEvent::CategoriesUpdated(saved.clone()));
+        let _ = self.event_tx.send(EngineEvent::QueueUpdated);
+        Ok(saved)
+    }
+
+    /// Restores the default built-in [`DownloadCategory`] presets and emits
+    /// [`EngineEvent::CategoriesUpdated`].
+    pub async fn reset_categories(&self) -> Result<Vec<DownloadCategory>, EngineError> {
+        let saved = match &self.store {
+            Some(store) => store.reset_default_categories().await?,
+            None => {
+                let mut guard = self.ephemeral_categories.lock().await;
+                *guard = default_builtin_categories();
+                guard.clone()
+            }
+        };
+        let _ = self.event_tx.send(EngineEvent::CategoriesUpdated(saved.clone()));
+        let _ = self.event_tx.send(EngineEvent::QueueUpdated);
+        Ok(saved)
     }
 
     /// Computes the `BLAKE3` hex digest of a `Completed` `Download`'s output file.
@@ -811,6 +934,7 @@ impl DownloadEngine {
             Arc::clone(&self.limiter),
             self.store.clone(),
             self.event_tx.clone(),
+            Arc::clone(&self.set_file_time_from_server),
             id,
             request,
             progress_tx,

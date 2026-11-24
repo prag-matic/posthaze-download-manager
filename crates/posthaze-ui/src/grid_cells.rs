@@ -143,7 +143,7 @@ pub(crate) fn grid_cell_button_dyn(
             el.tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
         })
         .on_click(on_click)
-        .when_some(icon, |el, ic| el.child(Icon::new(ic).size(px(12.0))))
+        .when_some(icon, |el, ic| el.child(Icon::new(ic).size(px(14.0))))
         .when_some(label, |el, text| el.child(text))
         .into_any_element()
 }

@@ -1,5 +1,6 @@
 //! Pure domain types and configuration models for [`DownloadEngine`](crate::DownloadEngine).
 
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -260,6 +261,8 @@ pub struct DownloadRequest {
     pub probe_via_get: bool,
     /// Optional pre-resolved [`PreflightInfo`] from [`DownloadEngine::probe_with_headers`](crate::DownloadEngine::probe_with_headers) to avoid re-probing.
     pub preflight_probe: Option<PreflightInfo>,
+    /// Optional resolved [`DownloadCategory`] identifier associated with this `Download`.
+    pub category_id: Option<String>,
 }
 
 impl DownloadRequest {
@@ -276,6 +279,7 @@ impl DownloadRequest {
             skip_probe: false,
             probe_via_get: false,
             preflight_probe: None,
+            category_id: None,
         }
     }
 }
@@ -385,6 +389,332 @@ impl FromStr for DeleteDefaultAction {
     }
 }
 
+/// Stable identifier for the built-in catch-all `General` category.
+pub const GENERAL_CATEGORY_ID: &str = "general";
+
+/// User-customizable `Download` category rule for automatic folder routing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DownloadCategory {
+    /// Stable identifier (`"general"`, `"archives"`, or custom slug/UUID).
+    pub id: String,
+    /// Display name shown in Settings, Pre-Flight, and the `Downloads` table filter.
+    pub name: String,
+    /// Normalized lowercase file extensions without leading dots (empty for `General`).
+    pub extensions: Vec<String>,
+    /// Optional host or URL wildcard patterns (e.g. `"github.com"`, `"*.ubuntu.com"`).
+    pub url_patterns: Vec<String>,
+    /// Explicit destination directory override (`None` resolves dynamically from `default_output_dir`).
+    pub output_dir: Option<PathBuf>,
+    /// Whether picking a different save directory in Pre-Flight updates `output_dir`.
+    pub remember_last_folder: bool,
+    /// Whether this category is one of the seeded built-in presets.
+    pub is_builtin: bool,
+    /// Evaluation order (lowest first; `General` is always evaluated last as fallback).
+    pub sort_order: i32,
+}
+
+/// Returns the default built-in [`DownloadCategory`] presets (`Archives`, `Video`, `Audio`,
+/// `Documents`, `Programs`, and the `General` fallback).
+pub fn default_builtin_categories() -> Vec<DownloadCategory> {
+    vec![
+        DownloadCategory {
+            id: "archives".to_string(),
+            name: "Archives".to_string(),
+            extensions: normalize_extension_list(
+                "zip,7z,rar,tar,gz,tar.gz,tgz,xz,tar.xz,zst,tar.zst,bz2,iso",
+            ),
+            url_patterns: Vec::new(),
+            output_dir: None,
+            remember_last_folder: false,
+            is_builtin: true,
+            sort_order: 10,
+        },
+        DownloadCategory {
+            id: "video".to_string(),
+            name: "Video".to_string(),
+            extensions: normalize_extension_list("mp4,mkv,webm,mov,avi,flv,m4v,wmv"),
+            url_patterns: Vec::new(),
+            output_dir: None,
+            remember_last_folder: false,
+            is_builtin: true,
+            sort_order: 20,
+        },
+        DownloadCategory {
+            id: "audio".to_string(),
+            name: "Audio".to_string(),
+            extensions: normalize_extension_list("mp3,flac,wav,aac,ogg,m4a,opus,wma"),
+            url_patterns: Vec::new(),
+            output_dir: None,
+            remember_last_folder: false,
+            is_builtin: true,
+            sort_order: 30,
+        },
+        DownloadCategory {
+            id: "documents".to_string(),
+            name: "Documents".to_string(),
+            extensions: normalize_extension_list(
+                "pdf,doc,docx,xls,xlsx,ppt,pptx,txt,md,csv,epub",
+            ),
+            url_patterns: Vec::new(),
+            output_dir: None,
+            remember_last_folder: false,
+            is_builtin: true,
+            sort_order: 40,
+        },
+        DownloadCategory {
+            id: "programs".to_string(),
+            name: "Programs".to_string(),
+            extensions: normalize_extension_list("exe,msi,msix,appx,bat,ps1,cmd"),
+            url_patterns: Vec::new(),
+            output_dir: None,
+            remember_last_folder: false,
+            is_builtin: true,
+            sort_order: 50,
+        },
+        DownloadCategory {
+            id: GENERAL_CATEGORY_ID.to_string(),
+            name: "General".to_string(),
+            extensions: Vec::new(),
+            url_patterns: Vec::new(),
+            output_dir: None,
+            remember_last_folder: false,
+            is_builtin: true,
+            sort_order: 9999,
+        },
+    ]
+}
+
+/// Parses a comma- or whitespace-separated extension list into normalized lowercase tokens
+/// without leading dots, preserving order and removing duplicates.
+pub fn normalize_extension_list(raw: &str) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for tok in raw.split([',', ';', ' ', '\t', '\r', '\n']) {
+        let clean = tok.trim().trim_start_matches('.').to_ascii_lowercase();
+        if !clean.is_empty() && seen.insert(clean.clone()) {
+            out.push(clean);
+        }
+    }
+    out
+}
+
+/// Parses a comma- or newline-separated list of host/URL rules into trimmed lowercase patterns,
+/// preserving order and removing duplicates.
+pub fn normalize_pattern_list(raw: &str) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for tok in raw.split([',', ';', '\r', '\n']) {
+        let clean = tok.trim().to_ascii_lowercase();
+        if !clean.is_empty() && seen.insert(clean.clone()) {
+            out.push(clean);
+        }
+    }
+    out
+}
+
+/// Returns a map of extension -> list of claiming category names for any extension listed in two
+/// or more non-`General` categories.
+pub fn find_extension_conflicts(categories: &[DownloadCategory]) -> HashMap<String, Vec<String>> {
+    let mut claims: HashMap<String, Vec<String>> = HashMap::new();
+    for cat in categories {
+        if cat.id == GENERAL_CATEGORY_ID {
+            continue;
+        }
+        for ext in &cat.extensions {
+            claims
+                .entry(ext.clone())
+                .or_default()
+                .push(cat.name.clone());
+        }
+    }
+    claims.retain(|_, names| names.len() > 1);
+    claims
+}
+
+/// Resolves the matching [`DownloadCategory`] for `filename` and optional `url`.
+///
+/// When `url_rule_precedence` is `true`, non-`General` host/URL pattern rules are evaluated across
+/// all categories before file extensions. When `false`, categories are evaluated strictly in
+/// `sort_order` with either rule type matching on first hit. Falls back to `General`.
+pub fn resolve_category<'a>(
+    categories: &'a [DownloadCategory],
+    filename: &str,
+    url: Option<&str>,
+    url_rule_precedence: bool,
+) -> Option<&'a DownloadCategory> {
+    let mut ordered: Vec<&DownloadCategory> = categories
+        .iter()
+        .filter(|c| c.id != GENERAL_CATEGORY_ID)
+        .collect();
+    ordered.sort_by(|a, b| a.sort_order.cmp(&b.sort_order).then_with(|| a.name.cmp(&b.name)));
+
+    let url_lower = url.map(|u| u.trim().to_ascii_lowercase());
+    let host_lower = url_lower.as_deref().and_then(extract_url_host);
+    let fname_lower = filename.trim().to_ascii_lowercase();
+
+    let matches_url = |cat: &DownloadCategory| -> bool {
+        let Some(u) = url_lower.as_deref() else {
+            return false;
+        };
+        cat.url_patterns
+            .iter()
+            .any(|pat| matches_url_pattern(pat, u, host_lower))
+    };
+
+    let best_ext_len = |cat: &DownloadCategory| -> Option<usize> {
+        cat.extensions
+            .iter()
+            .filter(|ext| matches_extension(ext, &fname_lower))
+            .map(|ext| ext.len())
+            .max()
+    };
+
+    if url_rule_precedence {
+        if let Some(cat) = ordered.iter().copied().find(|cat| matches_url(cat)) {
+            return Some(cat);
+        }
+        if let Some((cat, _)) = ordered
+            .iter()
+            .filter_map(|&cat| best_ext_len(cat).map(|len| (cat, len)))
+            .max_by(|(ca, la), (cb, lb)| {
+                la.cmp(lb)
+                    .then_with(|| cb.sort_order.cmp(&ca.sort_order))
+                    .then_with(|| cb.name.cmp(&ca.name))
+            })
+        {
+            return Some(cat);
+        }
+    } else {
+        for cat in &ordered {
+            if matches_url(cat) || best_ext_len(cat).is_some() {
+                return Some(cat);
+            }
+        }
+    }
+
+    categories
+        .iter()
+        .find(|c| c.id == GENERAL_CATEGORY_ID)
+        .or_else(|| categories.first())
+}
+
+/// Computes the effective destination directory for `category` given the global
+/// `default_output_dir`.
+///
+/// If `category.output_dir` is set and non-empty, returns it directly. Otherwise `General`
+/// resolves to `default_output_dir` and any other category resolves to
+/// `default_output_dir/<CategoryName>`.
+pub fn effective_category_dir(category: &DownloadCategory, default_output_dir: &Path) -> PathBuf {
+    if let Some(explicit) = category
+        .output_dir
+        .as_ref()
+        .filter(|p| !p.as_os_str().is_empty())
+    {
+        return explicit.clone();
+    }
+    if category.id == GENERAL_CATEGORY_ID {
+        return default_output_dir.to_path_buf();
+    }
+    let folder = sanitize_category_folder_name(&category.name);
+    if folder.is_empty() {
+        default_output_dir.to_path_buf()
+    } else {
+        default_output_dir.join(folder)
+    }
+}
+
+fn sanitize_category_folder_name(name: &str) -> String {
+    name.trim()
+        .chars()
+        .map(|c| match c {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+            c if c.is_control() => '_',
+            c => c,
+        })
+        .collect::<String>()
+        .trim_matches(['.', ' '])
+        .to_string()
+}
+
+fn extract_url_host(url_lower: &str) -> Option<&str> {
+    let after_scheme = url_lower
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(url_lower);
+    let authority = after_scheme.split(['/', '?', '#']).next()?;
+    let host_port = authority.rsplit('@').next().unwrap_or(authority);
+    let host = if host_port.starts_with('[') {
+        host_port
+            .split(']')
+            .next()
+            .map(|h| h.trim_start_matches('['))
+            .unwrap_or(host_port)
+    } else {
+        host_port.split(':').next().unwrap_or(host_port)
+    };
+    (!host.is_empty()).then_some(host)
+}
+
+fn matches_extension(ext_lower: &str, filename_lower: &str) -> bool {
+    if ext_lower.is_empty() || filename_lower.len() <= ext_lower.len() + 1 {
+        return false;
+    }
+    let split_at = filename_lower.len() - ext_lower.len() - 1;
+    let bytes = filename_lower.as_bytes();
+    bytes[split_at] == b'.' && &filename_lower[split_at + 1..] == ext_lower
+}
+
+fn matches_url_pattern(pattern_lower: &str, url_lower: &str, host_lower: Option<&str>) -> bool {
+    let pat = pattern_lower.trim();
+    if pat.is_empty() {
+        return false;
+    }
+    if pat.contains('/') || pat.contains('?') {
+        return wildcard_match(pat, url_lower);
+    }
+    if pat.contains('*') {
+        if let Some(host) = host_lower
+            && wildcard_match(pat, host)
+        {
+            return true;
+        }
+        return wildcard_match(pat, url_lower);
+    }
+    if let Some(host) = host_lower {
+        return host == pat || host.ends_with(&format!(".{pat}"));
+    }
+    url_lower.contains(pat)
+}
+
+fn wildcard_match(pattern: &str, text: &str) -> bool {
+    let p: Vec<char> = pattern.chars().collect();
+    let t: Vec<char> = text.chars().collect();
+    let (mut pi, mut ti) = (0usize, 0usize);
+    let mut star_pi: Option<usize> = None;
+    let mut star_ti = 0usize;
+
+    while ti < t.len() {
+        if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
+            pi += 1;
+            ti += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star_pi = Some(pi);
+            star_ti = ti;
+            pi += 1;
+        } else if let Some(sp) = star_pi {
+            pi = sp + 1;
+            star_ti += 1;
+            ti = star_ti;
+        } else {
+            return false;
+        }
+    }
+    while pi < p.len() && p[pi] == '*' {
+        pi += 1;
+    }
+    pi == p.len()
+}
+
 /// Returns an optional category subfolder name (`Archives`, `Video`, `Audio`, `Documents`,
 /// `Programs`) for `filename` based on its extension.
 pub fn categorize_subfolder(filename: &str) -> Option<&'static str> {
@@ -464,6 +794,10 @@ pub struct Settings {
     pub download_speed_limit_kib: u64,
     /// Whether to route downloads into file-type subfolders under `default_output_dir`.
     pub auto_categorize_folders: bool,
+    /// Whether host/URL patterns take precedence over file-extension rules when matching categories.
+    pub category_url_rule_precedence: bool,
+    /// Whether completed `Download`s apply the server's `Last-Modified` timestamp to disk.
+    pub set_file_time_from_server: bool,
     /// Policy when a destination file already exists on disk.
     pub collision_policy: CollisionPolicy,
     /// Default action for the row delete button.
@@ -533,6 +867,8 @@ impl Default for Settings {
             proxy_url: String::new(),
             download_speed_limit_kib: 0,
             auto_categorize_folders: false,
+            category_url_rule_precedence: true,
+            set_file_time_from_server: false,
             collision_policy: CollisionPolicy::Rename,
             delete_action_default: DeleteDefaultAction::Ask,
             auto_retry_count: 0,
@@ -1140,6 +1476,8 @@ pub enum EngineEvent {
     QueueUpdated,
     /// Persisted [`Settings`] were updated.
     SettingsUpdated(Settings),
+    /// Persisted [`DownloadCategory`] rules were updated.
+    CategoriesUpdated(Vec<DownloadCategory>),
 }
 
 /// Result and timing summary returned when a `Download` completes.
@@ -1362,5 +1700,61 @@ mod tests {
         let reserved = vec![dir.join("pack.zip"), dir.join("pack (1).zip")];
         let next = disambiguate_output_path_with_reserved(&dir, "pack (1).zip", &reserved);
         assert_eq!(next, dir.join("pack (2).zip"));
+    }
+
+    #[test]
+    fn category_resolution_handles_compound_extensions_url_precedence_and_conflicts() {
+        let mut cats = default_builtin_categories();
+        cats.push(DownloadCategory {
+            id: "work-isos".to_string(),
+            name: "Linux ISOs".to_string(),
+            extensions: normalize_extension_list(".ISO, .img"),
+            url_patterns: normalize_pattern_list("releases.ubuntu.com, *.debian.org"),
+            output_dir: Some(PathBuf::from(r"D:\ISOs")),
+            remember_last_folder: true,
+            is_builtin: false,
+            sort_order: 60,
+        });
+
+        let conflicts = find_extension_conflicts(&cats);
+        assert_eq!(
+            conflicts.get("iso"),
+            Some(&vec!["Archives".to_string(), "Linux ISOs".to_string()])
+        );
+
+        // Compound extension `.tar.gz` matches Archives even with another category present.
+        let tar_cat = resolve_category(&cats, "bundle.tar.gz", None, true).unwrap();
+        assert_eq!(tar_cat.id, "archives");
+
+        // With `url_rule_precedence = true`, host pattern beats Archives' `.iso` or Documents' `.txt`.
+        let iso_url_cat = resolve_category(
+            &cats,
+            "SHA256SUMS.txt",
+            Some("https://releases.ubuntu.com/24.04/SHA256SUMS.txt"),
+            true,
+        )
+        .unwrap();
+        assert_eq!(iso_url_cat.id, "work-isos");
+
+        // With `url_rule_precedence = false`, Documents (sort_order 40) beats Linux ISOs (sort_order 60).
+        let sort_cat = resolve_category(
+            &cats,
+            "SHA256SUMS.txt",
+            Some("https://releases.ubuntu.com/24.04/SHA256SUMS.txt"),
+            false,
+        )
+        .unwrap();
+        assert_eq!(sort_cat.id, "documents");
+
+        // Unmatched extension falls back to General.
+        let fallback = resolve_category(&cats, "blob.bin", Some("https://example.com/blob.bin"), true)
+            .unwrap();
+        assert_eq!(fallback.id, GENERAL_CATEGORY_ID);
+
+        // Effective directories: explicit override, dynamic built-in subfolder, and General base dir.
+        let base = PathBuf::from(r"D:\Downloads");
+        assert_eq!(effective_category_dir(iso_url_cat, &base), PathBuf::from(r"D:\ISOs"));
+        assert_eq!(effective_category_dir(tar_cat, &base), base.join("Archives"));
+        assert_eq!(effective_category_dir(fallback, &base), base);
     }
 }

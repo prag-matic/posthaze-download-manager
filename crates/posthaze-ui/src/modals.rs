@@ -9,8 +9,8 @@ use gpui_kit::component::Icon;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use posthaze_engine::{
-    ChecksumAlgorithm, DeleteFileMode, DownloadId, DownloadRequest, DownloadState, FileChecksums,
-    PreflightInfo, parse_expected_checksum,
+    ChecksumAlgorithm, DeleteFileMode, DownloadCategory, DownloadId, DownloadRequest,
+    DownloadState, FileChecksums, PreflightInfo, effective_category_dir, parse_expected_checksum,
 };
 
 use crate::curl_parser::mask_header_summary;
@@ -92,6 +92,7 @@ pub(crate) fn split_filename_extension(filename: &str) -> (String, Option<String
 }
 
 /// Active modal for pre-flight URL probing and confirmation.
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum PreflightModalState {
     Probing {
         url: String,
@@ -116,6 +117,10 @@ pub(crate) enum PreflightModalState {
         workers: usize,
         default_dir: Box<PathBuf>,
         dir_dropdown_open: bool,
+        categories: Vec<DownloadCategory>,
+        selected_category_id: String,
+        auto_matched_category_id: String,
+        category_dropdown_open: bool,
         duplicate_match: Option<Box<DuplicateMatch>>,
         recent_folders: Vec<PathBuf>,
     },
@@ -146,10 +151,11 @@ pub(crate) enum FileOpModalState {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn render_preflight_card<F1, F2, F3, F4, F5, F6, F7, F8, F9, F10>(
+pub(crate) fn render_preflight_card<F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12>(
     state: &PreflightModalState,
     cx: &App,
     show_add_paused: bool,
+    auto_categorize_enabled: bool,
     on_close: F1,
     on_retry: F2,
     on_worker_delta: F3,
@@ -160,6 +166,8 @@ pub(crate) fn render_preflight_card<F1, F2, F3, F4, F5, F6, F7, F8, F9, F10>(
     on_toggle_dir_dropdown: F8,
     on_pick_recent_dir: F9,
     on_open_duplicate: F10,
+    on_toggle_category_dropdown: F11,
+    on_pick_category: F12,
 ) -> AnyElement
 where
     F1: Fn(&mut Window, &mut App) + Clone + 'static,
@@ -172,6 +180,8 @@ where
     F8: Fn(&mut Window, &mut App) + 'static,
     F9: Fn(PathBuf, &mut Window, &mut App) + Clone + 'static,
     F10: Fn(DuplicateBannerAction, &mut Window, &mut App) + Clone + 'static,
+    F11: Fn(&mut Window, &mut App) + 'static,
+    F12: Fn(String, &mut Window, &mut App) + Clone + 'static,
 {
     match state {
         PreflightModalState::Probing { url, headers } => div()
@@ -219,9 +229,9 @@ where
                                 div()
                                     .text_size(px(14.0))
                                     .line_height(px(18.0))
-                                    .font_weight(FontWeight::BOLD)
+                                    .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(silver_text())
-                                    .child("Probing Target"),
+                                    .child("Probing target"),
                             )
                             .child(
                                 div()
@@ -234,7 +244,7 @@ where
                                             .items_center()
                                             .child(
                                                 Icon::new(IconName::LoaderCircle)
-                                                    .size(px(13.0))
+                                                    .size(px(14.0))
                                                     .text_color(selenium_amber()),
                                             )
                                             .with_animation(
@@ -279,7 +289,7 @@ where
                     .child(grid_cell_button(
                         "probe-cancel",
                         Some(IconName::X),
-                        Some("CANCEL"),
+                        Some("Cancel"),
                         None,
                         GridTone::Graphite,
                         CellBorder::Left,
@@ -371,7 +381,7 @@ where
                         .child(grid_cell_button(
                             "probe-edit",
                             Some(IconName::Clipboard),
-                            Some("EDIT URL"),
+                            Some("Edit URL"),
                             None,
                             GridTone::Graphite,
                             CellBorder::Left,
@@ -423,10 +433,23 @@ where
             workers,
             default_dir,
             dir_dropdown_open,
+            categories,
+            selected_category_id,
+            auto_matched_category_id,
+            category_dropdown_open,
             duplicate_match,
             recent_folders,
         } => {
             let current_dir_text = dir_input.read(cx).value();
+            let active_category = categories
+                .iter()
+                .find(|c| c.id == *selected_category_id)
+                .or_else(|| categories.first());
+            let active_cat_name = active_category
+                .map(|c| c.name.clone())
+                .unwrap_or_else(|| "General".to_string());
+            let is_auto_matched =
+                auto_categorize_enabled && selected_category_id == auto_matched_category_id;
             let size_label = info
                 .content_length
                 .map(format_bytes)
@@ -581,6 +604,103 @@ where
                                         .into_any_element(),
                                 ),
                             ))
+                            .child(
+                                div()
+                                    .w_full()
+                                    .flex()
+                                    .flex_col()
+                                    .child(
+                                        div()
+                                            .id("pf-category-row")
+                                            .h(px(30.0))
+                                            .w_full()
+                                            .bg(input_bg())
+                                            .border_1()
+                                            .border_color(graphite_border())
+                                            .flex()
+                                            .items_center()
+                                            .overflow_hidden()
+                                            .child(
+                                                div()
+                                                    .w(px(68.0))
+                                                    .flex_shrink_0()
+                                                    .h_full()
+                                                    .px_2()
+                                                    .bg(graphite_elevated())
+                                                    .border_r_1()
+                                                    .border_color(graphite_border())
+                                                    .flex()
+                                                    .items_center()
+                                                    .font_family(MONO_FONT)
+                                                    .text_size(TYPE_MICRO)
+                                                    .text_color(silver_muted())
+                                                    .child("CATEGORY"),
+                                            )
+                                            .child(
+                                                div()
+                                                    .id("pf-cat-trigger")
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .h_full()
+                                                    .px_2()
+                                                    .flex()
+                                                    .items_center()
+                                                    .justify_between()
+                                                    .gap_2()
+                                                    .cursor_pointer()
+                                                    .hover(|s| s.bg(paper_hover()))
+                                                    .on_click(move |_, window, cx| {
+                                                        on_toggle_category_dropdown(window, cx)
+                                                    })
+                                                    .child(
+                                                        div()
+                                                            .flex()
+                                                            .items_center()
+                                                            .gap_2()
+                                                            .min_w_0()
+                                                            .child(
+                                                                div()
+                                                                    .text_size(TYPE_BODY)
+                                                                    .font_weight(FontWeight::MEDIUM)
+                                                                    .text_color(silver_text())
+                                                                    .truncate()
+                                                                    .child(active_cat_name),
+                                                            )
+                                                            .when(is_auto_matched, |el| {
+                                                                el.child(
+                                                                    div()
+                                                                        .px_1()
+                                                                        .rounded(px(2.0))
+                                                                        .bg(graphite_elevated())
+                                                                        .border_1()
+                                                                        .border_color(graphite_border())
+                                                                        .font_family(MONO_FONT)
+                                                                        .text_size(px(9.5))
+                                                                        .text_color(selenium_amber())
+                                                                        .child("AUTO"),
+                                                                )
+                                                            }),
+                                                    )
+                                                    .child(
+                                                        Icon::new(if *category_dropdown_open {
+                                                            IconName::ChevronUp
+                                                        } else {
+                                                            IconName::ChevronDown
+                                                        })
+                                                        .size(px(13.0))
+                                                        .text_color(silver_muted()),
+                                                    ),
+                                            ),
+                                    )
+                                    .when(*category_dropdown_open, |el| {
+                                        el.child(render_category_dropdown_panel(
+                                            categories,
+                                            selected_category_id,
+                                            default_dir.as_path(),
+                                            on_pick_category.clone(),
+                                        ))
+                                    }),
+                            )
                             .child(
                                 div()
                                     .w_full()
@@ -958,7 +1078,7 @@ where
                         .child(grid_cell_button(
                             "pf-cancel",
                             Some(IconName::X),
-                            Some("CANCEL"),
+                            Some("Cancel"),
                             None,
                             GridTone::Graphite,
                             CellBorder::Left,
@@ -1832,6 +1952,101 @@ pub(crate) fn format_folder_entry_label(folder: &Path, all: &[PathBuf]) -> Strin
         }
     }
     leaf
+}
+
+pub(crate) fn category_dropdown_extra_height(categories: &[DownloadCategory]) -> f32 {
+    let visible = categories.len().min(6);
+    (visible as f32) * 26.0 + 2.0
+}
+
+fn render_category_dropdown_panel<F1>(
+    categories: &[DownloadCategory],
+    selected_id: &str,
+    default_dir: &Path,
+    on_pick: F1,
+) -> AnyElement
+where
+    F1: Fn(String, &mut Window, &mut App) + Clone + 'static,
+{
+    div()
+        .id("pf-cat-menu")
+        .w_full()
+        .max_h(px(158.0))
+        .overflow_y_scroll()
+        .bg(context_menu_bg())
+        .border_b_1()
+        .border_l_1()
+        .border_r_1()
+        .border_color(graphite_border())
+        .flex()
+        .flex_col()
+        .children(categories.iter().enumerate().map(|(idx, cat)| {
+            let pick_cb = on_pick.clone();
+            let cat_id = cat.id.clone();
+            let selected = cat.id == selected_id;
+            let resolved_dir = effective_category_dir(cat, default_dir)
+                .to_string_lossy()
+                .to_string();
+            div()
+                .id(("pf-cat-opt", idx))
+                .h(px(26.0))
+                .px_2p5()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .cursor_pointer()
+                .bg(if selected {
+                    paper_selected()
+                } else {
+                    Hsla::transparent_black()
+                })
+                .hover(|s| s.bg(paper_hover()))
+                .on_click(move |_, window, cx| pick_cb(cat_id.clone(), window, cx))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1p5()
+                        .child(
+                            div()
+                                .w(px(12.0))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .when(selected, |el| {
+                                    el.child(
+                                        Icon::new(IconName::Check)
+                                            .size(px(11.0))
+                                            .text_color(selenium_amber()),
+                                    )
+                                }),
+                        )
+                        .child(
+                            div()
+                                .text_size(TYPE_MICRO)
+                                .font_weight(if selected {
+                                    FontWeight::MEDIUM
+                                } else {
+                                    FontWeight::NORMAL
+                                })
+                                .text_color(silver_text())
+                                .child(cat.name.clone()),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .font_family(MONO_FONT)
+                        .text_size(TYPE_MICRO)
+                        .text_color(silver_muted())
+                        .text_right()
+                        .truncate()
+                        .child(resolved_dir),
+                )
+        }))
+        .into_any_element()
 }
 
 pub(crate) fn folder_dropdown_extra_height(default_dir: &Path, recent_folders: &[PathBuf]) -> f32 {

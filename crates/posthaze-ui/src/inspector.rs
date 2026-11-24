@@ -76,7 +76,7 @@ where
                             .text_size(TYPE_HEADER)
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(silver_muted())
-                            .child("INSPECTOR"),
+                            .child("Inspector"),
                     )
                     .child(
                         div()
@@ -92,7 +92,7 @@ where
             .child(grid_cell_button(
                 "inspector-expand",
                 Some(IconName::PanelBottomOpen),
-                Some("EXPAND"),
+                Some("Expand"),
                 Some("Expand Inspector"),
                 GridTone::Graphite,
                 CellBorder::Left,
@@ -112,7 +112,7 @@ where
             .flex()
             .flex_col()
             .child(
-                grid_section_header("BYTE-MAP INSPECTOR", GridTone::Graphite).child(
+                grid_section_header("Byte-map inspector", GridTone::Graphite).child(
                     grid_cell_button(
                         "inspector-collapse-empty",
                         Some(IconName::PanelBottomClose),
@@ -137,7 +137,7 @@ where
                             .text_size(TYPE_BODY)
                             .line_height(px(18.0))
                             .text_color(silver_muted())
-                            .child("Select a download above to inspect its byte-map progress and segments."),
+                            .child("Select a download above to inspect its byte-map progress and segments"),
                     ),
             )
             .into_any_element();
@@ -318,7 +318,7 @@ where
                                 actions.child(grid_cell_button(
                                     "errata-restart-fresh",
                                     Some(IconName::RotateCcw),
-                                    Some("RESTART FRESH"),
+                                    Some("Restart fresh"),
                                     Some("Restart Fresh"),
                                     GridTone::Primary,
                                     CellBorder::Left,
@@ -335,7 +335,7 @@ where
                             .child(grid_cell_button(
                                 "errata-delete",
                                 Some(IconName::Trash),
-                                Some("DELETE"),
+                                Some("Delete"),
                                 Some("Remove / Recycle (Shift+Click: Permanent)"),
                                 GridTone::Danger,
                                 CellBorder::Left,

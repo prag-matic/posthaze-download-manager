@@ -7,15 +7,23 @@ use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::Icon;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
-use posthaze_engine::{CollisionPolicy, DeleteDefaultAction, ProxyMode, Settings, TableDensity};
+use posthaze_engine::{
+    CollisionPolicy, DeleteDefaultAction, DownloadCategory, GENERAL_CATEGORY_ID, ProxyMode,
+    Settings, TableDensity, default_builtin_categories, effective_category_dir,
+    find_extension_conflicts, normalize_extension_list, normalize_pattern_list, resolve_category,
+};
 
 use crate::grid_cells::{
     CellBorder, GridTone, grid_boxed_button, grid_cell_button, grid_cell_button_dyn,
-    grid_modal_footer, grid_section_header,
+    grid_kv_row_with_bg, grid_modal_footer, grid_section_header,
 };
 use crate::modals::labeled_input;
 use crate::theme::*;
 use crate::updater::UpdateState;
+
+/// Width of the left navigation sidebar in the standalone Settings window (shared with `TitleBar`
+/// so the vertical hairline divider runs cleanly from titlebar into sidebar).
+pub(crate) const SETTINGS_SIDEBAR_WIDTH: f32 = 176.0;
 
 /// Navigation tabs inside the Settings window (`General`, `Downloads`, `Network`, `Appearance`,
 /// `Integrations`, `System`).
@@ -52,12 +60,12 @@ impl SettingsTab {
 
     pub fn subtitle(self) -> &'static str {
         match self {
-            Self::General => "Startup behavior, System Tray, and Windows notifications.",
-            Self::Downloads => "Save location, Pre-Flight defaults, collision policy, and safety.",
-            Self::Network => "Proxy routing, global bandwidth cap, and connection limits.",
-            Self::Appearance => "Color themes, accents, table columns, scale, and window chrome.",
-            Self::Integrations => "Browser Capture extension host and post-download command hooks.",
-            Self::System => "Application updates, diagnostics, folder history, and factory reset.",
+            Self::General => "Startup behavior, System Tray, and Windows notifications",
+            Self::Downloads => "Save location, Pre-Flight defaults, collision policy, and safety",
+            Self::Network => "Proxy routing, global bandwidth cap, and connection limits",
+            Self::Appearance => "Color themes, accents, table columns, scale, and window chrome",
+            Self::Integrations => "Browser Capture extension host and post-download command hooks",
+            Self::System => "Application updates, diagnostics, folder history, and factory reset",
         }
     }
 
@@ -87,6 +95,8 @@ pub(crate) struct SettingsDraft {
     pub sync_on_complete: bool,
     pub proxy_mode: ProxyMode,
     pub auto_categorize_folders: bool,
+    pub category_url_rule_precedence: bool,
+    pub set_file_time_from_server: bool,
     pub collision_policy: CollisionPolicy,
     pub delete_action_default: DeleteDefaultAction,
     pub completion_cmd_enabled: bool,
@@ -128,6 +138,8 @@ impl SettingsDraft {
             sync_on_complete: settings.sync_on_complete,
             proxy_mode: settings.proxy_mode,
             auto_categorize_folders: settings.auto_categorize_folders,
+            category_url_rule_precedence: settings.category_url_rule_precedence,
+            set_file_time_from_server: settings.set_file_time_from_server,
             collision_policy: settings.collision_policy,
             delete_action_default: settings.delete_action_default,
             completion_cmd_enabled: settings.completion_cmd_enabled,
@@ -203,6 +215,8 @@ impl SettingsDraft {
             proxy_url: self.proxy_url.trim().to_string(),
             download_speed_limit_kib,
             auto_categorize_folders: self.auto_categorize_folders,
+            category_url_rule_precedence: self.category_url_rule_precedence,
+            set_file_time_from_server: self.set_file_time_from_server,
             collision_policy: self.collision_policy,
             delete_action_default: self.delete_action_default,
             auto_retry_count,
@@ -253,6 +267,15 @@ pub(crate) struct SettingsModalState {
     pub cmd_path_input: Entity<InputState>,
     pub cmd_args_input: Entity<InputState>,
     pub extension_id_input: Entity<InputState>,
+    pub cat_name_input: Entity<InputState>,
+    pub cat_extensions_input: Entity<InputState>,
+    pub cat_patterns_input: Entity<InputState>,
+    pub cat_dir_input: Entity<InputState>,
+    pub cat_filter_input: Entity<InputState>,
+    pub cat_rule_test_input: Entity<InputState>,
+    pub categories: Vec<DownloadCategory>,
+    pub selected_category_id: String,
+    pub cat_picker_open: bool,
     pub browser_statuses: Vec<(&'static str, bool)>,
     pub integration_feedback: Option<Result<String, String>>,
     pub system_feedback: Option<Result<String, String>>,
@@ -261,8 +284,28 @@ pub(crate) struct SettingsModalState {
 }
 
 impl SettingsModalState {
-    pub fn from_settings(settings: &Settings, window: &mut Window, cx: &mut App) -> Self {
+    pub fn from_settings(
+        settings: &Settings,
+        categories: Vec<DownloadCategory>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Self {
         let draft = SettingsDraft::from_settings(settings);
+        let categories = if categories.is_empty() {
+            default_builtin_categories()
+        } else {
+            categories
+        };
+        let selected_category_id = categories
+            .iter()
+            .find(|c| c.id == GENERAL_CATEGORY_ID)
+            .or_else(|| categories.first())
+            .map(|c| c.id.clone())
+            .unwrap_or_else(|| GENERAL_CATEGORY_ID.to_string());
+        let initial_cat = categories
+            .iter()
+            .find(|c| c.id == selected_category_id)
+            .cloned();
         let dir_input = cx.new(|cx| {
             let mut st = InputState::new(window, cx).placeholder("Default save folder");
             st.set_value(draft.dir.clone(), window, cx);
@@ -314,6 +357,34 @@ impl SettingsModalState {
             );
             st
         });
+        let cat_name_input = cx.new(|cx| {
+            let mut st = InputState::new(window, cx).placeholder("Category name");
+            if let Some(ref c) = initial_cat {
+                st.set_value(c.name.clone(), window, cx);
+            }
+            st
+        });
+        let cat_extensions_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("Add type (Enter or ,)...")
+        });
+        let cat_patterns_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("Add host/URL (Enter or ,)...")
+        });
+        let cat_dir_input = cx.new(|cx| {
+            let mut st = InputState::new(window, cx).placeholder("Default subfolder under save directory");
+            if let Some(ref c) = initial_cat
+                && let Some(ref dir) = c.output_dir
+            {
+                st.set_value(dir.to_string_lossy().to_string(), window, cx);
+            }
+            st
+        });
+        let cat_filter_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("Filter categories")
+        });
+        let cat_rule_test_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("Test filename or URL (e.g. ubuntu-24.04.iso)")
+        });
         let browser_statuses = crate::browser_integration::query_browser_statuses();
 
         Self {
@@ -327,12 +398,160 @@ impl SettingsModalState {
             cmd_path_input,
             cmd_args_input,
             extension_id_input,
+            cat_name_input,
+            cat_extensions_input,
+            cat_patterns_input,
+            cat_dir_input,
+            cat_filter_input,
+            cat_rule_test_input,
+            categories,
+            selected_category_id,
+            cat_picker_open: false,
             browser_statuses,
             integration_feedback: None,
             system_feedback: None,
             draft,
             error: None,
         }
+    }
+
+    /// Commits typed tokens from `cat_extensions_input` as chips on the active category.
+    pub fn commit_extension_input(&mut self, window: &mut Window, cx: &mut App) {
+        let raw = self.cat_extensions_input.read(cx).value().to_string();
+        let additions = normalize_extension_list(&raw);
+        if !additions.is_empty()
+            && self.selected_category_id != GENERAL_CATEGORY_ID
+            && let Some(cat) = self
+                .categories
+                .iter_mut()
+                .find(|c| c.id == self.selected_category_id)
+        {
+            merge_unique_tokens(&mut cat.extensions, additions);
+        }
+        if !raw.is_empty() {
+            self.cat_extensions_input.update(cx, |st, cx| {
+                st.set_value("", window, cx);
+            });
+        }
+    }
+
+    /// Commits typed tokens from `cat_patterns_input` as chips on the active category.
+    pub fn commit_pattern_input(&mut self, window: &mut Window, cx: &mut App) {
+        let raw = self.cat_patterns_input.read(cx).value().to_string();
+        let additions = normalize_pattern_list(&raw);
+        if !additions.is_empty()
+            && self.selected_category_id != GENERAL_CATEGORY_ID
+            && let Some(cat) = self
+                .categories
+                .iter_mut()
+                .find(|c| c.id == self.selected_category_id)
+        {
+            merge_unique_tokens(&mut cat.url_patterns, additions);
+        }
+        if !raw.is_empty() {
+            self.cat_patterns_input.update(cx, |st, cx| {
+                st.set_value("", window, cx);
+            });
+        }
+    }
+
+    /// Flushes edits from the active category text inputs back into `self.categories`.
+    pub fn sync_selected_category_from_inputs(&mut self, cx: &App) {
+        let Some(cat) = self
+            .categories
+            .iter_mut()
+            .find(|c| c.id == self.selected_category_id)
+        else {
+            return;
+        };
+        let is_general = cat.id == GENERAL_CATEGORY_ID;
+        if !is_general {
+            let name = self.cat_name_input.read(cx).value().trim().to_string();
+            if !name.is_empty() {
+                cat.name = name;
+            }
+            merge_unique_tokens(
+                &mut cat.extensions,
+                normalize_extension_list(&self.cat_extensions_input.read(cx).value()),
+            );
+            merge_unique_tokens(
+                &mut cat.url_patterns,
+                normalize_pattern_list(&self.cat_patterns_input.read(cx).value()),
+            );
+        }
+        let raw_dir = self.cat_dir_input.read(cx).value().trim().to_string();
+        cat.output_dir = (!raw_dir.is_empty()).then(|| PathBuf::from(raw_dir));
+    }
+
+    /// Loads `self.selected_category_id` fields into the category text inputs.
+    pub fn load_selected_category_into_inputs(&self, window: &mut Window, cx: &mut App) {
+        let Some(cat) = self
+            .categories
+            .iter()
+            .find(|c| c.id == self.selected_category_id)
+        else {
+            return;
+        };
+        let name = cat.name.clone();
+        let dir_str = cat
+            .output_dir
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        self.cat_name_input.update(cx, |st, cx| {
+            st.set_value(name, window, cx);
+        });
+        self.cat_extensions_input.update(cx, |st, cx| {
+            st.set_value("", window, cx);
+        });
+        self.cat_patterns_input.update(cx, |st, cx| {
+            st.set_value("", window, cx);
+        });
+        self.cat_dir_input.update(cx, |st, cx| {
+            st.set_value(dir_str, window, cx);
+        });
+    }
+
+    /// Returns a live preview snapshot of `self.categories` incorporating unsaved input edits.
+    pub fn live_categories_snapshot(&self, cx: &App) -> Vec<DownloadCategory> {
+        let mut copy = self.categories.clone();
+        if let Some(cat) = copy.iter_mut().find(|c| c.id == self.selected_category_id) {
+            let is_general = cat.id == GENERAL_CATEGORY_ID;
+            if !is_general {
+                let name = self.cat_name_input.read(cx).value().trim().to_string();
+                if !name.is_empty() {
+                    cat.name = name;
+                }
+                merge_unique_tokens(
+                    &mut cat.extensions,
+                    normalize_extension_list(&self.cat_extensions_input.read(cx).value()),
+                );
+                merge_unique_tokens(
+                    &mut cat.url_patterns,
+                    normalize_pattern_list(&self.cat_patterns_input.read(cx).value()),
+                );
+            }
+            let raw_dir = self.cat_dir_input.read(cx).value().trim().to_string();
+            cat.output_dir = (!raw_dir.is_empty()).then(|| PathBuf::from(raw_dir));
+        }
+        copy
+    }
+
+    /// Validates and returns the category list for persistence.
+    pub fn apply_categories(&mut self, cx: &App) -> Result<Vec<DownloadCategory>, String> {
+        self.sync_selected_category_from_inputs(cx);
+        for cat in &self.categories {
+            if cat.name.trim().is_empty() {
+                return Err("Category name cannot be empty.".to_string());
+            }
+        }
+        if self.selected_category_id != GENERAL_CATEGORY_ID
+            && self.cat_name_input.read(cx).value().trim().is_empty()
+        {
+            return Err("Category name cannot be empty.".to_string());
+        }
+        Ok(self.categories.clone())
     }
 
     pub fn handle_action(&mut self, action: SettingsAction, window: &mut Window, cx: &mut App) {
@@ -353,6 +572,141 @@ impl SettingsModalState {
             SettingsAction::ToggleAutoCategorize => {
                 self.draft.auto_categorize_folders = !self.draft.auto_categorize_folders;
             }
+            SettingsAction::ToggleCategoryUrlPrecedence => {
+                self.draft.category_url_rule_precedence = !self.draft.category_url_rule_precedence;
+            }
+            SettingsAction::ToggleSetFileTimeFromServer => {
+                self.draft.set_file_time_from_server = !self.draft.set_file_time_from_server;
+            }
+            SettingsAction::ToggleCategoryPicker => {
+                self.sync_selected_category_from_inputs(cx);
+                self.cat_picker_open = !self.cat_picker_open;
+            }
+            SettingsAction::SelectCategory(id) => {
+                self.sync_selected_category_from_inputs(cx);
+                if self.categories.iter().any(|c| c.id == id) {
+                    self.selected_category_id = id;
+                    self.load_selected_category_into_inputs(window, cx);
+                }
+                self.cat_picker_open = false;
+            }
+            SettingsAction::NewCategory => {
+                self.sync_selected_category_from_inputs(cx);
+                let mut idx = self.categories.len();
+                let (id, name) = loop {
+                    idx += 1;
+                    let cand_id = format!("custom-{idx}");
+                    let cand_name = format!("Custom {idx}");
+                    if !self
+                        .categories
+                        .iter()
+                        .any(|c| c.id == cand_id || c.name.eq_ignore_ascii_case(&cand_name))
+                    {
+                        break (cand_id, cand_name);
+                    }
+                };
+                let next_order = self
+                    .categories
+                    .iter()
+                    .filter(|c| c.id != GENERAL_CATEGORY_ID)
+                    .map(|c| c.sort_order)
+                    .max()
+                    .unwrap_or(0)
+                    + 10;
+                let new_cat = DownloadCategory {
+                    id: id.clone(),
+                    name,
+                    extensions: Vec::new(),
+                    url_patterns: Vec::new(),
+                    output_dir: None,
+                    remember_last_folder: false,
+                    is_builtin: false,
+                    sort_order: next_order.min(9990),
+                };
+                let insert_pos = self
+                    .categories
+                    .iter()
+                    .position(|c| c.id == GENERAL_CATEGORY_ID)
+                    .unwrap_or(self.categories.len());
+                self.categories.insert(insert_pos, new_cat);
+                self.selected_category_id = id;
+                self.cat_picker_open = false;
+                self.cat_filter_input.update(cx, |st, cx| {
+                    st.set_value("", window, cx);
+                });
+                self.load_selected_category_into_inputs(window, cx);
+            }
+            SettingsAction::DeleteSelectedCategory => {
+                if self.selected_category_id != GENERAL_CATEGORY_ID
+                    && self
+                        .categories
+                        .iter()
+                        .any(|c| c.id == self.selected_category_id && !c.is_builtin)
+                {
+                    self.categories.retain(|c| c.id != self.selected_category_id);
+                    self.selected_category_id = GENERAL_CATEGORY_ID.to_string();
+                    self.cat_picker_open = false;
+                    self.load_selected_category_into_inputs(window, cx);
+                }
+            }
+            SettingsAction::ResetDefaultCategories => {
+                self.categories = default_builtin_categories();
+                self.selected_category_id = GENERAL_CATEGORY_ID.to_string();
+                self.cat_picker_open = false;
+                self.cat_filter_input.update(cx, |st, cx| {
+                    st.set_value("", window, cx);
+                });
+                self.load_selected_category_into_inputs(window, cx);
+            }
+            SettingsAction::ToggleCategoryRememberFolder => {
+                self.sync_selected_category_from_inputs(cx);
+                if let Some(cat) = self
+                    .categories
+                    .iter_mut()
+                    .find(|c| c.id == self.selected_category_id)
+                {
+                    cat.remember_last_folder = !cat.remember_last_folder;
+                }
+            }
+            SettingsAction::ClearCategoryFolder => {
+                self.cat_dir_input.update(cx, |st, cx| {
+                    st.set_value("", window, cx);
+                });
+                if let Some(cat) = self
+                    .categories
+                    .iter_mut()
+                    .find(|c| c.id == self.selected_category_id)
+                {
+                    cat.output_dir = None;
+                }
+            }
+            SettingsAction::AddCategoryExtension => {
+                self.commit_extension_input(window, cx);
+            }
+            SettingsAction::RemoveCategoryExtension(ext) => {
+                if self.selected_category_id != GENERAL_CATEGORY_ID
+                    && let Some(cat) = self
+                        .categories
+                        .iter_mut()
+                        .find(|c| c.id == self.selected_category_id)
+                {
+                    cat.extensions.retain(|e| e != &ext);
+                }
+            }
+            SettingsAction::AddCategoryPattern => {
+                self.commit_pattern_input(window, cx);
+            }
+            SettingsAction::RemoveCategoryPattern(pat) => {
+                if self.selected_category_id != GENERAL_CATEGORY_ID
+                    && let Some(cat) = self
+                        .categories
+                        .iter_mut()
+                        .find(|c| c.id == self.selected_category_id)
+                {
+                    cat.url_patterns.retain(|p| p != &pat);
+                }
+            }
+            SettingsAction::BrowseCategoryFolder => {}
             SettingsAction::ToggleCompletionCmd => {
                 self.draft.completion_cmd_enabled = !self.draft.completion_cmd_enabled;
             }
@@ -460,6 +814,8 @@ impl SettingsModalState {
                         "proxy_url": settings.proxy_url,
                         "download_speed_limit_kib": settings.download_speed_limit_kib,
                         "auto_categorize_folders": settings.auto_categorize_folders,
+                        "category_url_rule_precedence": settings.category_url_rule_precedence,
+                        "set_file_time_from_server": settings.set_file_time_from_server,
                         "collision_policy": format!("{:?}", settings.collision_policy),
                         "delete_action_default": format!("{:?}", settings.delete_action_default),
                         "auto_retry_count": settings.auto_retry_count,
@@ -494,7 +850,12 @@ impl SettingsModalState {
                 }
             }
             SettingsAction::ResetToDefaults => {
-                *self = Self::from_settings(&Settings::default(), window, cx);
+                *self = Self::from_settings(
+                    &Settings::default(),
+                    default_builtin_categories(),
+                    window,
+                    cx,
+                );
                 self.active_tab = SettingsTab::System;
                 self.system_feedback = Some(Ok(
                     "Restored factory defaults. Click Apply or Save Settings to keep.".to_string(),
@@ -539,6 +900,20 @@ pub(crate) enum SettingsAction {
     SetTheme(String),
     ToggleSyncOnComplete,
     ToggleAutoCategorize,
+    ToggleCategoryUrlPrecedence,
+    ToggleSetFileTimeFromServer,
+    ToggleCategoryPicker,
+    SelectCategory(String),
+    NewCategory,
+    DeleteSelectedCategory,
+    ResetDefaultCategories,
+    ToggleCategoryRememberFolder,
+    BrowseCategoryFolder,
+    ClearCategoryFolder,
+    AddCategoryExtension,
+    RemoveCategoryExtension(String),
+    AddCategoryPattern,
+    RemoveCategoryPattern(String),
     ToggleCompletionCmd,
     ApplyDefenderPreset,
     ToggleNotifyAdded,
@@ -575,10 +950,12 @@ pub(crate) enum SettingsAction {
 
 /// Renders the two-pane Settings navigation, scrollable tab content, validation error bar,
 /// and `CANCEL` / `APPLY` / `SAVE SETTINGS` footer for [`SettingsWindow`](crate::settings_window::SettingsWindow).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn render_settings_window_body<F1, F2, F3, F4>(
     state: &SettingsModalState,
     update_state: &UpdateState,
     is_portable: bool,
+    cx: &App,
     on_action: F1,
     on_cancel: F2,
     on_apply: F3,
@@ -592,7 +969,7 @@ where
 {
     let body = match state.active_tab {
         SettingsTab::General => render_general_tab(state, on_action.clone()),
-        SettingsTab::Downloads => render_downloads_tab(state, on_action.clone()),
+        SettingsTab::Downloads => render_downloads_tab(state, cx, on_action.clone()),
         SettingsTab::Network => render_network_tab(state, on_action.clone()),
         SettingsTab::Appearance => render_appearance_tab(state, on_action.clone()),
         SettingsTab::Integrations => render_integrations_tab(state, on_action.clone()),
@@ -613,7 +990,8 @@ where
                 .flex()
                 .child(
                     div()
-                        .w(px(176.0))
+                        .w(px(SETTINGS_SIDEBAR_WIDTH))
+                        .flex_shrink_0()
                         .h_full()
                         .bg(graphite_bg())
                         .border_r_1()
@@ -647,7 +1025,7 @@ where
                                 } else {
                                     Hsla::transparent_black()
                                 }))
-                                .child(Icon::new(tab.icon()).size(px(13.0)).text_color(
+                                .child(Icon::new(tab.icon()).size(px(14.0)).text_color(
                                     if active {
                                         selenium_amber()
                                     } else {
@@ -661,7 +1039,7 @@ where
                                         .text_size(TYPE_MICRO)
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(if active { silver_text() } else { silver_muted() })
-                                        .child(tab.label().to_uppercase()),
+                                        .child(tab.label()),
                                 )
                         })),
                 )
@@ -671,7 +1049,7 @@ where
                         .flex_1()
                         .min_w_0()
                         .h_full()
-                        .bg(modal_bg())
+                        .bg(paper_bg())
                         .px_5()
                         .py_4()
                         .overflow_y_scroll()
@@ -692,7 +1070,7 @@ where
                                         .text_size(TYPE_HEADING)
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(silver_text())
-                                        .child(state.active_tab.label().to_uppercase()),
+                                        .child(state.active_tab.label()),
                                 )
                                 .child(
                                     div()
@@ -725,7 +1103,7 @@ where
                 .child(grid_cell_button(
                     "settings-cancel",
                     Some(IconName::X),
-                    Some("CANCEL"),
+                    Some("Cancel"),
                     None,
                     GridTone::Graphite,
                     CellBorder::Left,
@@ -735,7 +1113,7 @@ where
                 .child(grid_cell_button(
                     "settings-apply",
                     Some(IconName::Check),
-                    Some("APPLY"),
+                    Some("Apply"),
                     Some("Save settings and keep this window open"),
                     GridTone::Graphite,
                     CellBorder::Left,
@@ -745,7 +1123,7 @@ where
                 .child(grid_cell_button(
                     "settings-save",
                     Some(IconName::Check),
-                    Some("SAVE SETTINGS"),
+                    Some("Save settings"),
                     None,
                     GridTone::Primary,
                     CellBorder::Left,
@@ -769,7 +1147,7 @@ fn settings_section(title: &'static str, rows: Vec<AnyElement>) -> AnyElement {
                 .text_size(TYPE_HEADER)
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(silver_muted())
-                .child(title.to_uppercase()),
+                .child(title),
         )
         .child(
             div()
@@ -927,6 +1305,27 @@ fn toggle_row<F>(
 where
     F: Fn(SettingsAction, &mut Window, &mut App) + 'static,
 {
+    toggle_row_dyn(
+        id,
+        title.to_string(),
+        description.to_string(),
+        checked,
+        action,
+        on_action,
+    )
+}
+
+fn toggle_row_dyn<F>(
+    id: &'static str,
+    title: String,
+    description: String,
+    checked: bool,
+    action: SettingsAction,
+    on_action: F,
+) -> AnyElement
+where
+    F: Fn(SettingsAction, &mut Window, &mut App) + 'static,
+{
     div()
         .id(id)
         .w_full()
@@ -939,7 +1338,28 @@ where
         .cursor_pointer()
         .hover(|s| s.bg(paper_hover()))
         .on_click(move |_, window, cx| on_action(action.clone(), window, cx))
-        .child(setting_text(title, description))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap_0p5()
+                .child(
+                    div()
+                        .text_size(TYPE_BODY)
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(silver_text())
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .line_height(px(16.0))
+                        .text_color(silver_muted())
+                        .child(description),
+                ),
+        )
         .child(
             div()
                 .w(px(34.0))
@@ -1111,11 +1531,279 @@ where
         .into_any_element()
 }
 
-fn render_downloads_tab<F>(state: &SettingsModalState, on_action: F) -> AnyElement
+fn render_downloads_tab<F>(state: &SettingsModalState, cx: &App, on_action: F) -> AnyElement
 where
     F: Fn(SettingsAction, &mut Window, &mut App) + Clone + 'static,
 {
     let browse_action = on_action.clone();
+    let cat_browse_action = on_action.clone();
+    let cat_clear_action = on_action.clone();
+    let picker_toggle_action = on_action.clone();
+    let new_cat_action = on_action.clone();
+    let del_cat_action = on_action.clone();
+    let reset_cat_action = on_action.clone();
+
+    let live_cats = state.live_categories_snapshot(cx);
+    let selected_cat = live_cats
+        .iter()
+        .find(|c| c.id == state.selected_category_id)
+        .or_else(|| live_cats.first())
+        .cloned()
+        .unwrap_or_else(|| default_builtin_categories().into_iter().last().unwrap());
+    let is_general = selected_cat.id == GENERAL_CATEGORY_ID;
+    let base_dir_str = state.dir_input.read(cx).value();
+    let base_dir = PathBuf::from(base_dir_str.trim());
+    let resolved_cat_dir = effective_category_dir(&selected_cat, &base_dir)
+        .to_string_lossy()
+        .to_string();
+
+    let conflicts = find_extension_conflicts(&live_cats);
+    let active_conflicts: Vec<String> = selected_cat
+        .extensions
+        .iter()
+        .filter_map(|ext| {
+            conflicts
+                .get(ext)
+                .map(|owners| format!(".{ext} ({})", owners.join(", ")))
+        })
+        .collect();
+
+    let test_query = state.cat_rule_test_input.read(cx).value().trim().to_string();
+    let test_preview = if test_query.is_empty() {
+        "Type a filename or URL to preview routing".to_string()
+    } else {
+        let is_url = test_query.contains("://");
+        let fname = if is_url {
+            test_query
+                .split(['/', '?', '#'])
+                .rfind(|s| !s.is_empty())
+                .unwrap_or("file")
+        } else {
+            test_query.as_str()
+        };
+        let url_opt = is_url.then_some(test_query.as_str());
+        if let Some(matched) = resolve_category(
+            &live_cats,
+            fname,
+            url_opt,
+            state.draft.category_url_rule_precedence,
+        ) {
+            let dest = effective_category_dir(matched, &base_dir);
+            format!("{} -> {}", matched.name, dest.display())
+        } else {
+            "No category matched".to_string()
+        }
+    };
+
+    let cat_filter_query = state.cat_filter_input.read(cx).value().trim().to_ascii_lowercase();
+    let filtered_cats: Vec<_> = live_cats
+        .iter()
+        .filter(|cat| {
+            if cat_filter_query.is_empty() {
+                return true;
+            }
+            cat.name.to_ascii_lowercase().contains(&cat_filter_query)
+                || cat
+                    .extensions
+                    .iter()
+                    .any(|ext| ext.contains(&cat_filter_query))
+                || cat
+                    .url_patterns
+                    .iter()
+                    .any(|pat| pat.contains(&cat_filter_query))
+        })
+        .cloned()
+        .collect();
+    let total_cat_count = live_cats.len();
+    let shown_cat_count = filtered_cats.len();
+    let selected_rule_count = selected_cat.extensions.len() + selected_cat.url_patterns.len();
+    let selector_summary = if is_general {
+        format!("Catch-all · {total_cat_count} total")
+    } else if !active_conflicts.is_empty() {
+        format!(
+            "! {} conflict(s) · {total_cat_count} total",
+            active_conflicts.len()
+        )
+    } else {
+        format!("{selected_rule_count} rules · {total_cat_count} total")
+    };
+    let cat_role_tag = if is_general {
+        "Fallback"
+    } else if selected_cat.is_builtin {
+        "Built-in"
+    } else {
+        "Custom"
+    };
+
+    let committed_cat = state
+        .categories
+        .iter()
+        .find(|c| c.id == selected_cat.id)
+        .unwrap_or(&selected_cat);
+    let committed_exts = committed_cat.extensions.clone();
+    let committed_pats = committed_cat.url_patterns.clone();
+    let has_ext_draft = !state.cat_extensions_input.read(cx).value().trim().is_empty();
+    let has_pat_draft = !state.cat_patterns_input.read(cx).value().trim().is_empty();
+
+    let compact_cat_field = |label: &'static str, input: &Entity<InputState>| {
+        div()
+            .w_full()
+            .border_t_1()
+            .border_l_1()
+            .border_r_1()
+            .border_color(graphite_border())
+            .child(grid_kv_row_with_bg(
+                label,
+                96.0,
+                div()
+                    .w_full()
+                    .font_family(MONO_FONT)
+                    .text_size(TYPE_BODY)
+                    .child(Input::new(input).appearance(false)),
+                GridTone::Graphite,
+                Some(input_bg()),
+            ))
+    };
+
+    let compact_chip_field = {
+        let conflicts_ref = &conflicts;
+        let on_action_chip = on_action.clone();
+        move |row_id: &'static str,
+              label: &'static str,
+              items: Vec<String>,
+              is_ext_field: bool,
+              input: &Entity<InputState>,
+              has_draft: bool| {
+            let add_act = on_action_chip.clone();
+            div()
+                .w_full()
+                .border_1()
+                .border_color(graphite_border())
+                .flex()
+                .items_stretch()
+                .child(
+                    div()
+                        .w(px(96.0))
+                        .flex_shrink_0()
+                        .bg(graphite_elevated())
+                        .border_r_1()
+                        .border_color(graphite_border())
+                        .px_2p5()
+                        .py_2()
+                        .flex()
+                        .items_start()
+                        .text_size(TYPE_MICRO)
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(silver_muted())
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .bg(input_bg())
+                        .px_2p5()
+                        .py_1p5()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .gap_1p5()
+                        .children(items.into_iter().enumerate().map(|(idx, token)| {
+                            let is_conflicted = is_ext_field && conflicts_ref.contains_key(&token);
+                            let remove_act = on_action_chip.clone();
+                            let token_for_remove = token.clone();
+                            div()
+                                .h(px(22.0))
+                                .px_1p5()
+                                .bg(graphite_elevated())
+                                .border_1()
+                                .border_color(if is_conflicted {
+                                    selenium_amber()
+                                } else {
+                                    graphite_border()
+                                })
+                                .flex()
+                                .items_center()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .font_family(MONO_FONT)
+                                        .text_size(TYPE_MICRO)
+                                        .text_color(if is_conflicted {
+                                            selenium_amber()
+                                        } else {
+                                            silver_text()
+                                        })
+                                        .child(token),
+                                )
+                                .child(
+                                    div()
+                                        .id((row_id, idx))
+                                        .cursor_pointer()
+                                        .text_color(silver_muted())
+                                        .hover(|s| s.text_color(errata_vermilion()))
+                                        .on_click(move |_, window, cx| {
+                                            let action = if is_ext_field {
+                                                SettingsAction::RemoveCategoryExtension(
+                                                    token_for_remove.clone(),
+                                                )
+                                            } else {
+                                                SettingsAction::RemoveCategoryPattern(
+                                                    token_for_remove.clone(),
+                                                )
+                                            };
+                                            remove_act(action, window, cx);
+                                        })
+                                        .child(Icon::new(IconName::X).size(px(10.0))),
+                                )
+                        }))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(136.0))
+                                .h(px(22.0))
+                                .flex()
+                                .items_center()
+                                .font_family(MONO_FONT)
+                                .text_size(TYPE_MICRO)
+                                .child(Input::new(input).appearance(false)),
+                        )
+                        .when(has_draft, |el| {
+                            el.child(
+                                div()
+                                    .id((row_id, 9999usize))
+                                    .h(px(22.0))
+                                    .px_2()
+                                    .bg(graphite_elevated())
+                                    .border_1()
+                                    .border_color(selenium_amber())
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(paper_hover()))
+                                    .flex()
+                                    .items_center()
+                                    .font_family(MONO_FONT)
+                                    .text_size(px(10.0))
+                                    .text_color(selenium_amber())
+                                    .on_click(move |_, window, cx| {
+                                        let action = if is_ext_field {
+                                            SettingsAction::AddCategoryExtension
+                                        } else {
+                                            SettingsAction::AddCategoryPattern
+                                        };
+                                        add_act(action, window, cx);
+                                    })
+                                    .child("+ Add"),
+                            )
+                        }),
+                )
+        }
+    };
+
+    let remember_title = format!(
+        "Change folder for \"{}\" on last selected",
+        selected_cat.name
+    );
+
     div()
         .flex()
         .flex_col()
@@ -1145,7 +1833,7 @@ where
                                 .child(grid_cell_button(
                                     "settings-browse-dir",
                                     Some(IconName::FolderOpen),
-                                    Some("BROWSE"),
+                                    Some("Browse"),
                                     Some("Choose default download folder"),
                                     GridTone::Graphite,
                                     CellBorder::Left,
@@ -1155,14 +1843,6 @@ where
                                     },
                                 )),
                         ),
-                ),
-                toggle_row(
-                    "settings-auto-categorize",
-                    "Sort by File Type",
-                    "Route files into Archives, Video, Audio, Documents, and Programs subfolders.",
-                    state.draft.auto_categorize_folders,
-                    SettingsAction::ToggleAutoCategorize,
-                    on_action.clone(),
                 ),
                 toggle_row(
                     "ui-lock-ext",
@@ -1178,6 +1858,591 @@ where
                     "Include the Add Paused button alongside Download Now.",
                     state.draft.ui_show_add_paused,
                     SettingsAction::ToggleShowAddPaused,
+                    on_action.clone(),
+                ),
+            ],
+        ))
+        .child(settings_section(
+            "Categories, File Types & Folders",
+            vec![
+                toggle_row(
+                    "settings-auto-categorize",
+                    "Auto-categorize downloads",
+                    "Route new downloads into category folders using file types and host/URL rules.",
+                    state.draft.auto_categorize_folders,
+                    SettingsAction::ToggleAutoCategorize,
+                    on_action.clone(),
+                ),
+                toggle_row(
+                    "settings-url-rule-precedence",
+                    "Prioritize host / URL rules over extensions",
+                    "When enabled, matching URL or domain rules take precedence over file extension rules.",
+                    state.draft.category_url_rule_precedence,
+                    SettingsAction::ToggleCategoryUrlPrecedence,
+                    on_action.clone(),
+                ),
+                stacked_row(
+                    div()
+                        .w_full()
+                        .bg(graphite_bg())
+                        .border_1()
+                        .border_color(graphite_border())
+                        .flex()
+                        .flex_col()
+                        .overflow_hidden()
+                        // Top Category Selector Bar: Full-width picker trigger + crisp right actions
+                        .child(
+                            div()
+                                .h(px(36.0))
+                                .w_full()
+                                .bg(graphite_elevated())
+                                .border_b_1()
+                                .border_color(graphite_border())
+                                .flex()
+                                .items_center()
+                                .child(
+                                    div()
+                                        .id("settings-cat-selector")
+                                        .flex_1()
+                                        .min_w_0()
+                                        .h_full()
+                                        .cursor_pointer()
+                                        .hover(|s| s.bg(paper_hover()))
+                                        .flex()
+                                        .items_center()
+                                        .justify_between()
+                                        .on_click(move |_, window, cx| {
+                                            picker_toggle_action(
+                                                SettingsAction::ToggleCategoryPicker,
+                                                window,
+                                                cx,
+                                            );
+                                        })
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .h_full()
+                                                .flex()
+                                                .items_center()
+                                                .gap_2()
+                                                .pr_2()
+                                                .child(
+                                                    div()
+                                                        .w(px(3.0))
+                                                        .h_full()
+                                                        .bg(selenium_amber()),
+                                                )
+                                                .child(
+                                                    Icon::new(IconName::Folder)
+                                                        .size(px(13.0))
+                                                        .text_color(silver_muted()),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .text_size(TYPE_BODY)
+                                                        .font_weight(FontWeight::SEMIBOLD)
+                                                        .text_color(silver_text())
+                                                        .truncate()
+                                                        .child(selected_cat.name.clone()),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .flex_shrink_0()
+                                                        .px_1p5()
+                                                        .py_0p5()
+                                                        .bg(graphite_bg())
+                                                        .border_1()
+                                                        .border_color(graphite_border())
+                                                        .font_family(MONO_FONT)
+                                                        .text_size(px(10.0))
+                                                        .text_color(silver_muted())
+                                                        .child(cat_role_tag),
+                                                ),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex_shrink_0()
+                                                .pr_2p5()
+                                                .flex()
+                                                .items_center()
+                                                .gap_2()
+                                                .child(
+                                                    div()
+                                                        .font_family(MONO_FONT)
+                                                        .text_size(px(10.0))
+                                                        .text_color(if active_conflicts.is_empty() {
+                                                            silver_muted()
+                                                        } else {
+                                                            selenium_amber()
+                                                        })
+                                                        .child(selector_summary),
+                                                )
+                                                .child(
+                                                    Icon::new(if state.cat_picker_open {
+                                                        IconName::ChevronUp
+                                                    } else {
+                                                        IconName::ChevronDown
+                                                    })
+                                                    .size(px(13.0))
+                                                    .text_color(silver_muted()),
+                                                ),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .flex_shrink_0()
+                                        .h_full()
+                                        .flex()
+                                        .items_center()
+                                        .child(grid_cell_button(
+                                            "settings-cat-new",
+                                            Some(IconName::Plus),
+                                            Some("New"),
+                                            Some("Create a new custom category"),
+                                            GridTone::Graphite,
+                                            CellBorder::Left,
+                                            true,
+                                            move |_, window, cx| {
+                                                new_cat_action(
+                                                    SettingsAction::NewCategory,
+                                                    window,
+                                                    cx,
+                                                );
+                                            },
+                                        ))
+                                        .when(!selected_cat.is_builtin, |el| {
+                                            el.child(grid_cell_button(
+                                                "settings-cat-del",
+                                                Some(IconName::Trash),
+                                                Some("Delete"),
+                                                Some("Delete selected custom category"),
+                                                GridTone::Danger,
+                                                CellBorder::Left,
+                                                true,
+                                                move |_, window, cx| {
+                                                    del_cat_action(
+                                                        SettingsAction::DeleteSelectedCategory,
+                                                        window,
+                                                        cx,
+                                                    );
+                                                },
+                                            ))
+                                        })
+                                        .child(grid_cell_button(
+                                            "settings-cat-reset",
+                                            Some(IconName::RotateCcw),
+                                            None,
+                                            Some("Restore default built-in categories"),
+                                            GridTone::Graphite,
+                                            CellBorder::Left,
+                                            true,
+                                            move |_, window, cx| {
+                                                reset_cat_action(
+                                                    SettingsAction::ResetDefaultCategories,
+                                                    window,
+                                                    cx,
+                                                );
+                                            },
+                                        )),
+                                ),
+                        )
+                        // Expandable Searchable Picker Drawer: handles 10..200 categories at full width
+                        .when(state.cat_picker_open, |el| {
+                            el.child(
+                                div()
+                                    .w_full()
+                                    .border_b_1()
+                                    .border_color(graphite_border())
+                                    .bg(graphite_elevated().opacity(0.45))
+                                    .flex()
+                                    .flex_col()
+                                    .child(
+                                        div()
+                                            .h(px(30.0))
+                                            .w_full()
+                                            .px_2p5()
+                                            .bg(input_bg())
+                                            .border_b_1()
+                                            .border_color(graphite_border())
+                                            .flex()
+                                            .items_center()
+                                            .gap_2()
+                                            .child(
+                                                Icon::new(IconName::Search)
+                                                    .size(px(12.0))
+                                                    .text_color(silver_muted()),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .font_family(MONO_FONT)
+                                                    .text_size(TYPE_MICRO)
+                                                    .child(
+                                                        Input::new(&state.cat_filter_input)
+                                                            .appearance(false),
+                                                    ),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex_shrink_0()
+                                                    .font_family(MONO_FONT)
+                                                    .text_size(px(10.0))
+                                                    .text_color(silver_muted())
+                                                    .child(format!(
+                                                        "{shown_cat_count}/{total_cat_count}"
+                                                    )),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("settings-cat-picker-list")
+                                            .w_full()
+                                            .max_h(px(192.0))
+                                            .overflow_y_scroll()
+                                            .flex()
+                                            .flex_col()
+                                            .when(filtered_cats.is_empty(), |list| {
+                                                list.child(
+                                                    div()
+                                                        .px_3()
+                                                        .py_3()
+                                                        .font_family(MONO_FONT)
+                                                        .text_size(TYPE_MICRO)
+                                                        .text_color(silver_muted())
+                                                        .child("No matching categories"),
+                                                )
+                                            })
+                                            .children(filtered_cats.into_iter().enumerate().map(
+                                                |(idx, cat)| {
+                                                    let is_sel =
+                                                        cat.id == state.selected_category_id;
+                                                    let cat_id = cat.id.clone();
+                                                    let act = on_action.clone();
+                                                    let has_conflict = cat
+                                                        .extensions
+                                                        .iter()
+                                                        .any(|e| conflicts.contains_key(e));
+                                                    let rule_preview = if cat.id
+                                                        == GENERAL_CATEGORY_ID
+                                                    {
+                                                        "Fallback for unmatched downloads"
+                                                            .to_string()
+                                                    } else {
+                                                        let mut parts: Vec<String> = cat
+                                                            .extensions
+                                                            .iter()
+                                                            .cloned()
+                                                            .chain(cat.url_patterns.iter().cloned())
+                                                            .collect();
+                                                        if parts.is_empty() {
+                                                            "No rules configured".to_string()
+                                                        } else {
+                                                            let total_parts = parts.len();
+                                                            parts.truncate(4);
+                                                            if total_parts > 4 {
+                                                                format!(
+                                                                    "{} (+{})",
+                                                                    parts.join(", "),
+                                                                    total_parts - 4
+                                                                )
+                                                            } else {
+                                                                parts.join(", ")
+                                                            }
+                                                        }
+                                                    };
+                                                    let role = if cat.id == GENERAL_CATEGORY_ID {
+                                                        "Fallback"
+                                                    } else if cat.is_builtin {
+                                                        "Built-in"
+                                                    } else {
+                                                        "Custom"
+                                                    };
+                                                    div()
+                                                        .id(("settings-cat-row", idx))
+                                                        .h(px(30.0))
+                                                        .w_full()
+                                                        .flex_shrink_0()
+                                                        .border_b_1()
+                                                        .border_color(graphite_border())
+                                                        .bg(if is_sel {
+                                                            paper_selected()
+                                                        } else {
+                                                            Hsla::transparent_black()
+                                                        })
+                                                        .hover(|s| s.bg(paper_hover()))
+                                                        .cursor_pointer()
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_between()
+                                                        .gap_3()
+                                                        .on_click(move |_, window, cx| {
+                                                            act(
+                                                                SettingsAction::SelectCategory(
+                                                                    cat_id.clone(),
+                                                                ),
+                                                                window,
+                                                                cx,
+                                                            );
+                                                        })
+                                                        .child(
+                                                            div()
+                                                                .flex()
+                                                                .items_center()
+                                                                .flex_1()
+                                                                .min_w_0()
+                                                                .h_full()
+                                                                .gap_3()
+                                                                .child(
+                                                                    div()
+                                                                        .w(px(3.0))
+                                                                        .h_full()
+                                                                        .flex_shrink_0()
+                                                                        .bg(if is_sel {
+                                                                            selenium_amber()
+                                                                        } else {
+                                                                            Hsla::transparent_black()
+                                                                        }),
+                                                                )
+                                                                .child(
+                                                                    div()
+                                                                        .w(px(124.0))
+                                                                        .flex_shrink_0()
+                                                                        .text_size(TYPE_MICRO)
+                                                                        .font_weight(if is_sel {
+                                                                            FontWeight::SEMIBOLD
+                                                                        } else {
+                                                                            FontWeight::NORMAL
+                                                                        })
+                                                                        .text_color(if is_sel {
+                                                                            silver_text()
+                                                                        } else {
+                                                                            silver_muted()
+                                                                        })
+                                                                        .truncate()
+                                                                        .child(cat.name),
+                                                                )
+                                                                .child(
+                                                                    div()
+                                                                        .flex_1()
+                                                                        .min_w_0()
+                                                                        .font_family(MONO_FONT)
+                                                                        .text_size(px(10.0))
+                                                                        .text_color(silver_muted())
+                                                                        .truncate()
+                                                                        .child(rule_preview),
+                                                                ),
+                                                        )
+                                                        .child(
+                                                            div()
+                                                                .px_2p5()
+                                                                .flex_shrink_0()
+                                                                .flex()
+                                                                .items_center()
+                                                                .gap_2()
+                                                                .when(has_conflict, |el| {
+                                                                    el.child(
+                                                                        div()
+                                                                            .font_family(MONO_FONT)
+                                                                            .text_size(px(10.0))
+                                                                            .text_color(
+                                                                                selenium_amber(),
+                                                                            )
+                                                                            .child("!"),
+                                                                    )
+                                                                })
+                                                                .child(
+                                                                    div()
+                                                                        .font_family(MONO_FONT)
+                                                                        .text_size(px(10.0))
+                                                                        .text_color(if is_sel {
+                                                                            silver_text()
+                                                                        } else {
+                                                                            silver_muted()
+                                                                        })
+                                                                        .child(role),
+                                                                ),
+                                                        )
+                                                },
+                                            )),
+                                    ),
+                            )
+                        })
+                        // Full-Width Active Category Editor: unconstrained height so nothing clips
+                        .child(
+                            div()
+                                .id("settings-cat-detail")
+                                .w_full()
+                                .p_3()
+                                .flex()
+                                .flex_col()
+                                .gap_2()
+                                .when(!is_general, |el| {
+                                    el.child(compact_cat_field("Name", &state.cat_name_input))
+                                        .child(compact_chip_field(
+                                            "settings-cat-ext-chip",
+                                            "File types",
+                                            committed_exts,
+                                            true,
+                                            &state.cat_extensions_input,
+                                            has_ext_draft,
+                                        ))
+                                        .child(compact_chip_field(
+                                            "settings-cat-pat-chip",
+                                            "Host / URL",
+                                            committed_pats,
+                                            false,
+                                            &state.cat_patterns_input,
+                                            has_pat_draft,
+                                        ))
+                                })
+                                .when(is_general, |el| {
+                                    el.child(
+                                        div()
+                                            .w_full()
+                                            .px_3()
+                                            .py_2()
+                                            .bg(graphite_elevated())
+                                            .border_1()
+                                            .border_color(graphite_border())
+                                            .font_family(MONO_FONT)
+                                            .text_size(TYPE_MICRO)
+                                            .text_color(silver_muted())
+                                            .child("Catches any file types and URLs not listed in another category"),
+                                    )
+                                })
+                                .when(!active_conflicts.is_empty(), |el| {
+                                    el.child(
+                                        div()
+                                            .w_full()
+                                            .px_2p5()
+                                            .py_1p5()
+                                            .bg(graphite_elevated())
+                                            .border_1()
+                                            .border_color(selenium_amber())
+                                            .font_family(MONO_FONT)
+                                            .text_size(TYPE_MICRO)
+                                            .text_color(selenium_amber())
+                                            .child(format!(
+                                                "Shared extension(s): {}",
+                                                active_conflicts.join(", ")
+                                            )),
+                                    )
+                                })
+                                .child(
+                                    div()
+                                        .w_full()
+                                        .flex()
+                                        .items_stretch()
+                                        .child(
+                                            div().flex_1().min_w_0().child(compact_cat_field(
+                                                "Folder",
+                                                &state.cat_dir_input,
+                                            )),
+                                        )
+                                        .when(selected_cat.output_dir.is_some(), |el| {
+                                            el.child(
+                                                div()
+                                                    .border_t_1()
+                                                    .border_b_1()
+                                                    .border_color(graphite_border())
+                                                    .flex()
+                                                    .items_stretch()
+                                                    .child(grid_cell_button(
+                                                        "settings-cat-clear-dir",
+                                                        Some(IconName::X),
+                                                        None,
+                                                        Some("Reset to dynamic subfolder"),
+                                                        GridTone::Graphite,
+                                                        CellBorder::Left,
+                                                        true,
+                                                        move |_, window, cx| {
+                                                            cat_clear_action(
+                                                                SettingsAction::ClearCategoryFolder,
+                                                                window,
+                                                                cx,
+                                                            );
+                                                        },
+                                                    )),
+                                            )
+                                        })
+                                        .child(
+                                            div()
+                                                .border_t_1()
+                                                .border_b_1()
+                                                .border_r_1()
+                                                .border_color(graphite_border())
+                                                .flex()
+                                                .items_stretch()
+                                                .child(grid_cell_button(
+                                                    "settings-cat-browse-dir",
+                                                    Some(IconName::FolderOpen),
+                                                    Some("Browse"),
+                                                    Some("Choose directory for this category"),
+                                                    GridTone::Graphite,
+                                                    CellBorder::Left,
+                                                    true,
+                                                    move |_, window, cx| {
+                                                        cat_browse_action(
+                                                            SettingsAction::BrowseCategoryFolder,
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    },
+                                                )),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .font_family(MONO_FONT)
+                                        .text_size(TYPE_MICRO)
+                                        .text_color(silver_muted())
+                                        .truncate()
+                                        .child(format!("Resolved: {resolved_cat_dir}")),
+                                )
+                                .child(
+                                    div()
+                                        .border_1()
+                                        .border_color(graphite_border())
+                                        .bg(graphite_elevated().opacity(0.35))
+                                        .child(toggle_row_dyn(
+                                            "settings-cat-remember-dir",
+                                            remember_title,
+                                            "Update this folder when changed in Pre-Flight"
+                                                .to_string(),
+                                            selected_cat.remember_last_folder,
+                                            SettingsAction::ToggleCategoryRememberFolder,
+                                            on_action.clone(),
+                                        )),
+                                ),
+                        ),
+                ),
+                stacked_row(
+                    div()
+                        .w_full()
+                        .flex()
+                        .flex_col()
+                        .gap_1p5()
+                        .child(labeled_input("Rule Tester", &state.cat_rule_test_input))
+                        .child(
+                            div()
+                                .font_family(MONO_FONT)
+                                .text_size(TYPE_MICRO)
+                                .text_color(if test_query.is_empty() {
+                                    silver_muted()
+                                } else {
+                                    selenium_amber()
+                                })
+                                .child(test_preview),
+                        ),
+                ),
+                toggle_row(
+                    "settings-server-file-time",
+                    "Set file creation date as provided by the server",
+                    "Apply the HTTP Last-Modified timestamp to completed files on disk.",
+                    state.draft.set_file_time_from_server,
+                    SettingsAction::ToggleSetFileTimeFromServer,
                     on_action.clone(),
                 ),
             ],
@@ -1568,7 +2833,7 @@ where
                                             );
                                         })
                                         .child(swatch_dot(preset.accent))
-                                        .child(preset.name.to_uppercase())
+                                        .child(preset.name)
                                 })),
                         ),
                 ),
@@ -2117,6 +3382,14 @@ where
         .into_any_element()
 }
 
+fn merge_unique_tokens(existing: &mut Vec<String>, additions: Vec<String>) {
+    for token in additions {
+        if !existing.iter().any(|cur| cur == &token) {
+            existing.push(token);
+        }
+    }
+}
+
 fn mica_fallback_status_note(
     theme_id: &str,
     availability: Result<(), crate::platform_hooks::MicaFallbackReason>,
@@ -2176,12 +3449,16 @@ mod tests {
         draft.cmd_args = "   ".to_string();
         draft.ui_close_to_tray = false;
         draft.launch_on_startup = true;
+        draft.category_url_rule_precedence = false;
+        draft.set_file_time_from_server = true;
         let parsed = draft.into_settings().expect("valid draft");
         assert_eq!(parsed.max_workers, 16);
         assert_eq!(parsed.max_concurrent_downloads, 4);
         assert_eq!(parsed.completion_cmd_args, "%path%");
         assert!(!parsed.ui_close_to_tray);
         assert!(parsed.launch_on_startup);
+        assert!(!parsed.category_url_rule_precedence);
+        assert!(parsed.set_file_time_from_server);
 
         let mut bad_workers = SettingsDraft::from_settings(&defaults);
         bad_workers.workers = "33".to_string();

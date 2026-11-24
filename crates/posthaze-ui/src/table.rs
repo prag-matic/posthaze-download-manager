@@ -113,8 +113,8 @@ impl PosthazeApp {
                                     app.paste_and_probe_from_clipboard(window, cx);
                                 }
                             }))
-                            .child(Icon::new(IconName::Plus).size(px(12.0)))
-                            .child("ADD URL"),
+                            .child(Icon::new(IconName::Plus).size(px(14.0)))
+                            .child("Add URL"),
                     )
                     // Extensible top-header tools slot
                     .child(self.render_toolbar_tools(profile, selection.as_ref(), cx)),
@@ -135,72 +135,153 @@ impl PosthazeApp {
     /// Always-on filter row; selection actions live in the top toolbar row.
     fn render_filter_row(&self, cx: &mut Context<Self>) -> AnyElement {
         let has_query = !self.search_input.read(cx).value().is_empty();
+        let active_cat_label = self
+            .category_filter
+            .as_deref()
+            .and_then(|id| self.queue.categories.iter().find(|c| c.id == id))
+            .map(|c| c.name.clone())
+            .unwrap_or_else(|| "All".to_string());
+        let has_cat_filter = self.category_filter.is_some();
+
         div()
-                .h(px(34.0))
-                .w_full()
-                .flex()
-                .items_center()
-                .border_b_1()
-                .border_color(paper_border())
-                .child(
-                    div()
-                        .w(px(16.0 + COL_STATE))
-                        .flex_shrink_0()
-                        .h_full()
-                        .px_3()
-                        .border_r_1()
-                        .border_color(paper_border())
-                        .bg(table_header_bg())
-                        .flex()
-                        .items_center()
-                        .gap_1p5()
-                        .font_family(MONO_FONT)
-                        .text_size(TYPE_MICRO)
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(carbon_muted())
-                        .child(Icon::new(IconName::Search).size(px(12.0)))
-                        .child("FILTER"),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w(px(120.0))
-                        .h_full()
-                        .px_2()
-                        .bg(input_bg())
-                        .flex()
-                        .items_center()
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .font_family(MONO_FONT)
-                                .text_size(TYPE_BODY)
-                                .child(Input::new(&self.search_input).appearance(false)),
-                        ),
-                )
-                .when(has_query, |el| {
-                    el.child(self.toolbar_cell_button(
-                        "search-clear",
-                        IconName::X,
-                        None,
-                        "Clear Filter",
-                        false,
-                        cx.listener(|app, _, window, cx| {
-                            app.search_input.update(cx, |state, cx| {
-                                state.set_value("", window, cx);
-                            });
-                            app.focus_handle.focus(window, cx);
-                            cx.notify();
-                        }),
-                    ))
-                })
-                .into_any_element()
+            .h(px(34.0))
+            .w_full()
+            .flex()
+            .items_center()
+            .border_b_1()
+            .border_color(paper_border())
+            .child(
+                div()
+                    .w(px(16.0 + COL_STATE))
+                    .flex_shrink_0()
+                    .h_full()
+                    .px_3()
+                    .border_r_1()
+                    .border_color(paper_border())
+                    .bg(table_header_bg())
+                    .flex()
+                    .items_center()
+                    .gap_1p5()
+                    .font_family(MONO_FONT)
+                    .text_size(TYPE_MICRO)
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(carbon_muted())
+                    .child(Icon::new(IconName::Search).size(px(14.0)))
+                    .child("Filter"),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(120.0))
+                    .h_full()
+                    .px_2()
+                    .bg(input_bg())
+                    .flex()
+                    .items_center()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .font_family(MONO_FONT)
+                            .text_size(TYPE_BODY)
+                            .child(Input::new(&self.search_input).appearance(false)),
+                    ),
+            )
+            .when(has_query, |el| {
+                el.child(self.toolbar_cell_button(
+                    "search-clear",
+                    IconName::X,
+                    None,
+                    "Clear Filter",
+                    false,
+                    cx.listener(|app, _, window, cx| {
+                        app.search_input.update(cx, |state, cx| {
+                            state.set_value("", window, cx);
+                        });
+                        app.focus_handle.focus(window, cx);
+                        cx.notify();
+                    }),
+                ))
+            })
+            .child(
+                div()
+                    .id("table-category-filter")
+                    .h_full()
+                    .flex_shrink_0()
+                    .px_3()
+                    .border_l_1()
+                    .border_color(paper_border())
+                    .bg(if has_cat_filter {
+                        paper_selected()
+                    } else {
+                        table_header_bg()
+                    })
+                    .hover(|s| s.bg(paper_hover()))
+                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .gap_1p5()
+                    .font_family(MONO_FONT)
+                    .text_size(TYPE_MICRO)
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .tooltip(|window, cx| {
+                        Tooltip::new("Filter table by download category").build(window, cx)
+                    })
+                    .on_click(cx.listener(|app, _, _, cx| {
+                        app.category_filter_dropdown_open = !app.category_filter_dropdown_open;
+                        cx.notify();
+                    }))
+                    .child(
+                        Icon::new(IconName::Folder)
+                            .size(px(14.0))
+                            .text_color(if has_cat_filter {
+                                selenium_amber()
+                            } else {
+                                carbon_muted()
+                            }),
+                    )
+                    .child(div().text_color(carbon_muted()).child("Category:"))
+                    .child(
+                        div()
+                            .text_color(if has_cat_filter {
+                                selenium_amber()
+                            } else {
+                                carbon_text()
+                            })
+                            .child(active_cat_label),
+                    )
+                    .child(
+                        Icon::new(if self.category_filter_dropdown_open {
+                            IconName::ChevronUp
+                        } else {
+                            IconName::ChevronDown
+                        })
+                        .size(px(14.0))
+                        .text_color(carbon_muted()),
+                    ),
+            )
+            .when(has_cat_filter, |el| {
+                el.child(grid_cell_button(
+                    "category-filter-clear",
+                    Some(IconName::X),
+                    None,
+                    Some("Reset category filter"),
+                    GridTone::Paper,
+                    CellBorder::Left,
+                    true,
+                    cx.listener(|app, _, _, cx| {
+                        app.category_filter = None;
+                        app.category_filter_dropdown_open = false;
+                        cx.notify();
+                    }),
+                ))
+            })
+            .into_any_element()
     }
 
     /// `N SELECTED` badge plus filename (single) or count summary, shown in place of the URL field.
     fn render_selection_summary(&self, sel: &SelectionToolbar) -> AnyElement {
-        let badge = format!("{} SELECTED", sel.count);
+        let badge = format!("{} selected", sel.count);
         let summary = match &sel.single {
             Some(rec) => derive_display_filename(rec),
             None => format!("{} downloads selected", sel.count),
@@ -276,7 +357,7 @@ impl PosthazeApp {
             tools = tools.child(button(
                 "sel-pause",
                 IconName::Pause,
-                label("PAUSE", Some(ids.len())),
+                label("Pause", Some(ids.len())),
                 "Pause Selected",
                 GridTone::Primary,
                 CellBorder::Right,
@@ -292,7 +373,7 @@ impl PosthazeApp {
             tools = tools.child(button(
                 "sel-resume",
                 IconName::Play,
-                label("RESUME", Some(ids.len())),
+                label("Resume", Some(ids.len())),
                 "Resume Selected",
                 GridTone::Primary,
                 CellBorder::Right,
@@ -308,7 +389,7 @@ impl PosthazeApp {
             tools = tools.child(button(
                 "sel-restart",
                 IconName::RotateCcw,
-                label("RESTART", Some(ids.len())),
+                label("Restart", Some(ids.len())),
                 "Restart Fresh",
                 GridTone::Paper,
                 CellBorder::Right,
@@ -324,7 +405,7 @@ impl PosthazeApp {
             tools = tools.child(button(
                 "sel-cancel",
                 IconName::X,
-                label("CANCEL", Some(ids.len())),
+                label("Cancel", Some(ids.len())),
                 "Cancel Selected",
                 GridTone::Paper,
                 CellBorder::Right,
@@ -346,7 +427,7 @@ impl PosthazeApp {
                 .child(button(
                     "sel-open-file",
                     IconName::File,
-                    label("OPEN", None),
+                    label("Open", None),
                     "Open File",
                     GridTone::Paper,
                     CellBorder::Right,
@@ -357,7 +438,7 @@ impl PosthazeApp {
                 .child(button(
                     "sel-open-dir",
                     IconName::FolderOpen,
-                    label("FOLDER", None),
+                    label("Folder", None),
                     "Open Folder",
                     GridTone::Paper,
                     CellBorder::Right,
@@ -384,7 +465,7 @@ impl PosthazeApp {
             .child(button(
                 "sel-delete",
                 IconName::Trash,
-                label("DELETE", None),
+                label("Delete", None),
                 "Remove / Recycle Selected (Shift+Click or Shift+Del: Permanent)",
                 GridTone::Danger,
                 CellBorder::Right,
@@ -426,7 +507,7 @@ impl PosthazeApp {
             .child(self.toolbar_cell_button(
                 "resume-all",
                 IconName::Play,
-                (!profile.compact_toolbar).then_some("RESUME ALL"),
+                (!profile.compact_toolbar).then_some("Resume all"),
                 "Resume All",
                 true,
                 cx.listener(|app, _, _, cx| {
@@ -436,7 +517,7 @@ impl PosthazeApp {
             .child(self.toolbar_cell_button(
                 "pause-all",
                 IconName::Pause,
-                (!profile.compact_toolbar).then_some("PAUSE ALL"),
+                (!profile.compact_toolbar).then_some("Pause all"),
                 "Pause All",
                 true,
                 cx.listener(|app, _, _, cx| {
@@ -446,7 +527,7 @@ impl PosthazeApp {
             .child(self.toolbar_cell_button(
                 "clear-completed",
                 IconName::Trash,
-                (!profile.compact_toolbar).then_some("CLEAR COMPLETED"),
+                (!profile.compact_toolbar).then_some("Clear completed"),
                 "Clear Completed",
                 false,
                 cx.listener(|app, _, _, cx| {
@@ -520,22 +601,10 @@ impl PosthazeApp {
                 .gap_3()
                 .bg(paper_bg())
                 .child(if is_empty_queue {
-                    div()
-                        .w(px(44.0))
-                        .h(px(44.0))
-                        .rounded(px(10.0))
-                        .bg(graphite_bg())
-                        .border_1()
-                        .border_color(graphite_border())
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .child(
-                            svg()
-                                .path(BRAND_LOGO_SVG)
-                                .size(px(36.0))
-                                .text_color(selenium_amber()),
-                        )
+                    svg()
+                        .path(BRAND_LOGO_SVG)
+                        .size(px(36.0))
+                        .text_color(selenium_amber())
                         .into_any_element()
                 } else {
                     Icon::new(IconName::Download)
@@ -547,12 +616,12 @@ impl PosthazeApp {
                     div()
                         .text_size(TYPE_DISPLAY)
                         .line_height(px(24.0))
-                        .font_weight(FontWeight::BOLD)
+                        .font_weight(FontWeight::SEMIBOLD)
                         .text_color(carbon_text())
                         .child(if is_empty_queue {
-                            "No Downloads in Queue"
+                            "No downloads in queue"
                         } else {
-                            "No Matching Downloads"
+                            "No matching downloads"
                         }),
                 )
                 .child(
@@ -563,17 +632,17 @@ impl PosthazeApp {
                         .line_height(px(18.0))
                         .text_color(carbon_muted())
                         .child(if is_empty_queue {
-                            "Enter an HTTP/HTTPS URL above or paste directly from clipboard."
+                            "Enter an HTTP or HTTPS URL above, or paste from clipboard"
                         } else {
-                            "Switch queue filter in the left rail or paste a new URL."
+                            "Switch queue filter in the left rail or paste a new URL"
                         }),
                 )
                 .when(is_empty_queue, |el| {
                     el.child(grid_boxed_button(
                         "empty-paste",
-                        px(34.0),
+                        px(36.0),
                         Some(IconName::ClipboardPaste),
-                        Some("PASTE URL FROM CLIPBOARD & PROBE"),
+                        Some("Paste URL & Probe"),
                         None,
                         GridTone::Primary,
                         false,
@@ -585,14 +654,16 @@ impl PosthazeApp {
                 .when(!is_empty_queue, |el| {
                     el.child(grid_boxed_button(
                         "empty-show-all",
-                        px(34.0),
+                        px(36.0),
                         Some(IconName::Folder),
-                        Some("SHOW ALL DOWNLOADS"),
+                        Some("Show all downloads"),
                         None,
                         GridTone::Paper,
                         false,
                         cx.listener(|app, _, window, cx| {
                             app.filter = FilterTab::All;
+                            app.category_filter = None;
+                            app.category_filter_dropdown_open = false;
                             app.search_input.update(cx, |state, cx| {
                                 state.set_value("", window, cx);
                             });
@@ -634,16 +705,16 @@ impl PosthazeApp {
                     .line_height(px(14.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(carbon_muted())
-                    .child(self.header_cell("STATE", Some(COL_STATE), SortColumn::State, cx))
-                    .child(self.header_cell("FILENAME", None, SortColumn::Filename, cx))
+                    .child(self.header_cell("State", Some(COL_STATE), SortColumn::State, cx))
+                    .child(self.header_cell("Filename", None, SortColumn::Filename, cx))
                     .child(self.header_cell(
-                        "PROGRESS",
+                        "Progress",
                         Some(profile.progress_col_width),
                         SortColumn::Progress,
                         cx,
                     ))
                     .when(profile.show_speed, |el| {
-                        el.child(self.header_cell("SPEED", Some(COL_SPEED), SortColumn::Speed, cx))
+                        el.child(self.header_cell("Speed", Some(COL_SPEED), SortColumn::Speed, cx))
                     })
                     .when(profile.show_eta, |el| {
                         el.child(
@@ -668,17 +739,18 @@ impl PosthazeApp {
                                 .justify_center()
                                 .border_r_1()
                                 .border_color(paper_border())
-                                .child("SEGS"),
+                                .child("Segs"),
                         )
                     })
                     .child(
                         div()
                             .w(px(COL_ACTIONS))
                             .h_full()
+                            .pr_3()
                             .flex()
                             .items_center()
                             .justify_end()
-                            .child("ACTIONS"),
+                            .child("Actions"),
                     ),
             )
             // Virtualized Scrollable Rows + Calibrated Telemetry Scrubber
@@ -742,12 +814,12 @@ impl PosthazeApp {
             }))
             .child(title)
             .when_some(sort_icon, |el, icon| {
-                el.child(Icon::new(icon).size(px(12.0)).text_color(selenium_amber()))
+                el.child(Icon::new(icon).size(px(14.0)).text_color(selenium_amber()))
             });
         match width {
             Some(w) if col == SortColumn::State => base.w(px(w)).into_any_element(),
             Some(w) => base.w(px(w)).pl_2().into_any_element(),
-            None => base.flex_1().min_w(px(120.0)).px_2().into_any_element(),
+            None => base.flex_1().min_w(px(120.0)).pl_2().pr_3().into_any_element(),
         }
     }
 
@@ -931,7 +1003,7 @@ impl PosthazeApp {
                     .when_some(failed_tooltip, |el, msg| {
                         el.tooltip(move |window, cx| Tooltip::new(msg.clone()).build(window, cx))
                     })
-                    .child(Icon::new(icon_name).size(px(13.0)).text_color(state_color))
+                    .child(Icon::new(icon_name).size(px(14.0)).text_color(state_color))
                     .child(if let Some(rank) = row.fifo_rank {
                         div()
                             .px_1()
@@ -940,7 +1012,7 @@ impl PosthazeApp {
                             .border_color(graphite_border())
                             .text_color(silver_text())
                             .child(if rank == 1 {
-                                "#1 NEXT".to_string()
+                                "#1 Next".to_string()
                             } else {
                                 format!("#{rank}")
                             })
@@ -955,7 +1027,8 @@ impl PosthazeApp {
                     .flex_1()
                     .min_w_0()
                     .h_full()
-                    .px_2()
+                    .pl_2()
+                    .pr_3()
                     .border_r_1()
                     .border_color(paper_border())
                     .flex()
@@ -1010,7 +1083,7 @@ impl PosthazeApp {
                                     .child(if row.total_bytes.is_some() {
                                         format!("{total_pct:.1}%")
                                     } else {
-                                        "STREAM".to_string()
+                                        "Stream".to_string()
                                     }),
                             ),
                     )
@@ -1170,7 +1243,7 @@ impl PosthazeApp {
                                 el.child(self.row_action_cell(
                                     SharedString::from(format!("restart-{}", row.id.as_str())),
                                     IconName::RotateCcw,
-                                    Some("RESTART"),
+                                    Some("Restart"),
                                     "Restart Fresh",
                                     cx.listener(move |app, _, _, cx| {
                                         app.restart_fresh_download(id_action.clone(), cx);
@@ -1380,4 +1453,153 @@ fn render_table_scrubber(
                         }),
                 ),
         )
+}
+
+impl PosthazeApp {
+    /// Renders the floating category filter dropdown anchored beneath the second toolbar row.
+    pub(crate) fn render_category_filter_overlay(&self, cx: &mut Context<Self>) -> AnyElement {
+        let url_precedence = self.queue.settings.category_url_rule_precedence;
+        let all_rows = self.queue.all_rows();
+        let total_count = all_rows.len();
+        let cats = &self.queue.categories;
+
+        let mut counts = vec![0usize; cats.len()];
+        for row in all_rows {
+            if let Some(eff_id) = row.effective_category_id(cats, url_precedence)
+                && let Some(pos) = cats.iter().position(|c| c.id == eff_id)
+            {
+                counts[pos] += 1;
+            }
+        }
+
+        let item_row = |idx: usize,
+                        id: Option<String>,
+                        label: String,
+                        count: usize,
+                        selected: bool,
+                        cx: &mut Context<Self>| {
+            div()
+                .id(("table-cat-opt", idx))
+                .h(px(28.0))
+                .px_3()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_3()
+                .cursor_pointer()
+                .bg(if selected {
+                    paper_selected()
+                } else {
+                    Hsla::transparent_black()
+                })
+                .hover(|s| s.bg(paper_hover()))
+                .on_click(cx.listener(move |app, _, _, cx| {
+                    app.category_filter = id.clone();
+                    app.category_filter_dropdown_open = false;
+                    cx.notify();
+                }))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .min_w_0()
+                        .child(
+                            div()
+                                .w(px(14.0))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .when(selected, |el| {
+                                    el.child(
+                                        Icon::new(IconName::Check)
+                                            .size(px(13.0))
+                                            .text_color(selenium_amber()),
+                                    )
+                                }),
+                        )
+                        .child(
+                            div()
+                                .font_family(MONO_FONT)
+                                .text_size(TYPE_MICRO)
+                                .font_weight(if selected {
+                                    FontWeight::SEMIBOLD
+                                } else {
+                                    FontWeight::NORMAL
+                                })
+                                .text_color(if selected {
+                                    silver_text()
+                                } else {
+                                    silver_muted()
+                                })
+                                .truncate()
+                                .child(label),
+                        ),
+                )
+                .child(
+                    div()
+                        .font_family(MONO_FONT)
+                        .text_size(TYPE_MICRO)
+                        .text_color(if selected {
+                            selenium_amber()
+                        } else {
+                            silver_muted()
+                        })
+                        .child(count.to_string()),
+                )
+        };
+
+        let all_selected = self.category_filter.is_none();
+        let all_row = item_row(0, None, "All categories".to_string(), total_count, all_selected, cx);
+        let cat_rows: Vec<AnyElement> = cats
+            .iter()
+            .enumerate()
+            .map(|(i, cat)| {
+                let selected = self.category_filter.as_deref() == Some(cat.id.as_str());
+                item_row(
+                    i + 1,
+                    Some(cat.id.clone()),
+                    cat.name.clone(),
+                    counts[i],
+                    selected,
+                    cx,
+                )
+                .into_any_element()
+            })
+            .collect();
+
+        div()
+            .id("table-cat-overlay-root")
+            .absolute()
+            .inset_0()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|app, _, _, cx| {
+                    app.category_filter_dropdown_open = false;
+                    cx.notify();
+                }),
+            )
+            .child(
+                div()
+                    .id("table-cat-menu")
+                    .absolute()
+                    .top(px(74.0))
+                    .right_0()
+                    .w(px(224.0))
+                    .max_h(px(280.0))
+                    .overflow_y_scroll()
+                    .bg(context_menu_bg())
+                    .border_1()
+                    .border_color(graphite_border())
+                    .rounded(px(4.0))
+                    .shadow_md()
+                    .flex()
+                    .flex_col()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(all_row)
+                    .child(div().w_full().h(px(1.0)).bg(graphite_border()))
+                    .children(cat_rows),
+            )
+            .into_any_element()
+    }
 }

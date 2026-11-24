@@ -351,6 +351,7 @@ mod tests {
             error_message: resource_changed.then(|| "remote resource changed".to_string()),
             created_at: 1,
             updated_at: 1,
+            category_id: None,
         };
         DownloadRowView::from_record(&record, None, 0, None)
     }

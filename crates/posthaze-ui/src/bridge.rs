@@ -6,8 +6,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use posthaze_engine::{
-    DeleteFileMode, DownloadEngine, DownloadId, DownloadRecord, DownloadRequest, DownloadState,
-    EngineError, EngineEvent, FileChecksums, PreflightInfo, SegmentProgress, Settings,
+    DeleteFileMode, DownloadCategory, DownloadEngine, DownloadId, DownloadRecord,
+    DownloadRequest, DownloadState, EngineError, EngineEvent, FileChecksums, PreflightInfo,
+    SegmentProgress, Settings,
 };
 use tokio::runtime::{Builder, Runtime};
 use tokio::sync::{broadcast, oneshot};
@@ -18,6 +19,7 @@ pub(crate) struct PreflightContext {
     pub duplicate: Option<DownloadRecord>,
     pub duplicate_file_exists: bool,
     pub recent_folders: Vec<PathBuf>,
+    pub categories: Vec<DownloadCategory>,
 }
 
 /// Live conflict check snapshot run right before confirming a Pre-Flight download.
@@ -32,6 +34,7 @@ pub(crate) struct ConfirmConflictCheck {
 pub struct EngineSnapshot {
     pub records: Vec<DownloadRecord>,
     pub settings: Settings,
+    pub categories: Vec<DownloadCategory>,
     pub segment_counts: HashMap<DownloadId, usize>,
 }
 
@@ -53,6 +56,7 @@ pub enum EngineCommand {
         file_mode: Option<DeleteFileMode>,
     },
     UpdateSettings(Settings),
+    SaveCategories(Vec<DownloadCategory>),
     RenameFile {
         id: DownloadId,
         new_name: String,
@@ -211,10 +215,12 @@ impl EngineBridge {
                 None => false,
             };
             let recent_folders = engine.list_recent_folders(folder_limit).await?;
+            let categories = engine.list_categories().await?;
             Ok(PreflightContext {
                 duplicate,
                 duplicate_file_exists,
                 recent_folders,
+                categories,
             })
         })
     }
@@ -280,6 +286,10 @@ impl EngineBridge {
                 }
                 EngineCommand::UpdateSettings(settings) => {
                     engine.update_settings(settings).await?;
+                    None
+                }
+                EngineCommand::SaveCategories(categories) => {
+                    let _ = engine.save_categories(categories).await?;
                     None
                 }
                 EngineCommand::RenameFile { id, new_name } => {
@@ -384,10 +394,12 @@ async fn pick_best_duplicate(
 async fn read_snapshot(engine: &DownloadEngine) -> Result<EngineSnapshot, EngineError> {
     let records = engine.list_downloads().await?;
     let settings = engine.get_settings().await?;
+    let categories = engine.list_categories().await?;
     let segment_counts = engine.list_segment_counts().await?;
     Ok(EngineSnapshot {
         records,
         settings,
+        categories,
         segment_counts,
     })
 }

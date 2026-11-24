@@ -5641,7 +5641,7 @@ dependencies = [
 
 [[package]]
 name = "posthaze-cli"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "clap",
  "posthaze-engine",
@@ -5654,7 +5654,7 @@ dependencies = [
 
 [[package]]
 name = "posthaze-engine"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "blake3",
  "bytes",
@@ -5677,7 +5677,7 @@ dependencies = [
 
 [[package]]
 name = "posthaze-keytool"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
@@ -5686,7 +5686,7 @@ dependencies = [
 
 [[package]]
 name = "posthaze-ui"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "base64 0.22.1",
  "bytes",

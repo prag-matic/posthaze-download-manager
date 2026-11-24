@@ -21,7 +21,7 @@ pub const BRAND_LOGO_MARK_DARK: &str = "brand/logo_dark.png";
 pub const BRAND_LOGO_SVG: &str = "brand/logo.svg";
 
 const APP_ICON_BYTES: &[u8] =
-    include_bytes!("../../../assets/App Icon Flat/App Icon Flat 256x256.png");
+    include_bytes!("../../../assets/App Icon/App Icon 256x256.png");
 const APP_ICON_SVG_BYTES: &[u8] =
     include_bytes!("../../../assets/App Icon Flat SVG/App Icon Flat 256x256.svg");
 const LOGO_MARK_BYTES: &[u8] = include_bytes!("../../../assets/Logo Light/Logo Light 256x256.png");

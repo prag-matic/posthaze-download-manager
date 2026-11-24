@@ -5,8 +5,8 @@ use std::path::PathBuf;
 
 use gpui_kit::assets::IconName;
 use posthaze_engine::{
-    DownloadId, DownloadRecord, DownloadState, EngineEvent, FailureKind, ProgressSnapshot,
-    SegmentProgress, Settings,
+    DownloadCategory, DownloadId, DownloadRecord, DownloadState, EngineEvent, FailureKind,
+    ProgressSnapshot, SegmentProgress, Settings, default_builtin_categories, resolve_category,
 };
 
 use crate::bridge::EngineSnapshot;
@@ -211,6 +211,7 @@ pub struct DownloadRowView {
     pub is_resource_changed: bool,
     pub fifo_rank: Option<usize>,
     pub created_at: i64,
+    pub category_id: Option<String>,
 }
 
 impl DownloadRowView {
@@ -274,7 +275,28 @@ impl DownloadRowView {
             is_resource_changed,
             fifo_rank,
             created_at: record.created_at,
+            category_id: record.category_id.clone(),
         }
+    }
+
+    /// Returns the explicit `category_id` if present, or resolves one dynamically from filename/URL.
+    pub fn effective_category_id<'a>(
+        &'a self,
+        categories: &'a [DownloadCategory],
+        url_rule_precedence: bool,
+    ) -> Option<&'a str> {
+        if let Some(id) = self.category_id.as_deref()
+            && categories.iter().any(|c| c.id == id)
+        {
+            return Some(id);
+        }
+        resolve_category(
+            categories,
+            &self.filename,
+            self.final_url.as_deref().or(Some(&self.url)),
+            url_rule_precedence,
+        )
+        .map(|c| c.id.as_str())
     }
 
     /// Updates live progress metrics on this row in place without reallocating metadata strings.
@@ -736,6 +758,7 @@ struct QueueProjectionCache {
     visible_indices: Vec<usize>,
     visible_ids: std::sync::Arc<Vec<DownloadId>>,
     filter: FilterTab,
+    category_filter: Option<String>,
     search_query: String,
     sort_col: SortColumn,
     sort_dir: SortDirection,
@@ -752,6 +775,7 @@ impl Default for QueueProjectionCache {
             visible_indices: Vec::new(),
             visible_ids: std::sync::Arc::new(Vec::new()),
             filter: FilterTab::All,
+            category_filter: None,
             search_query: String::new(),
             sort_col: SortColumn::CreatedAt,
             sort_dir: SortDirection::Descending,
@@ -763,7 +787,7 @@ impl Default for QueueProjectionCache {
 }
 
 /// Headless state and decision controller for the `Download` `Queue` UI.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct QueueController {
     pub records: Vec<DownloadRecord>,
     pub live_map: HashMap<DownloadId, ProgressSnapshot>,
@@ -771,12 +795,33 @@ pub struct QueueController {
     pub persisted_segments: HashMap<DownloadId, Vec<SegmentProgress>>,
     persisted_segments_order: Vec<DownloadId>,
     pub settings: Settings,
+    pub categories: Vec<DownloadCategory>,
     pub selected_id: Option<DownloadId>,
     pub selected_ids: HashSet<DownloadId>,
     pub selection_anchor: Option<DownloadId>,
     pub auto_retries_used: HashMap<DownloadId, u32>,
     started_notified: HashSet<DownloadId>,
     projection: QueueProjectionCache,
+}
+
+impl Default for QueueController {
+    fn default() -> Self {
+        Self {
+            records: Vec::new(),
+            live_map: HashMap::new(),
+            segment_counts: HashMap::new(),
+            persisted_segments: HashMap::new(),
+            persisted_segments_order: Vec::new(),
+            settings: Settings::default(),
+            categories: default_builtin_categories(),
+            selected_id: None,
+            selected_ids: HashSet::new(),
+            selection_anchor: None,
+            auto_retries_used: HashMap::new(),
+            started_notified: HashSet::new(),
+            projection: QueueProjectionCache::default(),
+        }
+    }
 }
 
 impl QueueController {
@@ -792,6 +837,9 @@ impl QueueController {
     pub fn apply_snapshot(&mut self, snapshot: EngineSnapshot) -> Option<UiEffect> {
         self.records = snapshot.records;
         self.settings = snapshot.settings;
+        if !snapshot.categories.is_empty() {
+            self.categories = snapshot.categories;
+        }
         self.segment_counts = snapshot.segment_counts;
         let existing: HashSet<&DownloadId> = self.records.iter().map(|r| &r.id).collect();
         self.selected_ids.retain(|id| existing.contains(id));
@@ -861,6 +909,7 @@ impl QueueController {
     pub fn ensure_projection(
         &mut self,
         filter: FilterTab,
+        category_filter: Option<&str>,
         search_query: &str,
         sort_col: SortColumn,
         sort_dir: SortDirection,
@@ -887,12 +936,14 @@ impl QueueController {
         }
 
         let query_changed = self.projection.filter != filter
+            || self.projection.category_filter.as_deref() != category_filter
             || self.projection.search_query != search_query
             || self.projection.sort_col != sort_col
             || self.projection.sort_dir != sort_dir;
 
         if self.projection.view_dirty || query_changed {
             self.projection.filter = filter;
+            self.projection.category_filter = category_filter.map(str::to_string);
             if self.projection.search_query != search_query {
                 self.projection.search_query.clear();
                 self.projection.search_query.push_str(search_query);
@@ -901,9 +952,17 @@ impl QueueController {
             self.projection.sort_dir = sort_dir;
 
             let q = search_query.trim().to_ascii_lowercase();
+            let url_precedence = self.settings.category_url_rule_precedence;
             self.projection.visible_indices.clear();
             for (idx, row) in self.projection.all_rows.iter().enumerate() {
+                let cat_matches = match category_filter {
+                    Some(cat_id) => {
+                        row.effective_category_id(&self.categories, url_precedence) == Some(cat_id)
+                    }
+                    None => true,
+                };
                 if filter.matches(row.state)
+                    && cat_matches
                     && (q.is_empty()
                         || contains_ascii_case_insensitive(&row.filename, &q)
                         || contains_ascii_case_insensitive(&row.url, &q))
@@ -1112,6 +1171,13 @@ impl QueueController {
             }
             EngineEvent::SettingsUpdated(settings) => {
                 self.settings = settings;
+                self.projection.view_dirty = true;
+            }
+            EngineEvent::CategoriesUpdated(categories) => {
+                if !categories.is_empty() {
+                    self.categories = categories;
+                    self.projection.view_dirty = true;
+                }
             }
         }
         effects
@@ -1409,6 +1475,7 @@ mod tests {
             error_message: None,
             created_at,
             updated_at: created_at,
+            category_id: None,
         }
     }
 
@@ -2025,18 +2092,31 @@ mod tests {
         let snap = EngineSnapshot {
             records: vec![rec1, rec2],
             settings: Settings::default(),
+            categories: default_builtin_categories(),
             segment_counts: HashMap::new(),
         };
         ctrl.apply_snapshot(snap);
-        ctrl.ensure_projection(FilterTab::All, "", SortColumn::CreatedAt, SortDirection::Descending);
+        ctrl.ensure_projection(
+            FilterTab::All,
+            None,
+            "",
+            SortColumn::CreatedAt,
+            SortDirection::Descending,
+        );
         assert_eq!(ctrl.projection_rebuild_count(), 1);
         assert_eq!(ctrl.visible_indices().len(), 2);
 
         // Repeated ensure_projection with unchanged inputs does not rebuild rows.
-        ctrl.ensure_projection(FilterTab::All, "", SortColumn::CreatedAt, SortDirection::Descending);
+        ctrl.ensure_projection(
+            FilterTab::All,
+            None,
+            "",
+            SortColumn::CreatedAt,
+            SortDirection::Descending,
+        );
         assert_eq!(ctrl.projection_rebuild_count(), 1);
 
-        // ProgressUpdated mutates the single active row in place without rebuilding all_rows.
+        // Progress updates mutate the single active row in place without forcing a full rebuild.
         ctrl.on_progress_updated(
             id1.clone(),
             ProgressSnapshot {
@@ -2049,7 +2129,13 @@ mod tests {
                 segments: vec![],
             },
         );
-        ctrl.ensure_projection(FilterTab::All, "", SortColumn::CreatedAt, SortDirection::Descending);
+        ctrl.ensure_projection(
+            FilterTab::All,
+            None,
+            "",
+            SortColumn::CreatedAt,
+            SortDirection::Descending,
+        );
         assert_eq!(ctrl.projection_rebuild_count(), 1);
         let updated = ctrl.row_by_id(&id1).unwrap();
         assert_eq!(updated.bytes_downloaded, 4096);
@@ -2070,5 +2156,40 @@ mod tests {
             ctrl.persisted_segments.contains_key(&id1),
             "selected download segments must not be evicted"
         );
+    }
+
+    #[test]
+    fn category_filter_matches_explicit_and_inferred_rows() {
+        let mut ctrl = QueueController::default();
+        let rec_zip = make_record("1", "https://example.com/archive.zip", DownloadState::Completed, 10);
+        let mut rec_bin = make_record("2", "https://example.com/data.bin", DownloadState::Completed, 20);
+        rec_bin.category_id = Some("general".to_string());
+
+        ctrl.apply_snapshot(EngineSnapshot {
+            records: vec![rec_zip, rec_bin],
+            settings: Settings::default(),
+            categories: default_builtin_categories(),
+            segment_counts: HashMap::new(),
+        });
+
+        ctrl.ensure_projection(
+            FilterTab::All,
+            Some("archives"),
+            "",
+            SortColumn::CreatedAt,
+            SortDirection::Descending,
+        );
+        assert_eq!(ctrl.visible_indices().len(), 1);
+        assert_eq!(ctrl.visible_row(0).unwrap().id, DownloadId::from("1"));
+
+        ctrl.ensure_projection(
+            FilterTab::All,
+            Some("general"),
+            "",
+            SortColumn::CreatedAt,
+            SortDirection::Descending,
+        );
+        assert_eq!(ctrl.visible_indices().len(), 1);
+        assert_eq!(ctrl.visible_row(0).unwrap().id, DownloadId::from("2"));
     }
 }

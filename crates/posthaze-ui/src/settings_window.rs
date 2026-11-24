@@ -1,8 +1,9 @@
 //! Independent, single-instance GPUI window for application and engine Settings.
 
+use gpui_kit::component::input::InputEvent;
 use gpui_kit::component::TitleBar;
 use gpui_kit::*;
-use posthaze_engine::Settings;
+use posthaze_engine::{DownloadCategory, Settings};
 
 use crate::PosthazeApp;
 use crate::assets::BRAND_LOGO_SVG;
@@ -12,7 +13,8 @@ use crate::browser_integration::{
 };
 use crate::platform_hooks::{open_directory_in_shell, open_url_in_browser};
 use crate::settings_modal::{
-    SettingsAction, SettingsModalState, SettingsTab, render_settings_window_body,
+    SETTINGS_SIDEBAR_WIDTH, SettingsAction, SettingsModalState, SettingsTab,
+    render_settings_window_body,
 };
 use crate::theme::*;
 use crate::updater::UpdateState;
@@ -43,9 +45,11 @@ pub(crate) struct SettingsWindow {
 
 impl SettingsWindow {
     /// Opens the standalone `SettingsWindow` centered on screen with custom `TitleBar` chrome.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn open(
         bridge: EngineBridge,
         settings: Settings,
+        categories: Vec<DownloadCategory>,
         update_state: UpdateState,
         is_portable: bool,
         initial_tab: SettingsTab,
@@ -81,6 +85,7 @@ impl SettingsWindow {
                 Self::new(
                     bridge,
                     settings,
+                    categories,
                     update_state,
                     is_portable,
                     initial_tab,
@@ -123,6 +128,7 @@ impl SettingsWindow {
     fn new(
         bridge: EngineBridge,
         settings: Settings,
+        categories: Vec<DownloadCategory>,
         update_state: UpdateState,
         is_portable: bool,
         initial_tab: SettingsTab,
@@ -133,8 +139,63 @@ impl SettingsWindow {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
 
-        let mut state = SettingsModalState::from_settings(&settings, window, cx);
+        let mut state = SettingsModalState::from_settings(&settings, categories, window, cx);
         state.active_tab = initial_tab;
+
+        cx.subscribe_in(
+            &state.cat_extensions_input,
+            window,
+            |win, input, ev: &InputEvent, window, cx| match ev {
+                InputEvent::PressEnter { .. } => {
+                    win.state.commit_extension_input(window, cx);
+                    cx.notify();
+                }
+                InputEvent::Change => {
+                    let raw = input.read(cx).value();
+                    if raw.contains([',', ';', ' ', '\n', '\r']) {
+                        win.state.commit_extension_input(window, cx);
+                    }
+                    cx.notify();
+                }
+                _ => {}
+            },
+        )
+        .detach();
+
+        cx.subscribe_in(
+            &state.cat_patterns_input,
+            window,
+            |win, input, ev: &InputEvent, window, cx| match ev {
+                InputEvent::PressEnter { .. } => {
+                    win.state.commit_pattern_input(window, cx);
+                    cx.notify();
+                }
+                InputEvent::Change => {
+                    let raw = input.read(cx).value();
+                    if raw.contains([',', ';', ' ', '\n', '\r']) {
+                        win.state.commit_pattern_input(window, cx);
+                    }
+                    cx.notify();
+                }
+                _ => {}
+            },
+        )
+        .detach();
+
+        for input in [
+            &state.dir_input,
+            &state.cat_filter_input,
+            &state.cat_rule_test_input,
+            &state.cat_name_input,
+            &state.cat_dir_input,
+        ] {
+            cx.subscribe_in(input, window, |_, _, ev: &InputEvent, _, cx| {
+                if matches!(ev, InputEvent::Change) {
+                    cx.notify();
+                }
+            })
+            .detach();
+        }
 
         let main_app_for_appearance = main_app.clone();
         let _appearance_subscription = window.observe_window_appearance(move |window, cx| {
@@ -179,6 +240,18 @@ impl SettingsWindow {
     pub(crate) fn set_update_state(&mut self, update_state: UpdateState, cx: &mut Context<Self>) {
         self.update_state = update_state;
         cx.notify();
+    }
+
+    /// Synchronizes background category updates (for example, remembered folders).
+    pub(crate) fn sync_categories(
+        &mut self,
+        categories: Vec<DownloadCategory>,
+        cx: &mut Context<Self>,
+    ) {
+        if !categories.is_empty() {
+            self.state.categories = categories;
+            cx.notify();
+        }
     }
 
     fn handle_action(&mut self, action: SettingsAction, window: &mut Window, cx: &mut Context<Self>) {
@@ -269,6 +342,34 @@ impl SettingsWindow {
                 })
                 .detach();
             }
+            SettingsAction::BrowseCategoryFolder => {
+                let rx = cx.prompt_for_paths(PathPromptOptions {
+                    files: false,
+                    directories: true,
+                    multiple: false,
+                    prompt: Some("Select Category Download Folder".into()),
+                });
+                let window_handle = window.window_handle();
+                cx.spawn(async move |this, cx| {
+                    let res = rx.await;
+                    let _ = cx.update_window(window_handle, |_, window, cx| {
+                        if let Ok(Ok(Some(paths))) = res
+                            && let Some(chosen) = paths.into_iter().next()
+                        {
+                            let chosen_str = chosen.to_string_lossy().to_string();
+                            let _ = this.update(cx, |win, cx| {
+                                win.state.cat_dir_input.update(cx, |st, cx| {
+                                    st.set_value(chosen_str.clone(), window, cx);
+                                });
+                                win.state.sync_selected_category_from_inputs(cx);
+                                cx.notify();
+                            });
+                        }
+                        window.activate_window();
+                    });
+                })
+                .detach();
+            }
             other => {
                 let updates_preview = matches!(
                     other,
@@ -292,15 +393,20 @@ impl SettingsWindow {
     }
 
     fn apply_settings(&mut self, close_after: bool, window: &mut Window, cx: &mut Context<Self>) {
-        match self.state.apply_to_settings(cx) {
-            Ok(new_settings) => {
+        self.state.commit_extension_input(window, cx);
+        self.state.commit_pattern_input(window, cx);
+        match (
+            self.state.apply_to_settings(cx),
+            self.state.apply_categories(cx),
+        ) {
+            (Ok(new_settings), Ok(new_categories)) => {
                 self.state.error = None;
                 let main_app = self.main_app.clone();
                 let _ = main_app.update(cx, |app, cx| {
                     if close_after {
                         app.clear_settings_window();
                     }
-                    app.commit_saved_settings(new_settings, cx);
+                    app.commit_saved_settings(new_settings, new_categories, cx);
                 });
                 if close_after {
                     window.remove_window();
@@ -308,7 +414,7 @@ impl SettingsWindow {
                     cx.notify();
                 }
             }
-            Err(err) => {
+            (Err(err), _) | (_, Err(err)) => {
                 self.state.error = Some(err);
                 cx.notify();
             }
@@ -322,22 +428,28 @@ impl SettingsWindow {
 
     fn render_titlebar(&self) -> impl IntoElement {
         TitleBar::new()
+            .pl_0()
             .bg(titlebar_bg())
             .border_color(graphite_border())
             .child(
                 div()
+                    .w(px(SETTINGS_SIDEBAR_WIDTH))
+                    .flex_shrink_0()
                     .h_full()
+                    .pl(px(12.0))
+                    .border_r_1()
+                    .border_color(graphite_border())
                     .flex()
                     .items_center()
                     .child(
                         div()
                             .h_full()
-                            .pr_3()
+                            .pr(px(10.0))
                             .border_r_1()
                             .border_color(graphite_border())
                             .flex()
                             .items_center()
-                            .gap_2()
+                            .gap(px(8.0))
                             .child(
                                 svg()
                                     .path(BRAND_LOGO_SVG)
@@ -355,16 +467,17 @@ impl SettingsWindow {
                     )
                     .child(
                         div()
+                            .flex_1()
+                            .min_w_0()
                             .h_full()
-                            .px_2p5()
-                            .border_r_1()
-                            .border_color(graphite_border())
+                            .px(px(10.0))
                             .flex()
                             .items_center()
                             .font_family(MONO_FONT)
                             .text_size(TYPE_HEADER)
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(silver_text())
+                            .truncate()
                             .child("SETTINGS"),
                     ),
             )
@@ -418,7 +531,17 @@ impl Render for SettingsWindow {
                 if key == "escape" {
                     win.cancel_and_close(window, cx);
                 } else if key == "enter" {
-                    win.apply_settings(true, window, cx);
+                    let in_inline_input = [
+                        &win.state.cat_extensions_input,
+                        &win.state.cat_patterns_input,
+                        &win.state.cat_filter_input,
+                        &win.state.cat_rule_test_input,
+                    ]
+                    .iter()
+                    .any(|inp| inp.read(cx).focus_handle(cx).is_focused(window));
+                    if !in_inline_input {
+                        win.apply_settings(true, window, cx);
+                    }
                 }
             }))
             .child(self.render_titlebar())
@@ -426,6 +549,7 @@ impl Render for SettingsWindow {
                 &self.state,
                 &self.update_state,
                 self.is_portable,
+                cx,
                 move |action, window, cx| {
                     e_action.update(cx, |win, cx| win.handle_action(action, window, cx));
                 },

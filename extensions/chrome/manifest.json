@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Posthaze Download Manager",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Hand off browser downloads and links with session cookies to Posthaze.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAy742WXCJgebrhzvdKtnoSXdGLyi6gK7ailfwVf+204htDYivl4ivZByiQhxrTAgnKg1pngywPpMwIdcfjezweC5pqRfPj/UbXSeUd1fUiyWPKM/6Z5ME6DtbxgDU6SXchj6t0CxDWzBAXoh9TGn2lBJUxAq84fPdSgjMtgegLGvUc8L0bNu1MX1nv10ywSKZaB0OYDL4KmunP+vCLFcMZOFEMiwg9YO+WGHrSX9kL0j3ZtTWsZR1w09ImN7XgnXiPor3f+fiLt+HymNQFf/qAuVRSY6zolUFEsjNuvpAojyXYxw0XTdHimk2Z0S9gPZEm0DfVZHrr/Bu3UgIpV/jwwIDAQAB",
   "icons": {

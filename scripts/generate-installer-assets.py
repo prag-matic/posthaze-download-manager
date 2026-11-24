@@ -2,8 +2,8 @@
 """Generate brand derived assets for Windows packaging and the Chrome extension.
 
 Produces:
-  - assets/posthaze.ico (multi-resolution 16..256 ICO from App Icon Flat)
-  - extensions/chrome/icons/icon-{16,32,48,128}.png (from App Icon Flat)
+  - assets/posthaze.ico (multi-resolution 16..256 ICO from metallic App Icon)
+  - extensions/chrome/icons/icon-{16,32,48,128}.png (from metallic App Icon)
   - packaging/windows/assets/wizard-sidebar-light.png  (328x628, 2x 164x314)
   - packaging/windows/assets/wizard-sidebar-dark.png   (328x628, 2x 164x314)
   - packaging/windows/assets/wizard-small-light.png    (110x110, 2x 55x55)
@@ -21,7 +21,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LOGO_PATH = REPO_ROOT / "assets" / "Logo Light" / "Logo Light 256x256.png"
-FLAT_ICON_DIR = REPO_ROOT / "assets" / "App Icon Flat"
+APP_ICON_DIR = REPO_ROOT / "assets" / "App Icon"
 ICO_PATH = REPO_ROOT / "assets" / "posthaze.ico"
 CHROME_ICONS_DIR = REPO_ROOT / "extensions" / "chrome" / "icons"
 OUT_DIR = REPO_ROOT / "packaging" / "windows" / "assets"
@@ -182,12 +182,12 @@ def render_small_badge(theme: dict[str, tuple[int, int, int, int]], logo: Image.
     return img
 
 
-def load_flat_icon(size: int) -> Image.Image:
-    exact = FLAT_ICON_DIR / f"App Icon Flat {size}x{size}.png"
+def load_app_icon(size: int) -> Image.Image:
+    exact = APP_ICON_DIR / f"App Icon {size}x{size}.png"
     if exact.exists():
         return Image.open(exact).convert("RGBA")
-    source_size = 32 if size <= 32 else 64
-    src = Image.open(FLAT_ICON_DIR / f"App Icon Flat {source_size}x{source_size}.png").convert("RGBA")
+    src_size = 64 if size <= 32 else 128
+    src = Image.open(APP_ICON_DIR / f"App Icon {src_size}x{src_size}.png").convert("RGBA")
     return src.resize((size, size), Image.Resampling.LANCZOS)
 
 
@@ -196,7 +196,7 @@ def write_multi_size_ico(out_path: Path, sizes: list[int]) -> None:
     frames: list[tuple[int, bytes]] = []
     for size in sizes:
         buf = BytesIO()
-        load_flat_icon(size).save(buf, format="PNG")
+        load_app_icon(size).save(buf, format="PNG")
         frames.append((size, buf.getvalue()))
 
     header = struct.pack("<HHH", 0, 1, len(frames))
@@ -215,7 +215,7 @@ def write_multi_size_ico(out_path: Path, sizes: list[int]) -> None:
 def generate_chrome_icons() -> None:
     CHROME_ICONS_DIR.mkdir(parents=True, exist_ok=True)
     for size in (16, 32, 48, 128):
-        load_flat_icon(size).save(CHROME_ICONS_DIR / f"icon-{size}.png", format="PNG")
+        load_app_icon(size).save(CHROME_ICONS_DIR / f"icon-{size}.png", format="PNG")
 
 
 def main() -> None:

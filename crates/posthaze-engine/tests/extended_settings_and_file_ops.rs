@@ -30,6 +30,8 @@ async fn extended_settings_round_trip_and_categorize_helpers() {
         proxy_url: String::new(),
         download_speed_limit_kib: 1024,
         auto_categorize_folders: true,
+        category_url_rule_precedence: false,
+        set_file_time_from_server: true,
         collision_policy: CollisionPolicy::Overwrite,
         delete_action_default: DeleteDefaultAction::DeleteFile,
         auto_retry_count: 3,
@@ -134,4 +136,93 @@ async fn file_integrity_rename_move_and_throttled_download_work() {
         engine.get_download(&id).await.unwrap().unwrap().output_path,
         Some(moved)
     );
+}
+
+#[tokio::test]
+async fn categories_auto_route_remember_last_folder_and_apply_server_timestamp() {
+    use posthaze_engine::{DownloadCategory, normalize_extension_list, normalize_pattern_list};
+    use std::time::{Duration, UNIX_EPOCH};
+
+    let dir = tempdir().unwrap();
+    let default_dir = dir.path().join("Downloads");
+    let custom_dir = dir.path().join("UbuntuISOs");
+    std::fs::create_dir_all(&default_dir).unwrap();
+    std::fs::create_dir_all(&custom_dir).unwrap();
+
+    let engine = DownloadEngine::open(dir.path().join("state.db"))
+        .await
+        .unwrap();
+    let settings = Settings {
+        default_output_dir: default_dir.clone(),
+        auto_categorize_folders: true,
+        category_url_rule_precedence: true,
+        set_file_time_from_server: true,
+        ..Settings::default()
+    };
+    engine.update_settings(settings).await.unwrap();
+
+    let mut cats = engine.list_categories().await.unwrap();
+    assert!(cats.iter().any(|c| c.id == "general"));
+    assert!(cats.iter().any(|c| c.id == "archives"));
+
+    // Enable `remember_last_folder` on Archives and add a custom category with URL pattern.
+    if let Some(arch) = cats.iter_mut().find(|c| c.id == "archives") {
+        arch.remember_last_folder = true;
+    }
+    cats.push(DownloadCategory {
+        id: "isos".to_string(),
+        name: "ISOs".to_string(),
+        extensions: normalize_extension_list("iso, img"),
+        url_patterns: normalize_pattern_list("127.0.0.1"),
+        output_dir: None,
+        remember_last_folder: true,
+        is_builtin: false,
+        sort_order: 5,
+    });
+    engine.save_categories(cats).await.unwrap();
+
+    let payload = b"server-timestamped-payload".to_vec();
+    let srv_payload = Arc::new(payload.clone());
+    let base_url = common::spawn_mock_server(move |method, _path, _range| MockResponse {
+        status: "200 OK",
+        headers: vec![
+            ("Content-Length".to_string(), srv_payload.len().to_string()),
+            ("Accept-Ranges".to_string(), "none".to_string()),
+            (
+                "Last-Modified".to_string(),
+                "Tue, 14 Nov 2023 22:13:20 GMT".to_string(),
+            ),
+        ],
+        body: if method == "HEAD" {
+            Vec::new()
+        } else {
+            srv_payload.as_ref().clone()
+        },
+    })
+    .await;
+
+    // 1. Download routed automatically into dynamic `<default_dir>/ISOs` and stamped with Last-Modified.
+    let req1 = DownloadRequest::new(format!("{base_url}/ubuntu.txt"), &default_dir);
+    let mut handle1 = engine.start(req1).await.unwrap();
+    let out1 = handle1.wait().await.unwrap();
+    assert_eq!(out1.final_path, default_dir.join("ISOs").join("ubuntu.txt"));
+    let expected_ts = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+    let meta = std::fs::metadata(&out1.final_path).unwrap();
+    assert_eq!(meta.modified().unwrap(), expected_ts);
+    #[cfg(windows)]
+    assert_eq!(meta.created().unwrap(), expected_ts);
+
+    // 2. Confirming a download under `archives` in a custom directory updates Archives' remembered folder.
+    let mut req2 = DownloadRequest::new(format!("{base_url}/bundle.zip"), &custom_dir);
+    req2.category_id = Some("archives".to_string());
+    let mut handle2 = engine.start(req2).await.unwrap();
+    let _ = handle2.wait().await.unwrap();
+
+    let reloaded_cats = engine.list_categories().await.unwrap();
+    let arch = reloaded_cats.iter().find(|c| c.id == "archives").unwrap();
+    assert_eq!(arch.output_dir.as_deref(), Some(custom_dir.as_path()));
+
+    // 3. Reset restores default built-ins.
+    let reset = engine.reset_categories().await.unwrap();
+    assert!(!reset.iter().any(|c| c.id == "isos"));
 }

@@ -109,7 +109,7 @@ impl PosthazeApp {
                                         Hsla::transparent_black()
                                     }),
                             )
-                            .child(Icon::new(tab_icon).size(px(15.0)).text_color(tab_color))
+                            .child(Icon::new(tab_icon).size(px(16.0)).text_color(tab_color))
                     })),
                 )
                 .child(
@@ -197,7 +197,7 @@ impl PosthazeApp {
                     .w_full()
                     .flex()
                     .flex_col()
-                    .child(grid_section_header("QUEUE FILTER", GridTone::Graphite))
+                    .child(grid_section_header("Queue filter", GridTone::Graphite))
                     .children(tabs.into_iter().enumerate().map(|(i, tab)| {
                         let count = counts[i];
                         let selected = self.filter == tab;
@@ -239,7 +239,7 @@ impl PosthazeApp {
                                     }))
                                     .child(
                                         Icon::new(tab_icon)
-                                            .size(px(13.0))
+                                            .size(px(14.0))
                                             .text_color(tab_color),
                                     )
                                     .child(
@@ -253,7 +253,7 @@ impl PosthazeApp {
                                             } else {
                                                 silver_muted()
                                             })
-                                            .child(tab.label().to_uppercase()),
+                                            .child(tab.label()),
                                     ),
                             )
                             .child(
@@ -284,9 +284,9 @@ impl PosthazeApp {
                     .flex_col()
                     .border_t_1()
                     .border_color(graphite_border())
-                    .child(grid_section_header("TELEMETRY", GridTone::Graphite))
+                    .child(grid_section_header("Telemetry", GridTone::Graphite))
                     .child(grid_kv_row(
-                        "SPEED",
+                        "Speed",
                         76.0,
                         div()
                             .w_full()
@@ -297,7 +297,7 @@ impl PosthazeApp {
                             .child(
                                 div()
                                     .text_size(TYPE_BODY)
-                                    .font_weight(FontWeight::BOLD)
+                                    .font_weight(FontWeight::SEMIBOLD)
                                     .text_color(silver_text())
                                     .child(format_speed(total_speed)),
                             )
@@ -313,7 +313,7 @@ impl PosthazeApp {
                         GridTone::Graphite,
                     ))
                     .child(grid_kv_row(
-                        "SLOTS",
+                        "Slots",
                         76.0,
                         div()
                             .w_full()
@@ -354,7 +354,7 @@ impl PosthazeApp {
                                 div().flex_1().h_full().child(grid_cell_button(
                                     "open-settings",
                                     Some(IconName::Settings),
-                                    Some("SETTINGS"),
+                                    Some("Settings"),
                                     Some("Engine Settings"),
                                     GridTone::Graphite,
                                     CellBorder::Right,

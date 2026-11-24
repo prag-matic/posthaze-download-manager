@@ -23,15 +23,15 @@ let currentTabHost = "";
 function renderHostPill(resp) {
   if (!resp || !resp.ok) {
     hostPill.className = "pill offline";
-    hostPill.textContent = "OFFLINE";
+    hostPill.textContent = "Offline";
     return;
   }
   if (resp.mode === "pong") {
     hostPill.className = "pill online";
-    hostPill.textContent = "UI ONLINE";
+    hostPill.textContent = "UI online";
   } else {
     hostPill.className = "pill host";
-    hostPill.textContent = "HOST READY";
+    hostPill.textContent = "Host ready";
   }
 }
 
@@ -39,7 +39,7 @@ function renderStatus(lastStatus) {
   statusBox.innerHTML = "";
   if (!lastStatus) {
     statusBox.className = "status";
-    statusBox.textContent = "Ready for browser capture.";
+    statusBox.textContent = "Ready for browser capture";
     return;
   }
   statusBox.className = `status ${lastStatus.ok ? "ok" : "err"}`;
@@ -50,7 +50,7 @@ function renderStatus(lastStatus) {
     statusBox.appendChild(urlEl);
   }
   const msgEl = document.createElement("div");
-  msgEl.textContent = lastStatus.message || (lastStatus.ok ? "Connected." : "Host error.");
+  msgEl.textContent = lastStatus.message || (lastStatus.ok ? "Connected" : "Host error");
   statusBox.appendChild(msgEl);
 }
 
@@ -63,12 +63,12 @@ function renderSiteExclude(excludedDomains) {
   siteExcludeBtn.hidden = false;
   siteExcludeBtn.classList.toggle("excluded", excluded);
   siteExcludeHost.textContent = currentTabHost;
-  siteExcludeLabel.textContent = excluded ? "EXCLUDED · ALLOW" : "EXCLUDE SITE";
+  siteExcludeLabel.textContent = excluded ? "Excluded · Allow" : "Exclude site";
 }
 
 async function pingHost() {
   hostPill.className = "pill";
-  hostPill.textContent = "PING...";
+  hostPill.textContent = "Pinging";
   try {
     const resp = await chrome.runtime.sendMessage({ action: "ping" });
     renderHostPill(resp);
@@ -154,12 +154,12 @@ openUiBtn.addEventListener("click", async () => {
       ok: Boolean(resp && resp.ok),
       message:
         (resp && (resp.message || resp.error)) ||
-        "Extension updated — click Reload in chrome://extensions.",
+        "Extension updated — click Reload in chrome://extensions",
     });
   } catch (err) {
     renderStatus({
       ok: false,
-      message: err && err.message ? err.message : "Extension bridge error.",
+      message: err && err.message ? err.message : "Extension bridge error",
     });
   }
   await pingHost();
@@ -171,7 +171,7 @@ pingBtn.addEventListener("click", async () => {
     ok: Boolean(resp && resp.ok),
     message:
       (resp && (resp.message || resp.error)) ||
-      "Extension updated — click Reload in chrome://extensions.",
+      "Extension updated — click Reload in chrome://extensions",
   });
 });
 

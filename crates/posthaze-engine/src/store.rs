@@ -12,7 +12,10 @@ use sqlx::sqlite::{
     SqliteSynchronous,
 };
 
-use crate::model::{PlannedSegment, SegmentCheckpoint};
+use crate::model::{
+    DownloadCategory, GENERAL_CATEGORY_ID, PlannedSegment, SegmentCheckpoint,
+    default_builtin_categories, normalize_extension_list, normalize_pattern_list,
+};
 use crate::probe::ProbeResult;
 use crate::{
     CollisionPolicy, DeleteDefaultAction, DownloadId, DownloadRequest, DownloadState, EngineError,
@@ -23,7 +26,7 @@ const DOWNLOAD_SELECT_COLUMNS: &str = "
     id, url, final_url, output_dir, output_path, part_path, state,
     content_length, supports_ranges, etag, last_modified,
     max_workers, sync_on_complete, request_headers, bytes_downloaded,
-    error_message, created_at, updated_at
+    error_message, created_at, updated_at, category_id
 ";
 
 /// Runs embedded SQLite migrations, reconciling line-ending checksum mismatches on existing
@@ -84,6 +87,8 @@ pub struct DownloadRecord {
     pub created_at: i64,
     /// Unix timestamp (seconds) when the record was last updated.
     pub updated_at: i64,
+    /// Optional resolved [`DownloadCategory`](crate::DownloadCategory) identifier.
+    pub category_id: Option<String>,
 }
 
 impl DownloadRecord {
@@ -202,8 +207,8 @@ impl DownloadStore {
         sqlx::query(
             "INSERT INTO downloads (
                 id, url, output_dir, output_path, state, max_workers, sync_on_complete,
-                request_headers, bytes_downloaded, created_at, updated_at
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
+                request_headers, bytes_downloaded, created_at, updated_at, category_id
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)",
         )
         .bind(id.as_str())
         .bind(&request.url)
@@ -215,6 +220,7 @@ impl DownloadStore {
         .bind(request_headers)
         .bind(now)
         .bind(now)
+        .bind(request.category_id.as_deref())
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -919,6 +925,7 @@ impl DownloadStore {
         let row = sqlx::query(
             "SELECT default_output_dir, max_workers, max_concurrent_downloads, sync_on_complete,
                     proxy_mode, proxy_url, download_speed_limit_kib, auto_categorize_folders,
+                    category_url_rule_precedence, set_file_time_from_server,
                     collision_policy, delete_action_default, auto_retry_count,
                     completion_cmd_enabled, completion_cmd_path, completion_cmd_args,
                     notify_on_added, notify_on_started, notify_on_completed, notify_on_failed, notify_only_inactive,
@@ -949,6 +956,9 @@ impl DownloadStore {
         let download_speed_limit_kib =
             u64::try_from(row.try_get::<i64, _>("download_speed_limit_kib")?).unwrap_or(0);
         let auto_categorize_folders = row.try_get::<i64, _>("auto_categorize_folders")? != 0;
+        let category_url_rule_precedence =
+            row.try_get::<i64, _>("category_url_rule_precedence")? != 0;
+        let set_file_time_from_server = row.try_get::<i64, _>("set_file_time_from_server")? != 0;
         let collision_policy =
             CollisionPolicy::from_str(&row.try_get::<String, _>("collision_policy")?)
                 .unwrap_or(defaults.collision_policy);
@@ -1005,6 +1015,8 @@ impl DownloadStore {
             proxy_url,
             download_speed_limit_kib,
             auto_categorize_folders,
+            category_url_rule_precedence,
+            set_file_time_from_server,
             collision_policy,
             delete_action_default,
             auto_retry_count,
@@ -1048,6 +1060,8 @@ impl DownloadStore {
                  proxy_url = ?,
                  download_speed_limit_kib = ?,
                  auto_categorize_folders = ?,
+                 category_url_rule_precedence = ?,
+                 set_file_time_from_server = ?,
                  collision_policy = ?,
                  delete_action_default = ?,
                  auto_retry_count = ?,
@@ -1086,6 +1100,8 @@ impl DownloadStore {
         .bind(&settings.proxy_url)
         .bind(settings.download_speed_limit_kib as i64)
         .bind(i64::from(settings.auto_categorize_folders))
+        .bind(i64::from(settings.category_url_rule_precedence))
+        .bind(i64::from(settings.set_file_time_from_server))
         .bind(settings.collision_policy.as_str())
         .bind(settings.delete_action_default.as_str())
         .bind(i64::from(settings.auto_retry_count))
@@ -1184,6 +1200,174 @@ impl DownloadStore {
         tx.commit().await?;
         Ok(())
     }
+
+    /// Lists all persisted [`DownloadCategory`] rules ordered by `sort_order`, `name`.
+    pub(crate) async fn list_categories(&self) -> Result<Vec<DownloadCategory>, EngineError> {
+        let rows = sqlx::query(
+            "SELECT id, name, extensions, url_patterns, output_dir, remember_last_folder,
+                    is_builtin, sort_order
+             FROM download_categories
+             ORDER BY sort_order ASC, name ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut categories = Vec::with_capacity(rows.len());
+        for row in rows {
+            let id: String = row.try_get("id")?;
+            let name: String = row.try_get("name")?;
+            let ext_raw: String = row.try_get("extensions")?;
+            let pat_raw: String = row.try_get("url_patterns")?;
+            let dir_raw: Option<String> = row.try_get("output_dir")?;
+            let remember_last_folder = row.try_get::<i64, _>("remember_last_folder")? != 0;
+            let is_builtin = row.try_get::<i64, _>("is_builtin")? != 0;
+            let sort_order = row.try_get::<i64, _>("sort_order")? as i32;
+            categories.push(DownloadCategory {
+                id,
+                name,
+                extensions: normalize_extension_list(&ext_raw),
+                url_patterns: normalize_pattern_list(&pat_raw),
+                output_dir: dir_raw
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .map(PathBuf::from),
+                remember_last_folder,
+                is_builtin,
+                sort_order,
+            });
+        }
+        if categories.is_empty() {
+            return Ok(default_builtin_categories());
+        }
+        Ok(categories)
+    }
+
+    /// Atomically replaces all [`DownloadCategory`] rows after normalizing fields and ensuring
+    /// the `General` fallback exists.
+    pub(crate) async fn replace_categories(
+        &self,
+        categories: &[DownloadCategory],
+    ) -> Result<Vec<DownloadCategory>, EngineError> {
+        let mut normalized = Vec::with_capacity(categories.len().max(1));
+        let mut seen_ids = std::collections::HashSet::new();
+        let mut has_general = false;
+
+        for (idx, cat) in categories.iter().enumerate() {
+            let id = cat.id.trim().to_string();
+            let name = cat.name.trim().to_string();
+            if id.is_empty() || name.is_empty() || !seen_ids.insert(id.clone()) {
+                return Err(EngineError::InvalidState(
+                    "category id and name must be non-empty and unique".to_string(),
+                ));
+            }
+            let is_general = id == GENERAL_CATEGORY_ID;
+            if is_general {
+                has_general = true;
+            }
+            normalized.push(DownloadCategory {
+                id,
+                name: if is_general {
+                    "General".to_string()
+                } else {
+                    name
+                },
+                extensions: if is_general {
+                    Vec::new()
+                } else {
+                    normalize_extension_list(&cat.extensions.join(","))
+                },
+                url_patterns: if is_general {
+                    Vec::new()
+                } else {
+                    normalize_pattern_list(&cat.url_patterns.join(","))
+                },
+                output_dir: cat
+                    .output_dir
+                    .as_ref()
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .cloned(),
+                remember_last_folder: cat.remember_last_folder,
+                is_builtin: cat.is_builtin || is_general,
+                sort_order: if is_general {
+                    9999
+                } else if cat.sort_order > 0 && cat.sort_order < 9999 {
+                    cat.sort_order
+                } else {
+                    ((idx as i32) + 1) * 10
+                },
+            });
+        }
+
+        if !has_general
+            && let Some(gen_cat) = default_builtin_categories()
+                .into_iter()
+                .find(|c| c.id == GENERAL_CATEGORY_ID)
+        {
+            normalized.push(gen_cat);
+        }
+        normalized.sort_by(|a, b| a.sort_order.cmp(&b.sort_order).then_with(|| a.name.cmp(&b.name)));
+
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM download_categories")
+            .execute(&mut *tx)
+            .await?;
+        for cat in &normalized {
+            let ext_csv = cat.extensions.join(",");
+            let pat_csv = cat.url_patterns.join(",");
+            let dir_str = cat
+                .output_dir
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned());
+            sqlx::query(
+                "INSERT INTO download_categories (
+                    id, name, extensions, url_patterns, output_dir, remember_last_folder,
+                    is_builtin, sort_order
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&cat.id)
+            .bind(&cat.name)
+            .bind(ext_csv)
+            .bind(pat_csv)
+            .bind(dir_str)
+            .bind(i64::from(cat.remember_last_folder))
+            .bind(i64::from(cat.is_builtin))
+            .bind(i64::from(cat.sort_order))
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(normalized)
+    }
+
+    /// Updates `output_dir` for `category_id` when `remember_last_folder` is enabled.
+    pub(crate) async fn update_category_output_dir(
+        &self,
+        category_id: &str,
+        dir: &Path,
+    ) -> Result<bool, EngineError> {
+        let norm = normalize_folder_path(dir);
+        if norm.is_empty() {
+            return Ok(false);
+        }
+        let res = sqlx::query(
+            "UPDATE download_categories
+             SET output_dir = ?
+             WHERE id = ? AND remember_last_folder != 0",
+        )
+        .bind(norm)
+        .bind(category_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    /// Restores the seeded built-in [`DownloadCategory`] presets.
+    pub(crate) async fn reset_default_categories(
+        &self,
+    ) -> Result<Vec<DownloadCategory>, EngineError> {
+        let defaults = default_builtin_categories();
+        self.replace_categories(&defaults).await
+    }
 }
 
 async fn upsert_segments_in_tx(
@@ -1269,6 +1453,7 @@ fn row_to_record(row: SqliteRow) -> Result<DownloadRecord, EngineError> {
         error_message: row.try_get("error_message")?,
         created_at: row.try_get("created_at")?,
         updated_at: row.try_get("updated_at")?,
+        category_id: row.try_get("category_id")?,
     })
 }
 

@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use tokio::sync::{Mutex, broadcast, mpsc, watch};
@@ -51,6 +51,7 @@ pub(crate) struct RunnerContext {
     pub active: Arc<Mutex<HashMap<DownloadId, ActiveControl>>>,
     pub queue: Arc<QueueCoordinator>,
     pub event_tx: broadcast::Sender<EngineEvent>,
+    pub set_file_time_from_server: Arc<AtomicBool>,
 }
 
 /// Transfer strategy selected from server `ProbeResult` capabilities.
@@ -61,11 +62,13 @@ pub(crate) enum TransferStrategy {
 }
 
 /// Executes a single `Download` directly without `Queue` admission (used by `DownloadEngine::download`).
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_direct_download(
     client: reqwest::Client,
     limiter: Arc<BandwidthLimiter>,
     store: Option<DownloadStore>,
     event_tx: broadcast::Sender<EngineEvent>,
+    set_file_time_from_server: Arc<AtomicBool>,
     id: DownloadId,
     request: DownloadRequest,
     progress_tx: Option<watch::Sender<ProgressSnapshot>>,
@@ -76,6 +79,7 @@ pub(crate) async fn run_direct_download(
         client,
         limiter,
         store,
+        set_file_time_from_server,
         id,
         TransferMode::Fresh(request),
         sink,
@@ -140,6 +144,7 @@ pub(crate) async fn spawn_queued_download(
                     ctx.client,
                     ctx.limiter,
                     ctx.store,
+                    ctx.set_file_time_from_server,
                     task_id.clone(),
                     mode,
                     sink,
@@ -191,10 +196,12 @@ pub(crate) async fn spawn_queued_download(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_download(
     client: reqwest::Client,
     limiter: Arc<BandwidthLimiter>,
     store: Option<DownloadStore>,
+    set_file_time_from_server: Arc<AtomicBool>,
     id: DownloadId,
     mode: TransferMode,
     sink: ProgressSink,
@@ -567,6 +574,7 @@ async fn execute_download(
         &live_segments_slot,
         &downloaded,
         transfer_result,
+        set_file_time_from_server.load(Ordering::Acquire),
         probe_duration,
         transfer_start,
         total_start,
@@ -596,6 +604,7 @@ pub(crate) fn resolve_resume_mode(
             skip_probe: false,
             probe_via_get: false,
             preflight_probe: None,
+            category_id: record.category_id,
         }));
     }
 
@@ -984,6 +993,7 @@ async fn finalize_transfer(
     live_segments_slot: &Arc<std::sync::Mutex<Option<LiveSegments>>>,
     downloaded: &AtomicU64,
     transfer_result: Result<MultiSegmentResult, EngineError>,
+    set_file_time_from_server: bool,
     probe_duration: Duration,
     transfer_start: Instant,
     total_start: Instant,
@@ -1142,6 +1152,33 @@ async fn finalize_transfer(
             err,
         )
         .await);
+    }
+
+    if set_file_time_from_server
+        && let Some(lm) = probe.last_modified.clone()
+    {
+        let path_for_ts = final_path.clone();
+        match tokio::task::spawn_blocking(move || {
+            crate::timestamps::apply_server_file_time(&path_for_ts, &lm)
+        })
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                tracing::warn!(
+                    path = %final_path.display(),
+                    error = %err,
+                    "failed to apply server Last-Modified timestamp to downloaded file"
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    path = %final_path.display(),
+                    error = %err,
+                    "timestamp task panicked"
+                );
+            }
+        }
     }
 
     if let Some(store) = store {
@@ -1366,6 +1403,7 @@ mod tests {
             error_message: None,
             created_at: 0,
             updated_at: 0,
+            category_id: None,
         }
     }
 

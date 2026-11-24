@@ -71,7 +71,7 @@ Grab the latest build from [**GitHub Releases**](https://github.com/prag-matic/p
 > [!NOTE]
 > **Windows SmartScreen:** Release binaries do not currently use a paid Authenticode certificate. If Windows SmartScreen warns you on first run, check the file hash against `SHA256SUMS.txt` on the release page, then click **More info → Run anyway**:
 > ```powershell
-> Get-FileHash .\posthaze-0.2.2-windows-x64-setup.exe -Algorithm SHA256
+> Get-FileHash .\posthaze-0.2.3-windows-x64-setup.exe -Algorithm SHA256
 > ```
 
 ---

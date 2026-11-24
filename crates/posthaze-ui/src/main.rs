@@ -66,9 +66,9 @@ use crate::updater::UpdateState;
 use crate::view_model::{
     COLLAPSED_INSPECTOR_HEIGHT, DEFAULT_INSPECTOR_HEIGHT, DEFAULT_SIDEBAR_WIDTH,
     FilterTab, INSPECTOR_MAGNETIC_SNAP_RADIUS, KeyboardAction, KeyboardContext,
-    PrimaryDownloadAction, QueueController, RAIL_SIDEBAR_WIDTH, SIDEBAR_MAGNETIC_SNAP_RADIUS,
-    SortColumn, SortDirection, ToastEvent, UiEffect, apply_magnetic_detent,
-    compute_layout_profile, derive_display_filename, resolve_inspector_drag,
+    MIN_SIDEBAR_WIDTH, PrimaryDownloadAction, QueueController, RAIL_SIDEBAR_WIDTH,
+    SIDEBAR_MAGNETIC_SNAP_RADIUS, SortColumn, SortDirection, ToastEvent, UiEffect,
+    apply_magnetic_detent, compute_layout_profile, derive_display_filename, resolve_inspector_drag,
     resolve_keyboard_action, resolve_sidebar_drag,
 };
 
@@ -261,6 +261,8 @@ pub(crate) struct PosthazeApp {
     pub(crate) search_input: Entity<InputState>,
     pub(crate) queue: QueueController,
     pub(crate) filter: FilterTab,
+    pub(crate) category_filter: Option<String>,
+    pub(crate) category_filter_dropdown_open: bool,
     pub(crate) sort_col: SortColumn,
     pub(crate) sort_dir: SortDirection,
     status_banner: Option<String>,
@@ -308,7 +310,7 @@ impl PosthazeApp {
         cx: &mut Context<Self>,
     ) -> Self {
         let url_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("Paste or enter HTTP/HTTPS URL to probe...")
+            InputState::new(window, cx).placeholder("Paste or enter URL")
         });
         url_input.update(cx, |state, cx| {
             state.focus(window, cx);
@@ -322,7 +324,7 @@ impl PosthazeApp {
         .detach();
 
         let search_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("Filter by filename or URL...")
+            InputState::new(window, cx).placeholder("Filter downloads")
         });
         cx.subscribe_in(&search_input, window, |_, _, ev: &InputEvent, _, cx| {
             if matches!(ev, InputEvent::Change) {
@@ -376,6 +378,8 @@ impl PosthazeApp {
             search_input,
             queue,
             filter: FilterTab::All,
+            category_filter: None,
+            category_filter_dropdown_open: false,
             sort_col: SortColumn::CreatedAt,
             sort_dir: SortDirection::Descending,
             status_banner: None,
@@ -870,11 +874,15 @@ impl PosthazeApp {
                         let bridge_for_win = bridge.clone();
                         let main_app = this.clone();
                         cx.update(|cx| {
-                            let (settings, cascade) = main_app
+                            let (settings, categories, cascade) = main_app
                                 .update(cx, |app, _| {
                                     let idx = app.next_probe_cascade;
                                     app.next_probe_cascade = app.next_probe_cascade.wrapping_add(1);
-                                    (app.queue.settings.clone(), idx)
+                                    (
+                                        app.queue.settings.clone(),
+                                        app.queue.categories.clone(),
+                                        idx,
+                                    )
                                 })
                                 .unwrap_or_default();
                             let hints = preflight_window::PreflightHints {
@@ -888,6 +896,7 @@ impl PosthazeApp {
                             PreflightWindow::open(
                                 bridge_for_win,
                                 settings,
+                                categories,
                                 req.url,
                                 req.headers,
                                 hints,
@@ -978,8 +987,20 @@ impl PosthazeApp {
                             app.execute_ui_effects(effects, cx);
                         });
                     }
-                    Ok(event @ (EngineEvent::QueueUpdated | EngineEvent::SettingsUpdated(_))) => {
+                    Ok(
+                        event @ (EngineEvent::QueueUpdated
+                        | EngineEvent::SettingsUpdated(_)
+                        | EngineEvent::CategoriesUpdated(_)),
+                    ) => {
                         let _ = this.update(cx, |app, cx| {
+                            if let EngineEvent::CategoriesUpdated(ref cats) = event
+                                && let Some(win_ref) = &app.settings_window
+                            {
+                                let updated = cats.clone();
+                                let _ = win_ref.entity.update(cx, |win, cx| {
+                                    win.sync_categories(updated, cx);
+                                });
+                            }
                             let effects = app.queue.on_engine_event(event, false);
                             app.execute_ui_effects(effects, cx);
                             if !app.window_hidden {
@@ -1095,11 +1116,13 @@ impl PosthazeApp {
         self.next_probe_cascade = self.next_probe_cascade.wrapping_add(1);
         let bridge = self.bridge.clone();
         let settings = self.queue.settings.clone();
+        let categories = self.queue.categories.clone();
         let main_window = window.window_handle();
         let main_app = cx.entity().downgrade();
         PreflightWindow::open(
             bridge,
             settings,
+            categories,
             url,
             headers,
             preflight_window::PreflightHints::default(),
@@ -1160,6 +1183,7 @@ impl PosthazeApp {
         self.settings_window = SettingsWindow::open(
             self.bridge.clone(),
             self.queue.settings.clone(),
+            self.queue.categories.clone(),
             self.update_state.clone(),
             self.is_portable,
             tab,
@@ -1349,6 +1373,7 @@ impl PosthazeApp {
     pub(crate) fn commit_saved_settings(
         &mut self,
         new_settings: posthaze_engine::Settings,
+        new_categories: Vec<posthaze_engine::DownloadCategory>,
         cx: &mut Context<Self>,
     ) {
         let startup_enabled = new_settings.launch_on_startup;
@@ -1359,6 +1384,7 @@ impl PosthazeApp {
         if let Err(err) = sync_windows_startup_registry(startup_enabled) {
             self.status_banner = Some(err);
         }
+        self.run_command(EngineCommand::SaveCategories(new_categories), cx);
         self.run_command(EngineCommand::UpdateSettings(new_settings), cx);
     }
 
@@ -1939,6 +1965,7 @@ impl Render for PosthazeApp {
         let search_query = self.search_input.read(cx).value();
         self.queue.ensure_projection(
             self.filter,
+            self.category_filter.as_deref(),
             &search_query,
             self.sort_col,
             self.sort_dir,
@@ -2504,6 +2531,7 @@ impl Render for PosthazeApp {
                     // Main Right Column: Top Toolbar + Center Table + Collapsible & Resizable Bottom Inspector
                     .child(
                         div()
+                            .relative()
                             .flex()
                             .flex_col()
                             .flex_1()
@@ -2566,6 +2594,9 @@ impl Render for PosthazeApp {
                                 profile,
                                 cx,
                             ))
+                            .when(self.category_filter_dropdown_open, |el| {
+                                el.child(self.render_category_filter_overlay(cx))
+                            })
                             .child(
                                 div()
                                     .id("inspector-resize")
@@ -2687,7 +2718,7 @@ impl PosthazeApp {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let update_chip = self.update_state.available_release().map(|info| {
-            let label = format!("UPDATE v{}", info.version);
+            let label = format!("Update v{}", info.version);
             div()
                 .id("titlebar-update-chip")
                 .h_full()
@@ -2707,11 +2738,20 @@ impl PosthazeApp {
                 .on_click(cx.listener(|app, _, _, cx| {
                     app.open_settings_window(SettingsTab::System, cx);
                 }))
-                .child(Icon::new(IconName::ArrowDown).size(px(11.0)))
+                .child(Icon::new(IconName::ArrowDown).size(px(14.0)))
                 .child(label)
         });
 
+        let target_sidebar_w = if self.sidebar_collapsed {
+            RAIL_SIDEBAR_WIDTH
+        } else {
+            self.sidebar_width
+        };
+        let current_sidebar_w = self.motion.current_sidebar_width(target_sidebar_w);
+        let align_to_sidebar = current_sidebar_w >= MIN_SIDEBAR_WIDTH;
+
         TitleBar::new()
+            .pl_0()
             .bg(titlebar_bg())
             .border_color(graphite_border())
             .child(
@@ -2719,44 +2759,53 @@ impl PosthazeApp {
                     .h_full()
                     .flex()
                     .items_center()
-                    // Brand cell
                     .child(
                         div()
                             .h_full()
-                            .pr_3()
+                            .pl(px(12.0))
                             .border_r_1()
                             .border_color(graphite_border())
                             .flex()
                             .items_center()
-                            .gap_2()
-                            .child(
-                                svg()
-                                    .path(BRAND_LOGO_SVG)
-                                    .size(px(22.0))
-                                    .text_color(selenium_amber()),
-                            )
+                            .when(align_to_sidebar, |el| el.min_w(px(current_sidebar_w + 4.0)))
+                            // Brand cell
                             .child(
                                 div()
+                                    .h_full()
+                                    .pr_3()
+                                    .border_r_1()
+                                    .border_color(graphite_border())
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(
+                                        svg()
+                                            .path(BRAND_LOGO_SVG)
+                                            .size(px(22.0))
+                                            .text_color(selenium_amber()),
+                                    )
+                                    .child(
+                                        div()
+                                            .font_family(MONO_FONT)
+                                            .text_size(TYPE_MICRO)
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(silver_text())
+                                            .child("POSTHAZE"),
+                                    ),
+                            )
+                            // Version cell (stretches to meet the expanded sidebar sash seam)
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .h_full()
+                                    .px_2p5()
+                                    .flex()
+                                    .items_center()
                                     .font_family(MONO_FONT)
-                                    .text_size(TYPE_MICRO)
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(silver_text())
-                                    .child("POSTHAZE"),
+                                    .text_size(TYPE_HEADER)
+                                    .text_color(silver_muted())
+                                    .child(concat!("v", env!("CARGO_PKG_VERSION"), " beta")),
                             ),
-                    )
-                    // Version cell
-                    .child(
-                        div()
-                            .h_full()
-                            .px_2p5()
-                            .border_r_1()
-                            .border_color(graphite_border())
-                            .flex()
-                            .items_center()
-                            .font_family(MONO_FONT)
-                            .text_size(TYPE_HEADER)
-                            .text_color(silver_muted())
-                            .child(concat!("v", env!("CARGO_PKG_VERSION"), " beta")),
                     )
                     // Update available chip
                     .when_some(update_chip, |el, chip| el.child(chip))
@@ -2781,12 +2830,12 @@ impl PosthazeApp {
                                 }))
                                 .child(if active_slots > 0 {
                                     format!(
-                                        "ACTIVE {active_slots}/{} · {}",
+                                        "Active {active_slots}/{} · {}",
                                         self.queue.settings.max_concurrent_downloads,
                                         view_model::format_speed(total_speed)
                                     )
                                 } else {
-                                    format!("IDLE · {total_count} QUEUED")
+                                    format!("Idle · {total_count} queued")
                                 }),
                         )
                     }),

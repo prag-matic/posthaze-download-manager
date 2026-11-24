@@ -51,3 +51,6 @@ Post-completion file verification digests (`BLAKE3`, `SHA-256`, `SHA-512`, `SHA-
 
 ### Folder History
 A deduplicated list of recently confirmed `Download` output directories persisted in SQLite (`folder_history`) and surfaced as one-click quick-pick chips in the `Pre-Flight` window.
+
+### Download Category
+A user-customizable routing rule (`DownloadCategory`, persisted in SQLite `download_categories`) pairing normalized file extensions and host/URL wildcard patterns with a destination folder and optional per-category last-selected folder memory (`General` serves as the catch-all fallback).
