@@ -3,6 +3,23 @@
 All notable changes to Posthaze Download Manager are documented in this file.
 When a `vX.Y.Z` tag is pushed, `.github/workflows/release.yml` automatically uses the matching `## [X.Y.Z]` section below as the GitHub Release notes (falling back to GitHub's auto-generated notes if no section is present).
 
+## [0.2.2] - 2026-11-24
+
+### What's New
+- **Standalone Settings Window & 6-Tab Cleanup:** Upgraded Settings into its own resizable OS window (`Ctrl+,`, tray menu, or TitleBar update chip) and reorganized options into 6 clean tabs (`General`, `Downloads`, `Network`, `Appearance`, `Integrations`, `System`).
+- **In-Process Windows Toast Notifications:** Replaced external PowerShell notification spawns with native WinRT toasts (`Posthaze.DownloadManager` AUMID) that open/select transfers on click, offer **Open File**, **Show in Folder**, and **Retry** action buttons, display cleaner 3-line details, and include a new opt-in **Download Started** toggle.
+- **File Integrity Verification & Recycle Bin Safety:**
+  - Single-pass **Verify Checksum / File Integrity** modal computing `BLAKE3`, `SHA-256`, `SHA-512`, `SHA-1`, `MD5`, and `CRC32` with paste-to-verify (`PASTE` / raw / Base64 / `Repr-Digest`) and server digest matching.
+  - Configurable **Windows Recycle Bin** deletion mode (`Keep on Disk`, `Recycle Bin`, `Permanent` via `Shift+Delete`).
+  - Persisted destination **Folder History** quick-picks in the Add Download window.
+- **Browser Extension Wave 2:** Added CHIPS partitioned cookie capture, active-tab `Referer` fallback, Chrome `DownloadItem` byte-size forwarding with signed-URL single-stream hints, domain/extension/min-size skip filters, and pre-filled Extension ID registration using `posthaze-cli.exe` directly without `.cmd` shims.
+- **Refreshed App Icon & Installer Branding:** Updated desktop app icons, tray icons, Chrome extension icons, and Windows 11 Inno Setup wizard assets.
+
+### Fixes
+- **Duplicate & Collision Handling:** Normalized `(n)` auto-renamed suffixes in duplicate-URL/file detection and reserved active/paused output paths to prevent concurrent overwrites.
+- **Zero Console Flashes & Modal Polish:** Added `CREATE_NO_WINDOW` to post-download external command hooks, eliminated silent fast-completion notification drops, and aligned all in-window modal action footers and copy buttons flush against their card frames.
+- **Transfer & Probe Resilience:** Added disk-space and FAT32 `4 GiB - 1` pre-flight validation, persisted HTTP redirect target URLs, and improved `429 Retry-After` and slow-worker shedding recovery.
+
 ## [0.2.1] - 2026-11-23
 
 ### What's New

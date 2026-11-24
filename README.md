@@ -54,7 +54,7 @@ Multi-connection acceleration, crash-safe resume, native Windows 11 Mica themes,
 - **Native Windows feel, tiny footprint:** Pure Rust and GPU-accelerated GPUI—uses **~86 MiB RAM** and **0% CPU** when minimized to the System Tray, even with 500 downloads in your queue.
 - **Browser capture for Chrome, Edge & Brave:** Send downloads and right-click links—along with login cookies, referrers, and headers—straight into Posthaze.
 - **8 built-in themes + Windows 11 Mica:** Includes **Mica (System)**, **Mica Dark**, **Mica Light**, and 5 opaque themes (with automatic fallback on Windows 10).
-- **Power-user controls:** Speed limits, HTTP/HTTPS/SOCKS5 proxies, custom headers, **Paste as cURL**, FIFO queues, System Tray mode, and a full CLI (`posthaze-cli`).
+- **Power-user controls:** Speed limits, HTTP/HTTPS/SOCKS5 proxies, custom headers, **Paste as cURL**, FIFO queues, **Verify Checksum** integrity checks, Recycle Bin support, native Windows notifications, System Tray mode, and a full CLI (`posthaze-cli`).
 - **Verified auto-updates:** Checks GitHub Releases and verifies every installer with both **Ed25519** signatures and **SHA-256** checksums before upgrading.
 
 ---
@@ -71,7 +71,7 @@ Grab the latest build from [**GitHub Releases**](https://github.com/prag-matic/p
 > [!NOTE]
 > **Windows SmartScreen:** Release binaries do not currently use a paid Authenticode certificate. If Windows SmartScreen warns you on first run, check the file hash against `SHA256SUMS.txt` on the release page, then click **More info → Run anyway**:
 > ```powershell
-> Get-FileHash .\posthaze-0.2.0-windows-x64-setup.exe -Algorithm SHA256
+> Get-FileHash .\posthaze-0.2.2-windows-x64-setup.exe -Algorithm SHA256
 > ```
 
 ---
@@ -81,10 +81,9 @@ Grab the latest build from [**GitHub Releases**](https://github.com/prag-matic/p
 Posthaze ships with a Manifest V3 extension in `extensions/chrome/` (bundled inside the Windows Installer at `%LOCALAPPDATA%\Programs\Posthaze\extensions\chrome` and inside the Portable ZIP).
 
 1. Open `chrome://extensions` (or `edge://extensions` / `brave://extensions`).
-2. Turn on **Developer mode**, click **Load unpacked**, and pick the `extensions/chrome/` folder.
-3. Copy the 32-character **Extension ID** shown on the Posthaze extension card.
-4. Open **Posthaze → Settings → Integration**, paste the **Extension ID**, and click **REGISTER NATIVE HOST**.
-5. Click the **Posthaze** icon in your browser toolbar and make sure the status badge shows **UI ONLINE** or **HOST READY**.
+2. Turn on **Developer mode**, click **Load unpacked**, and pick the `extensions/chrome/` folder (pinned to deterministic Extension ID `eiophahfcjidkfgdddgejjglglaopahi`).
+3. Open **Posthaze → Settings → Integrations** and click **REGISTER NATIVE HOST** (the Extension ID is pre-filled automatically).
+4. Click the **Posthaze** icon in your browser toolbar and make sure the status badge shows **UI ONLINE** or **HOST READY**.
 
 *(Full setup details, capture filters, and CLI fallback: [`extensions/chrome/README.md`](extensions/chrome/README.md).)*
 

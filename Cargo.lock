@@ -5641,7 +5641,7 @@ dependencies = [
 
 [[package]]
 name = "posthaze-cli"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "clap",
  "posthaze-engine",
@@ -5649,18 +5649,23 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
 name = "posthaze-engine"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "blake3",
  "bytes",
+ "crc32fast",
  "criterion",
  "futures-util",
+ "md-5",
  "percent-encoding",
  "reqwest",
+ "sha1",
+ "sha2 0.10.9",
  "sqlx",
  "tempfile",
  "thiserror 2.0.21",
@@ -5672,7 +5677,7 @@ dependencies = [
 
 [[package]]
 name = "posthaze-keytool"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
@@ -5681,7 +5686,7 @@ dependencies = [
 
 [[package]]
 name = "posthaze-ui"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "base64 0.22.1",
  "bytes",

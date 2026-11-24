@@ -1,7 +1,7 @@
 #define MyAppName "Posthaze"
 #define MyAppDisplayName "Posthaze Download Manager"
 #ifndef MyAppVersion
-  #define MyAppVersion "0.2.1"
+  #define MyAppVersion "0.2.2"
 #endif
 #define MyAppPublisher "Posthaze Download Manager"
 #define MyAppURL "https://github.com/prag-matic/posthaze-download-manager"
@@ -64,7 +64,7 @@ WelcomeLabel2=Install {#MyAppDisplayName} {#MyAppVersion} for your Windows user 
 SelectDirLabel3=Choose where {#MyAppDisplayName} should be installed.
 SelectDirBrowseLabel=Click Next to use the default per-user folder, or Browse to select another location.
 FinishedHeadingLabel={#MyAppDisplayName} is ready
-FinishedLabel=Posthaze {#MyAppVersion} has been installed on your computer.%n%nTip: To enable Browser Capture for Chrome, Edge, or Brave, load the bundled extension and click Register inside Settings -> Integration.
+FinishedLabel=Posthaze {#MyAppVersion} has been installed on your computer.%n%nTip: To enable Browser Capture for Chrome, Edge, or Brave, load the bundled extension and click Register inside Settings -> Integrations (the Extension ID is pre-filled).
 
 [Tasks]
 Name: "addtopath"; Description: "Add posthaze-cli to user &PATH (for PowerShell and Terminal)"; GroupDescription: "Command-Line Integration:"
@@ -77,7 +77,7 @@ Source: "..\..\target\release\{#MyAppCliName}"; DestDir: "{app}"; Flags: ignorev
 Source: "..\..\extensions\chrome\*"; DestDir: "{app}\extensions\chrome"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Comment: "Multi-connection HTTP/HTTPS download manager"
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Comment: "Multi-connection HTTP/HTTPS download manager"; AppUserModelID: "Posthaze.DownloadManager"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Comment: "Multi-connection HTTP/HTTPS download manager"; Tasks: desktopicon
 
@@ -91,10 +91,16 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\App Paths\{#MyApp
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\App Paths\{#MyAppCliName}"; ValueType: string; ValueName: ""; ValueData: "{app}\{#MyAppCliName}"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\App Paths\{#MyAppCliName}"; ValueType: string; ValueName: "Path"; ValueData: "{app}"
 
-; Clean up Chromium Native Messaging Host keys on uninstall without touching them during install/upgrade
+; Clean up Chromium Native Messaging Host & Toast AUMID keys on uninstall without touching them during install/upgrade
 Root: HKCU; Subkey: "Software\Google\Chrome\NativeMessagingHosts\com.posthaze.host"; Flags: dontcreatekey uninsdeletekey
 Root: HKCU; Subkey: "Software\Microsoft\Edge\NativeMessagingHosts\com.posthaze.host"; Flags: dontcreatekey uninsdeletekey
 Root: HKCU; Subkey: "Software\BraveSoftware\Brave-Browser\NativeMessagingHosts\com.posthaze.host"; Flags: dontcreatekey uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\AppUserModelId\Posthaze.DownloadManager"; Flags: dontcreatekey uninsdeletekey
+
+[UninstallDelete]
+Type: files; Name: "{localappdata}\posthaze\posthaze-native-host.cmd"
+Type: files; Name: "{localappdata}\posthaze\com.posthaze.host.json"
+Type: files; Name: "{localappdata}\posthaze\toast-icon.png"
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
