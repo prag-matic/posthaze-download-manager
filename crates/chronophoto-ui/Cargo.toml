@@ -1,0 +1,26 @@
+[package]
+name = "chronophoto-ui"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Chronophotographic Interval Plate design system for GPUI and GPUI Kit."
+
+[features]
+default = ["mica"]
+mica = ["dep:windows-sys", "dep:raw-window-handle"]
+test-support = ["gpui-kit/test-support"]
+inspector = ["gpui-kit/inspector"]
+
+[dependencies]
+gpui-kit = "0.10.0"
+
+[target.'cfg(windows)'.dependencies]
+raw-window-handle = { version = "0.6", optional = true }
+windows-sys = { version = "0.60", optional = true, features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_System_Registry",
+    "Win32_System_SystemInformation",
+    "Win32_UI_Accessibility",
+    "Win32_UI_WindowsAndMessaging",
+] }

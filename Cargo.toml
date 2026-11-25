@@ -4,6 +4,7 @@ members = [
     "crates/posthaze-cli",
     "crates/posthaze-ui",
     "crates/posthaze-keytool",
+    "crates/chronophoto-ui",
 ]
 resolver = "2"
 
