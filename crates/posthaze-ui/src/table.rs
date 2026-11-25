@@ -5,7 +5,6 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{Scrollbar, ScrollbarMode};
-use gpui_kit::component::input::Input;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, InteractiveElementExt as _};
 use gpui_kit::prelude::FluentBuilder;
@@ -16,7 +15,9 @@ use crate::PosthazeApp;
 use crate::assets::BRAND_LOGO_SVG;
 use crate::context_menu::ContextMenuState;
 use crate::grid_cells::{
-    CellBorder, GridTone, grid_boxed_button, grid_cell_button, grid_cell_button_dyn,
+    BadgeTone, CellBorder, GridTone, grid_badge, grid_boxed_button, grid_cell_button,
+    grid_cell_button_dyn, grid_check_option_row, grid_dropdown_surface, grid_input_box,
+    grid_progress_track, grid_selection_bar,
 };
 use crate::motion::RowMotionSample;
 use crate::theme::*;
@@ -62,14 +63,7 @@ impl PosthazeApp {
                             .bg(input_bg())
                             .flex()
                             .items_center()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .font_family(MONO_FONT)
-                                    .text_size(TYPE_BODY)
-                                    .child(Input::new(&self.url_input).appearance(false)),
-                            )
+                            .child(grid_input_box(&self.url_input))
                             .into_any_element(),
                     })
                     // ADD URL button cell (right after the URL field, full cell width & height)
@@ -178,14 +172,7 @@ impl PosthazeApp {
                     .bg(input_bg())
                     .flex()
                     .items_center()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .font_family(MONO_FONT)
-                            .text_size(TYPE_BODY)
-                            .child(Input::new(&self.search_input).appearance(false)),
-                    ),
+                    .child(grid_input_box(&self.search_input)),
             )
             .when(has_query, |el| {
                 el.child(self.toolbar_cell_button(
@@ -969,18 +956,7 @@ impl PosthazeApp {
                 }),
             )
             // 3px selection accent bar + 13px margin = 16px left offset matching header px_4
-            .child(
-                div()
-                    .w(px(3.0))
-                    .flex_shrink_0()
-                    .h_full()
-                    .mr(px(13.0))
-                    .bg(if is_selected {
-                        selenium_amber()
-                    } else {
-                        Hsla::transparent_black()
-                    }),
-            )
+            .child(grid_selection_bar(is_selected).mr(px(13.0)))
             // State + FIFO rank badge
             .child(
                 div()
@@ -1005,18 +981,15 @@ impl PosthazeApp {
                     })
                     .child(Icon::new(icon_name).size(px(14.0)).text_color(state_color))
                     .child(if let Some(rank) = row.fifo_rank {
-                        div()
-                            .px_1()
-                            .bg(graphite_elevated())
-                            .border_1()
-                            .border_color(graphite_border())
-                            .text_color(silver_text())
-                            .child(if rank == 1 {
+                        grid_badge(
+                            if rank == 1 {
                                 "#1 Next".to_string()
                             } else {
                                 format!("#{rank}")
-                            })
-                            .into_any_element()
+                            },
+                            BadgeTone::Neutral,
+                        )
+                        .into_any_element()
                     } else {
                         div().child(label).into_any_element()
                     }),
@@ -1088,24 +1061,16 @@ impl PosthazeApp {
                             ),
                     )
                     .child(
-                        div()
-                            .h(px(6.0))
-                            .w_full()
-                            .bg(byte_track_bg())
-                            .when(motion_sample.completion_flash > 0.05, |el| {
-                                el.border_1()
-                                    .border_color(halide_emerald().opacity(motion_sample.completion_flash))
-                            })
-                            .when(
-                                motion_sample.completion_flash <= 0.05
-                                    && motion_sample.split_flash > 0.05,
-                                |el| {
-                                    el.border_1()
-                                        .border_color(selenium_amber().opacity(motion_sample.split_flash))
-                                },
-                            )
-                            .flex()
-                            .overflow_hidden()
+                        grid_progress_track(
+                            px(6.0),
+                            if motion_sample.completion_flash > 0.05 {
+                                Some(halide_emerald().opacity(motion_sample.completion_flash))
+                            } else if motion_sample.split_flash > 0.05 {
+                                Some(selenium_amber().opacity(motion_sample.split_flash))
+                            } else {
+                                None
+                            },
+                        )
                             .child(
                                 div()
                                     .h_full()
@@ -1478,75 +1443,31 @@ impl PosthazeApp {
                         count: usize,
                         selected: bool,
                         cx: &mut Context<Self>| {
-            div()
-                .id(("table-cat-opt", idx))
-                .h(px(28.0))
-                .px_3()
-                .flex()
-                .items_center()
-                .justify_between()
-                .gap_3()
-                .cursor_pointer()
-                .bg(if selected {
-                    paper_selected()
+            let count_el = div()
+                .font_family(MONO_FONT)
+                .text_size(TYPE_MICRO)
+                .text_color(if selected {
+                    selenium_amber()
                 } else {
-                    Hsla::transparent_black()
+                    silver_muted()
                 })
-                .hover(|s| s.bg(paper_hover()))
-                .on_click(cx.listener(move |app, _, _, cx| {
+                .child(count.to_string())
+                .into_any_element();
+            grid_check_option_row(
+                ("table-cat-opt", idx),
+                px(28.0),
+                label,
+                selected,
+                Some(count_el),
+                cx.listener(move |app, _, _, cx| {
                     app.category_filter = id.clone();
                     app.category_filter_dropdown_open = false;
                     cx.notify();
-                }))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .min_w_0()
-                        .child(
-                            div()
-                                .w(px(14.0))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .when(selected, |el| {
-                                    el.child(
-                                        Icon::new(IconName::Check)
-                                            .size(px(13.0))
-                                            .text_color(selenium_amber()),
-                                    )
-                                }),
-                        )
-                        .child(
-                            div()
-                                .font_family(MONO_FONT)
-                                .text_size(TYPE_MICRO)
-                                .font_weight(if selected {
-                                    FontWeight::SEMIBOLD
-                                } else {
-                                    FontWeight::NORMAL
-                                })
-                                .text_color(if selected {
-                                    silver_text()
-                                } else {
-                                    silver_muted()
-                                })
-                                .truncate()
-                                .child(label),
-                        ),
-                )
-                .child(
-                    div()
-                        .font_family(MONO_FONT)
-                        .text_size(TYPE_MICRO)
-                        .text_color(if selected {
-                            selenium_amber()
-                        } else {
-                            silver_muted()
-                        })
-                        .child(count.to_string()),
-                )
+                }),
+            )
+            .px_3()
+            .gap_3()
+            .into_any_element()
         };
 
         let all_selected = self.category_filter.is_none();
@@ -1564,7 +1485,6 @@ impl PosthazeApp {
                     selected,
                     cx,
                 )
-                .into_any_element()
             })
             .collect();
 
@@ -1580,19 +1500,13 @@ impl PosthazeApp {
                 }),
             )
             .child(
-                div()
-                    .id("table-cat-menu")
+                grid_dropdown_surface("table-cat-menu")
                     .absolute()
                     .top(px(74.0))
                     .right_0()
                     .w(px(224.0))
                     .max_h(px(280.0))
                     .overflow_y_scroll()
-                    .bg(context_menu_bg())
-                    .border_1()
-                    .border_color(graphite_border())
-                    .rounded(px(4.0))
-                    .shadow_md()
                     .flex()
                     .flex_col()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())

@@ -14,9 +14,9 @@ use posthaze_engine::{
 };
 
 use crate::PosthazeApp;
-use crate::assets::BRAND_LOGO_SVG;
 use crate::bridge::{EngineBridge, EngineCommand};
 use crate::curl_parser::{find_header_value, set_or_remove_header};
+use crate::grid_cells::grid_brand_plate;
 use crate::modals::{
     ConfirmAction, DuplicateBannerAction, DuplicateMatch, PreflightModalState, PreflightTab,
     category_dropdown_extra_height, folder_dropdown_extra_height, render_confirm_modal,
@@ -825,30 +825,7 @@ impl PreflightWindow {
                     .h_full()
                     .flex()
                     .items_center()
-                    .child(
-                        div()
-                            .h_full()
-                            .pr_3()
-                            .border_r_1()
-                            .border_color(graphite_border())
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                svg()
-                                    .path(BRAND_LOGO_SVG)
-                                    .size(px(22.0))
-                                    .text_color(selenium_amber()),
-                            )
-                            .child(
-                                div()
-                                    .font_family(MONO_FONT)
-                                    .text_size(TYPE_MICRO)
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(silver_text())
-                                    .child("POSTHAZE"),
-                            ),
-                    )
+                    .child(grid_brand_plate())
                     .when_some(active_tab, |el, tab| {
                         el.child(
                             div()

@@ -8,7 +8,10 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use posthaze_engine::{DownloadId, DownloadState, SegmentProgress};
 
-use crate::grid_cells::{CellBorder, GridTone, grid_cell_button, grid_section_header};
+use crate::grid_cells::{
+    BadgeTone, CellBorder, GridTone, grid_badge, grid_cell_button, grid_progress_track,
+    grid_section_header, grid_status_dot,
+};
 use crate::motion::RowMotionSample;
 use crate::theme::*;
 use crate::view_model::{DownloadRowView, format_bytes, normalize_byte_map_segments};
@@ -185,18 +188,10 @@ where
                         .items_center()
                         .gap_2()
                         .overflow_hidden()
-                        .child(
-                            div()
-                                .px_1p5()
-                                .py_0p5()
-                                .bg(graphite_elevated())
-                                .border_1()
-                                .border_color(graphite_border())
-                                .font_family(MONO_FONT)
-                                .text_size(TYPE_HEADER)
-                                .text_color(silver_muted())
-                                .child(row.id.as_str().chars().take(8).collect::<String>()),
-                        )
+                        .child(grid_badge(
+                            row.id.as_str().chars().take(8).collect::<String>(),
+                            BadgeTone::Muted,
+                        ))
                         .child(
                             div()
                                 .text_size(TYPE_BODY)
@@ -222,27 +217,27 @@ where
                         .flex()
                         .items_center()
                         .gap_1p5()
-                        .child(validator_badge(
+                        .child(grid_badge(
                             if row.supports_ranges {
                                 "206 MULTI-SEGMENT"
                             } else {
                                 "200 SINGLE-STREAM"
                             },
-                            graphite_elevated(),
+                            BadgeTone::Neutral,
                         ))
                         .when(row.sync_on_complete, |el| {
-                            el.child(validator_badge("SYNC-ON-COMPLETE", graphite_elevated()))
+                            el.child(grid_badge("SYNC-ON-COMPLETE", BadgeTone::Neutral))
                         })
                         .when_some(row.etag.clone(), |el, etag| {
-                            el.child(validator_badge(
+                            el.child(grid_badge(
                                 format!("ETag {}", truncate_badge(&etag, 16)),
-                                graphite_elevated(),
+                                BadgeTone::Neutral,
                             ))
                         })
                         .when_some(row.last_modified.clone(), |el, lm| {
-                            el.child(validator_badge(
+                            el.child(grid_badge(
                                 format!("LM {}", truncate_badge(&lm, 18)),
-                                graphite_elevated(),
+                                BadgeTone::Neutral,
                             ))
                         })
                         .child(
@@ -399,20 +394,16 @@ where
                         ),
                 )
                 .child(
-                    div()
-                        .h(px(22.0))
-                        .w_full()
-                        .bg(byte_track_bg())
-                        .border_1()
-                        .border_color(if motion.completion_flash > 0.05 {
+                    grid_progress_track(
+                        px(22.0),
+                        Some(if motion.completion_flash > 0.05 {
                             halide_emerald().opacity(0.35 + 0.65 * motion.completion_flash)
                         } else if motion.split_flash > 0.05 {
                             selenium_amber().opacity(0.35 + 0.65 * motion.split_flash)
                         } else {
                             graphite_border()
-                        })
-                        .flex()
-                        .overflow_hidden()
+                        }),
+                    )
                         .children(normalized.into_iter().enumerate().map(|(idx, seg)| {
                             let is_active = row.state == DownloadState::Active;
                             let inflight_el = div()
@@ -477,7 +468,7 @@ where
                                         .flex()
                                         .items_center()
                                         .gap_1p5()
-                                        .child(div().w(px(9.0)).h(px(9.0)).bg(cyanotype_blue()))
+                                        .child(grid_status_dot(cyanotype_blue(), 9.0, false))
                                         .child("Disk Checkpoint (Writer-Ack)"),
                                 )
                                 .child(
@@ -485,7 +476,7 @@ where
                                         .flex()
                                         .items_center()
                                         .gap_1p5()
-                                        .child(div().w(px(9.0)).h(px(9.0)).bg(selenium_amber()))
+                                        .child(grid_status_dot(selenium_amber(), 9.0, false))
                                         .child("In-Flight Network Cursor"),
                                 ),
                         )
@@ -596,22 +587,6 @@ fn ruler_quarter_tick(label: impl Into<SharedString>, left_tick: bool) -> impl I
         .flex_1()
         .when(left_tick, |el| el.border_l_1().border_color(graphite_border()))
         .pl_1()
-        .child(label.into())
-}
-
-fn validator_badge(label: impl Into<SharedString>, bg_color: Hsla) -> impl IntoElement {
-    div()
-        .px_2()
-        .py_0p5()
-        .rounded(px(3.0))
-        .bg(bg_color)
-        .border_1()
-        .border_color(graphite_border())
-        .font_family(MONO_FONT)
-        .text_size(TYPE_MICRO)
-        .line_height(px(15.0))
-        .font_weight(FontWeight::MEDIUM)
-        .text_color(silver_text())
         .child(label.into())
 }
 

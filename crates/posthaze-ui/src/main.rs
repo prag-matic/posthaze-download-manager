@@ -40,11 +40,13 @@ use posthaze_engine::{
     SegmentProgress, default_db_path, default_logs_dir,
 };
 
-use crate::assets::{BRAND_LOGO_SVG, PosthazeAssets};
+use crate::assets::PosthazeAssets;
 use crate::bridge::{EngineBridge, EngineCommand, EngineSnapshot};
 use crate::context_menu::{ContextMenuAction, ContextMenuState, render_context_menu};
 use crate::curl_parser::parse_url_or_curl;
-use crate::grid_cells::{CellBorder, GridTone, grid_cell_button};
+use crate::grid_cells::{
+    CellBorder, GridTone, grid_brand_plate, grid_cell_button, grid_status_dot,
+};
 use crate::inspector::{InspectorCallbacks, render_inspector};
 use crate::modals::{
     ConfirmAction, FileOpModalState, render_confirm_modal, render_file_op_modal,
@@ -1195,8 +1197,11 @@ impl PosthazeApp {
     fn set_update_state(&mut self, next: UpdateState, cx: &mut Context<Self>) {
         self.update_state = next.clone();
         if let Some(win_ref) = &self.settings_window {
-            let _ = win_ref.entity.update(cx, |win, cx| {
-                win.set_update_state(next, cx);
+            let entity = win_ref.entity.clone();
+            cx.defer(move |cx| {
+                let _ = entity.update(cx, |win, cx| {
+                    win.set_update_state(next, cx);
+                });
             });
         }
         cx.notify();
@@ -2509,7 +2514,7 @@ impl Render for PosthazeApp {
                                             .top(px(14.0))
                                             .px_2()
                                             .py_0p5()
-                                            .rounded(px(3.0))
+                                            .rounded(RADIUS_BADGE)
                                             .bg(context_menu_bg())
                                             .border_1()
                                             .border_color(if is_snapped {
@@ -2681,7 +2686,7 @@ impl Render for PosthazeApp {
                                                     .top(px(-24.0))
                                                     .px_2()
                                                     .py_0p5()
-                                                    .rounded(px(3.0))
+                                                    .rounded(RADIUS_BADGE)
                                                     .bg(context_menu_bg())
                                                     .border_1()
                                                     .border_color(if is_snapped {
@@ -2769,30 +2774,7 @@ impl PosthazeApp {
                             .items_center()
                             .when(align_to_sidebar, |el| el.min_w(px(current_sidebar_w + 4.0)))
                             // Brand cell
-                            .child(
-                                div()
-                                    .h_full()
-                                    .pr_3()
-                                    .border_r_1()
-                                    .border_color(graphite_border())
-                                    .flex()
-                                    .items_center()
-                                    .gap_2()
-                                    .child(
-                                        svg()
-                                            .path(BRAND_LOGO_SVG)
-                                            .size(px(22.0))
-                                            .text_color(selenium_amber()),
-                                    )
-                                    .child(
-                                        div()
-                                            .font_family(MONO_FONT)
-                                            .text_size(TYPE_MICRO)
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(silver_text())
-                                            .child("POSTHAZE"),
-                                    ),
-                            )
+                            .child(grid_brand_plate())
                             // Version cell (stretches to meet the expanded sidebar sash seam)
                             .child(
                                 div()
@@ -2823,11 +2805,15 @@ impl PosthazeApp {
                                 .font_family(MONO_FONT)
                                 .text_size(TYPE_HEADER)
                                 .text_color(silver_muted())
-                                .child(div().w(px(6.0)).h(px(6.0)).bg(if active_slots > 0 {
-                                    selenium_amber()
-                                } else {
-                                    graphite_border()
-                                }))
+                                .child(grid_status_dot(
+                                    if active_slots > 0 {
+                                        selenium_amber()
+                                    } else {
+                                        graphite_border()
+                                    },
+                                    6.0,
+                                    false,
+                                ))
                                 .child(if active_slots > 0 {
                                     format!(
                                         "Active {active_slots}/{} · {}",

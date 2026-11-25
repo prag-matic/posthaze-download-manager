@@ -4,20 +4,28 @@ Posthaze's desktop UI (`crates/posthaze-ui`) is built around a unified **Table-G
 
 ---
 
-## 1. Shared Primitives (`crates/posthaze-ui/src/grid_cells.rs`)
+## 1. Shared Primitives (`crates/posthaze-ui/src/grid_cells.rs`) & Tokens (`theme.rs`)
 
-Use these primitives for all new controls and panels rather than standalone rounded pill buttons:
+Use these primitives and tokens for all new controls and panels rather than standalone rounded pill buttons or inline styling:
 
-| Primitive | Purpose |
+| Primitive / Token | Purpose |
 | :--- | :--- |
 | `GridTone` | Surface polarity & emphasis: `Paper`, `PaperSubtle`, `Graphite`, `Primary`, `Danger`. |
 | `CellBorder` | `1px` vertical divider placement (`None`, `Left`, `Right`, `Both`). |
 | `grid_cell_button` | Full-height (`h_full()`) flush cell button with optional icon, uppercase label, tooltip, and accent hover fill. |
 | `grid_boxed_button` | Standalone `1px`-bordered cell button with explicit height (for empty states and inline CTAs). |
-| `grid_section_header` | `28px` modular header bar with `1px` bottom rule and optional right-aligned cell controls. |
+| `grid_section_header` | `28px` (`SECTION_HEADER_HEIGHT`) modular header bar with `1px` bottom rule and optional right-aligned cell controls. |
 | `grid_kv_row` | Two-column `LABEL \| VALUE` row with `1px` vertical and horizontal rules. |
-| `grid_modal_footer` | Flush `34px` modal footer strip with `1px` top border and right-aligned action cells. |
-| `errata_surface_bg()` | Semantic translucent vermilion background token in `theme.rs` for errata and validation strips. |
+| `grid_modal_footer` | Flush `34px` (`MODAL_FOOTER_HEIGHT`) modal footer strip with `1px` top border and right-aligned action cells. |
+| `grid_badge` / `BadgeTone` | Stamped `3px`-radius (`RADIUS_BADGE`) monospace badge for validators, FIFO ranks, protocol tags, role tags, and checksum verdicts (`Neutral`, `Muted`, `Accent`, `Success`, `Danger`). |
+| `grid_selection_bar` | Full-height `3px` (`INDICATOR_BAR_WIDTH`) vertical `selenium_amber()` active/selection accent strip. |
+| `grid_nav_row` / `NavRowTone` | `34px` vertical navigation row with `grid_selection_bar`, `14px` icon, monospace label, and optional right-bordered count cell (`Graphite`, `PaperSelection`). |
+| `grid_brand_plate` | Canonical `TitleBar` brand plate (`22px` `BRAND_LOGO_SVG` + `POSTHAZE` monospace wordmark + `1px` right divider). |
+| `grid_input_box` / `grid_compact_input_row` | Monospace borderless `Input` container and `30px` `LABEL \| INPUT \| TRAILING` recessed form row. |
+| `grid_dropdown_surface` / `grid_check_option_row` | Floating popover surface (`context_menu_bg()`, `RADIUS_CONTROL`, `shadow_md()`) and checkable dropdown row with `12px` checkmark slot. |
+| `grid_progress_track` / `grid_status_dot` | `0px`-radius recessed `byte_track_bg()` progress bar track and square/round status dot indicator. |
+| `RADIUS_BADGE` / `RADIUS_CONTROL` / `RADIUS_MODAL` | Shape radius constants (`3px`, `4px`, `6px`) in `theme.rs`. |
+| `errata_surface_bg()` / `danger_foreground()` | Semantic translucent vermilion banner tint and high-contrast danger ink in `theme.rs`. |
 
 See [DESIGN.md](../DESIGN.md) for color and typography token definitions.
 

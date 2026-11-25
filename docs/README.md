@@ -54,6 +54,7 @@ Documentation is a first-class part of Posthaze Download Manager.
 - [Research: `misterdownloadmanager` (`mdm-engine`) vs. Posthaze Engine Comparison](research/misterdownloadmanager-engine-comparison.md)
 - [Research: `misterdownloadmanager` Quality-of-Life (QOL) & UX Improvements](research/misterdownloadmanager-qol-improvements.md)
 - [Research: `misterdownloadmanager` vs. Posthaze Browser Extension & Bridge Comparison](research/misterdownloadmanager-extension-comparison.md)
+- [Research: Extracting Posthaze's Design System for Multi-Project Reuse & Continuous Evolution](research/reusable-design-system-extraction.md)
 
 ## Agent Workflow Configuration
 

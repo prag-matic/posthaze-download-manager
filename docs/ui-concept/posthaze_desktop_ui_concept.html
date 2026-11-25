@@ -1,0 +1,1402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>POSTHAZE // v0.3.0-m3 — Chronophotographic Interval Plate</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    :root {
+      --graphite-bg: #141311;
+      --graphite-rule: #2A2825;
+      --graphite-elevated: #1B1A17;
+      --silver-text: #EAE6DF;
+      --silver-muted: #9B968D;
+
+      --table-bg: #1E1D1A;
+      --table-header: #181714;
+      --table-ink: #EAE6DF;
+      --table-rule: #2C2A27;
+      --table-hover: #262420;
+      --table-selected: #2D2B26;
+
+      --selenium-amber: #E58A35;
+      --cyanotype-blue: #3B82F6;
+      --halide-emerald: #22C55E;
+      --errata-vermilion: #EF4444;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      width: 100%;
+      overflow: hidden;
+      background-color: var(--graphite-bg);
+      color: var(--silver-text);
+      font-family: "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      user-select: none;
+    }
+
+    .font-mono-tab {
+      font-family: "Cascadia Mono", "Consolas", "JetBrains Mono", ui-monospace, monospace;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* 90ms two-frame state snaps */
+    .snap-90 {
+      transition: background-color 90ms steps(2, end), color 90ms steps(2, end), border-color 90ms steps(2, end), opacity 90ms linear;
+    }
+
+    /* Custom ultra-thin scrollbars for instrument density */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    .scroll-paper::-webkit-scrollbar-thumb {
+      background: #3A3733;
+    }
+    .scroll-paper::-webkit-scrollbar-thumb:hover {
+      background: #524E48;
+    }
+    .scroll-graphite::-webkit-scrollbar-thumb {
+      background: #3A3733;
+    }
+    .scroll-graphite::-webkit-scrollbar-thumb:hover {
+      background: #524E48;
+    }
+
+    /* Pulsing probing mark */
+    @keyframes probePulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+    .animate-probe {
+      animation: probePulse 600ms steps(2, end) infinite;
+    }
+
+    /* Indeterminate stream bar */
+    @keyframes streamSlide {
+      0% { background-position: 0 0; }
+      100% { background-position: 28px 0; }
+    }
+    .stream-stripes {
+      background-image: repeating-linear-gradient(
+        -45deg,
+        #2563EB 0px,
+        #2563EB 7px,
+        #1D4ED8 7px,
+        #1D4ED8 14px
+      );
+      background-size: 28px 28px;
+      animation: streamSlide 1.2s linear infinite;
+    }
+
+    /* Crisp table row height & construction grid */
+    .transfer-row {
+      height: 34px;
+      border-bottom: 1px solid var(--table-rule);
+    }
+    .transfer-row:hover {
+      background-color: var(--table-hover);
+    }
+    .transfer-row.selected {
+      background-color: var(--table-selected);
+      box-shadow: inset 3px 0 0 0 var(--selenium-amber);
+    }
+    .transfer-row:hover {
+      background-color: var(--paper-hover);
+    }
+    .transfer-row.selected {
+      background-color: var(--paper-selected);
+      box-shadow: inset 3px 0 0 0 var(--graphite-bg);
+    }
+
+    /* Engraved ruler ticks */
+    .ruler-major-tick {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 1px;
+      background-color: rgba(234, 230, 223, 0.22);
+      pointer-events: none;
+    }
+    .ruler-minor-tick {
+      position: absolute;
+      top: 0;
+      height: 5px;
+      width: 1px;
+      background-color: rgba(234, 230, 223, 0.14);
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body class="flex flex-col h-screen w-screen overflow-hidden">
+
+  <!-- Native-style Windows Title Bar -->
+  <header class="h-8 bg-[#141311] border-b border-[#2A2825] flex items-center justify-between px-3 shrink-0 text-[#EAE6DF]">
+    <div class="flex items-center gap-2.5">
+      <div class="w-3.5 h-3.5 border border-[#EAE6DF]/70 flex items-center justify-center">
+        <div class="w-1.5 h-1.5 bg-[#E58A35]"></div>
+      </div>
+      <span class="font-mono-tab text-[11px] tracking-wider font-semibold text-[#EAE6DF]">POSTHAZE // v0.3.0-m3</span>
+      <span class="text-[#2A2825]">|</span>
+      <span class="font-mono-tab text-[10px] text-[#9B968D] hidden sm:inline">SEED:A6D67DE4E1140BF8 · GPUI-KIT 0.10.0 · TOKIO-BRIDGE</span>
+    </div>
+    <div class="flex items-center gap-1">
+      <button title="Minimize" class="w-8 h-6 flex items-center justify-center text-[#9B968D] hover:bg-[#2A2825] hover:text-[#EAE6DF] snap-90">
+        <svg class="w-2.5 h-2.5" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.2"><line x1="1" y1="5" x2="9" y2="5"/></svg>
+      </button>
+      <button title="Maximize" class="w-8 h-6 flex items-center justify-center text-[#9B968D] hover:bg-[#2A2825] hover:text-[#EAE6DF] snap-90">
+        <svg class="w-2.5 h-2.5" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="1.5" y="1.5" width="7" height="7"/></svg>
+      </button>
+      <button title="Close" class="w-8 h-6 flex items-center justify-center text-[#9B968D] hover:bg-[#DC2626] hover:text-white snap-90">
+        <svg class="w-2.5 h-2.5" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.2"><line x1="2" y1="2" x2="8" y2="8"/><line x1="8" y1="2" x2="2" y2="8"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Workspace Container -->
+  <div class="flex flex-1 min-h-0 overflow-hidden">
+
+    <!-- 1. Left Navigation & Filter Rail (220px fixed, #141311 deep warm graphite) -->
+    <aside class="w-[220px] bg-[#141311] border-r border-[#2A2825] flex flex-col justify-between shrink-0 text-[#EAE6DF]">
+      <div class="flex flex-col min-h-0">
+        <!-- Brand Header -->
+        <div class="px-4 py-3.5 border-b border-[#2A2825]">
+          <div class="text-[15px] font-bold tracking-[0.14em] text-[#EAE6DF] leading-none">POSTHAZE</div>
+          <div class="font-mono-tab text-[9.5px] tracking-[0.12em] text-[#9B968D] mt-1.5">CHRONOGRAPHIC ENGINE</div>
+        </div>
+
+        <!-- Queue Status Filters -->
+        <nav class="py-2.5 px-2 space-y-0.5" id="filter-nav">
+          <!-- Populated dynamically -->
+        </nav>
+
+        <!-- Global Aggregate Speed Telemetry Card -->
+        <div class="mx-3 mt-3 p-3 bg-[#1B1A17] border border-[#2A2825]">
+          <div class="flex items-center justify-between mb-1">
+            <span class="font-mono-tab text-[9.5px] tracking-wider text-[#9B968D]">ACTIVE THROUGHPUT</span>
+            <span class="w-1.5 h-1.5 bg-[#E58A35] inline-block" id="telemetry-dot"></span>
+          </div>
+          <div class="font-mono-tab text-[20px] font-semibold text-[#EAE6DF] leading-tight" id="global-speed-mib">0.0 MiB/s</div>
+          <div class="font-mono-tab text-[10.5px] text-[#9B968D] mb-2" id="global-speed-mbps">0.0 Mbps</div>
+
+          <!-- Mini Sparkline SVG -->
+          <div class="h-8 w-full bg-[#141311] border border-[#2A2825] mb-2.5 overflow-hidden relative">
+            <svg id="sparkline-svg" class="w-full h-full" preserveAspectRatio="none" viewBox="0 0 180 32">
+              <polyline id="sparkline-fill" fill="rgba(229, 138, 53, 0.16)" stroke="none" points="" />
+              <polyline id="sparkline-line" fill="none" stroke="#E58A35" stroke-width="1.25" points="" />
+            </svg>
+          </div>
+
+          <!-- Queue Slots -->
+          <div class="flex items-center justify-between pt-2 border-t border-[#2A2825] font-mono-tab text-[10.5px]">
+            <span class="text-[#9B968D]">QUEUE SLOTS</span>
+            <span class="text-[#EAE6DF] font-semibold" id="queue-slots-label">2 / 2</span>
+          </div>
+          <div class="flex gap-1 mt-1.5" id="queue-slots-bars">
+            <!-- Populated dynamically -->
+          </div>
+        </div>
+      </div>
+
+      <!-- Bottom-Anchored Settings Trigger -->
+      <div class="p-3 border-t border-[#2A2825]">
+        <button id="btn-open-settings" class="w-full flex items-center justify-between px-3 py-2 bg-[#1B1A17] hover:bg-[#2A2825] border border-[#2A2825] text-[#EAE6DF] text-[12px] font-medium snap-90">
+          <span class="flex items-center gap-2">
+            <svg class="w-3.5 h-3.5 text-[#9B968D]" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4">
+              <circle cx="8" cy="8" r="2.5"/>
+              <path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M12.6 3.4l-1.4 1.4M4.8 11.2l-1.4 1.4"/>
+            </svg>
+            Engine Settings
+          </span>
+          <span class="font-mono-tab text-[10px] text-[#9B968D]">Ctrl+,</span>
+        </button>
+      </div>
+    </aside>
+
+    <!-- Right Main Column (Toolbar + Table + Inspector) -->
+    <div class="flex-1 flex flex-col min-w-0 min-h-0">
+
+      <!-- 2. Top URL Dispatch Toolbar (56px height, #1E1D1A warm charcoal) -->
+      <div class="h-[56px] bg-[#1E1D1A] border-b border-[#2C2A27] px-4 flex items-center justify-between gap-3 shrink-0">
+        <div class="flex items-center gap-2 flex-1 max-w-2xl">
+          <div class="relative flex-1">
+            <input
+              id="url-input"
+              type="text"
+              placeholder="https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-14B-GGUF/resolve/main/..."
+              class="w-full h-8 px-2.5 bg-[#141311] border border-[#2C2A27] focus:border-[#E58A35] focus:outline-none font-mono-tab text-[11.5px] text-[#EAE6DF] placeholder-[#6E6A63]"
+            />
+          </div>
+          <button
+            id="btn-paste-probe"
+            class="h-8 px-3.5 bg-[#2A2825] hover:bg-[#35322E] border border-[#3E3B36] text-[#EAE6DF] text-[12px] font-medium flex items-center gap-1.5 shrink-0 snap-90"
+          >
+            <svg class="w-3.5 h-3.5 text-[#E58A35]" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6">
+              <path d="M8 3v10M3 8h10"/>
+            </svg>
+            Paste &amp; Probe
+          </button>
+        </div>
+
+        <!-- Batch Queue Controls -->
+        <div class="flex items-center gap-1.5 shrink-0">
+          <button id="btn-resume-all" class="h-8 px-2.5 bg-transparent hover:bg-[#262420] border border-[#2C2A27] text-[#EAE6DF] text-[11.5px] font-medium snap-90">
+            Resume All
+          </button>
+          <button id="btn-pause-all" class="h-8 px-2.5 bg-transparent hover:bg-[#262420] border border-[#2C2A27] text-[#EAE6DF] text-[11.5px] font-medium snap-90">
+            Pause All
+          </button>
+          <button id="btn-clear-completed" class="h-8 px-2.5 bg-transparent hover:bg-[#262420] border border-[#2C2A27] text-[#EAE6DF] text-[11.5px] font-medium snap-90">
+            Clear Completed
+          </button>
+        </div>
+      </div>
+
+      <!-- 3. Center Main Work Area — Downloads Table (flex-1, #1E1D1A warm charcoal) -->
+      <main class="flex-1 bg-[#1E1D1A] flex flex-col min-h-0 overflow-hidden relative">
+        <!-- Modular Construction-Grid Table Header -->
+        <div class="grid grid-cols-[120px_minmax(220px,1.5fr)_minmax(210px,1.3fr)_100px_76px_74px_96px] h-7 bg-[#181714] border-b border-[#2C2A27] text-[10px] font-mono-tab uppercase tracking-wider text-[#9B968D] shrink-0 select-none">
+          <div class="px-3 flex items-center border-r border-[#2C2A27]">State / Rank</div>
+          <div class="px-3 flex items-center border-r border-[#2C2A27]">Filename</div>
+          <div class="px-3 flex items-center border-r border-[#2C2A27]">Size &amp; Dual-Tone Progress</div>
+          <div class="px-2.5 flex items-center justify-end border-r border-[#2C2A27]">Throughput</div>
+          <div class="px-2.5 flex items-center justify-end border-r border-[#2C2A27]">ETA</div>
+          <div class="px-2.5 flex items-center justify-center border-r border-[#2C2A27]">Segments</div>
+          <div class="px-2.5 flex items-center justify-end">Actions</div>
+        </div>
+
+        <!-- Scrollable Rows Container -->
+        <div id="transfers-list" class="flex-1 overflow-y-auto scroll-paper">
+          <!-- Populated dynamically -->
+        </div>
+
+        <!-- Empty Queue State (hidden unless empty) -->
+        <div id="empty-state" class="hidden absolute inset-0 top-7 bg-[#1E1D1A] flex items-center justify-center p-6">
+          <div class="border border-[#2C2A27] bg-[#141311] px-8 py-7 max-w-md w-full text-center">
+            <div class="font-mono-tab text-[10px] tracking-[0.16em] text-[#9B968D] uppercase mb-2">PLATE EMPTY // NO MATCHING TRANSFERS</div>
+            <p class="text-[13px] text-[#EAE6DF] mb-4">Submit a remote artifact URL to run a pre-flight HTTP range probe before committing disk space.</p>
+            <button id="btn-empty-probe" class="h-8 px-4 bg-[#2A2825] hover:bg-[#35322E] border border-[#3E3B36] text-[#EAE6DF] text-[12px] font-medium inline-flex items-center gap-2 snap-90">
+              <span class="text-[#E58A35]">+</span>
+              Paste URL from Clipboard &amp; Probe
+            </button>
+          </div>
+        </div>
+      </main>
+
+      <!-- 4. Bottom Docked Deck — Selected Download Inspector (240px height, #141311 deep warm graphite) -->
+      <section id="inspector-deck" class="h-[240px] bg-[#141311] border-t border-[#2A2825] text-[#EAE6DF] flex flex-col shrink-0">
+        <!-- Inspector Header Strip -->
+        <div class="h-9 px-4 border-b border-[#2A2825] flex items-center justify-between gap-4 shrink-0">
+          <div class="flex items-center gap-2.5 min-w-0">
+            <span class="font-mono-tab text-[10px] px-1.5 py-0.5 bg-[#1B1A17] border border-[#2A2825] text-[#9B968D] shrink-0" id="insp-id">ID:--</span>
+            <span class="text-[12.5px] font-semibold text-[#EAE6DF] truncate" id="insp-filename">No transfer selected</span>
+            <span class="font-mono-tab text-[10.5px] text-[#9B968D] truncate hidden lg:inline" id="insp-url"></span>
+          </div>
+          <!-- Stamped Validator Badges -->
+          <div class="flex items-center gap-1.5 shrink-0 font-mono-tab text-[10px]" id="insp-validators">
+            <!-- Populated dynamically -->
+          </div>
+        </div>
+
+        <!-- Signature Move: Graduated Interval Byte-Map Ruler -->
+        <div class="px-4 pt-2.5 pb-2 border-b border-[#2A2825] shrink-0">
+          <!-- Scale Labels -->
+          <div class="flex items-center justify-between font-mono-tab text-[9.5px] text-[#9B968D] mb-1" id="ruler-labels">
+            <span>0% (0 B)</span>
+            <span>25%</span>
+            <span>50%</span>
+            <span>75%</span>
+            <span>100%</span>
+          </div>
+
+          <!-- Proportional Byte-Map Bar -->
+          <div class="relative h-7 w-full bg-[#0D0C0B] border border-[#2A2825] overflow-hidden" id="byte-map-bar">
+            <!-- Segments rendered here -->
+          </div>
+
+          <!-- Engraved Ruler Sub-ticks + Legend -->
+          <div class="flex items-center justify-between mt-1.5 font-mono-tab text-[10px] text-[#9B968D]">
+            <div class="flex items-center gap-4">
+              <span class="flex items-center gap-1.5">
+                <span class="w-2.5 h-2.5 bg-[#3B82F6] inline-block"></span>
+                Disk Checkpoint (Writer-Ack)
+              </span>
+              <span class="flex items-center gap-1.5">
+                <span class="w-2.5 h-2.5 bg-[#E58A35] inline-block"></span>
+                In-Flight Network Cursor
+              </span>
+              <span class="flex items-center gap-1.5">
+                <span class="w-[2px] h-2.5 bg-[#EAE6DF] inline-block"></span>
+                Work-Steal Bisection
+              </span>
+            </div>
+            <div id="insp-checkpoint-summary" class="text-[#EAE6DF]">
+              --
+            </div>
+          </div>
+        </div>
+
+        <!-- Compact Segment Grid -->
+        <div class="flex-1 overflow-y-auto scroll-graphite px-4 py-2">
+          <div id="segment-grid" class="grid grid-cols-2 gap-1.5">
+            <!-- Populated dynamically -->
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </div>
+
+  <!-- MODAL 1: Pre-Flight Probe Confirmation Modal -->
+  <div id="probe-modal" class="hidden fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4">
+    <div class="bg-[#1E1D1A] border border-[#3A3733] w-full max-w-lg shadow-2xl text-[#EAE6DF]">
+      <!-- Modal Header -->
+      <div class="h-10 bg-[#141311] text-[#EAE6DF] px-4 flex items-center justify-between border-b border-[#2A2825]">
+        <div class="flex items-center gap-2">
+          <span class="font-mono-tab text-[11px] font-semibold tracking-wider">PRE-FLIGHT HTTP PROBE</span>
+          <span id="probe-status-pill" class="font-mono-tab text-[9.5px] px-1.5 py-0.5 bg-[#1B1A17] border border-[#2A2825] text-[#E58A35]">PROBING</span>
+        </div>
+        <button id="btn-close-probe" class="text-[#9B968D] hover:text-[#EAE6DF] font-mono-tab text-[12px] px-1">✕</button>
+      </div>
+
+      <!-- State A: Probing -->
+      <div id="probe-state-loading" class="p-6 flex flex-col items-center justify-center text-center">
+        <div class="font-mono-tab text-[22px] text-[#E58A35] animate-probe mb-2">◐</div>
+        <div class="text-[13px] font-semibold text-[#EAE6DF]">Executing HEAD &amp; Range: bytes=0-0 Probe...</div>
+        <div id="probe-loading-url" class="font-mono-tab text-[10.5px] text-[#9B968D] mt-1 max-w-full truncate"></div>
+      </div>
+
+      <!-- State B: Resolved -->
+      <div id="probe-state-resolved" class="hidden p-4 space-y-3.5">
+        <!-- Capability & Size Banner -->
+        <div class="flex items-center justify-between bg-[#141311] border border-[#2A2825] px-3 py-2">
+          <div>
+            <div class="font-mono-tab text-[9.5px] text-[#9B968D] uppercase">Content-Length</div>
+            <div id="probe-size-display" class="font-mono-tab text-[14px] font-bold text-[#EAE6DF]">8.98 GiB (9,642,201,088 B)</div>
+          </div>
+          <div class="text-right">
+            <button id="btn-toggle-probe-cap" title="Click to preview 200 Single-Stream vs 206 Multi-Segment" class="font-mono-tab text-[10px] px-2 py-1 border font-semibold snap-90 bg-[#2A2825] text-[#EAE6DF] border-[#3E3B36]">
+              HTTP 206 · MULTI-SEGMENT
+            </button>
+            <div class="font-mono-tab text-[9px] text-[#9B968D] mt-0.5">Click badge to toggle 206 / 200</div>
+          </div>
+        </div>
+
+        <!-- Filename Input with Collision Auto-Disambiguation -->
+        <div>
+          <div class="flex items-center justify-between mb-1">
+            <label class="text-[11px] font-semibold text-[#EAE6DF]">Resolved Filename</label>
+            <span class="font-mono-tab text-[10px] text-[#E58A35]">Collision detected → auto-disambiguated (1)</span>
+          </div>
+          <input id="probe-filename-input" type="text" class="w-full h-8 px-2.5 bg-[#141311] border border-[#2C2A27] focus:border-[#E58A35] focus:outline-none font-mono-tab text-[11.5px] text-[#EAE6DF]" />
+        </div>
+
+        <!-- Destination Path -->
+        <div>
+          <label class="block text-[11px] font-semibold text-[#EAE6DF] mb-1">Destination Directory</label>
+          <input id="probe-dir-input" type="text" class="w-full h-8 px-2.5 bg-[#141311] border border-[#2C2A27] focus:border-[#E58A35] focus:outline-none font-mono-tab text-[11.5px] text-[#EAE6DF]" />
+        </div>
+
+        <!-- Worker Count Selector -->
+        <div id="probe-workers-wrap">
+          <div class="flex items-center justify-between mb-1">
+            <label class="text-[11px] font-semibold text-[#EAE6DF]">Segment Workers Override (1..32)</label>
+            <span id="probe-workers-val" class="font-mono-tab text-[11.5px] font-bold text-[#EAE6DF]">16 workers</span>
+          </div>
+          <input id="probe-workers-slider" type="range" min="1" max="32" value="16" class="w-full accent-[#E58A35]" />
+        </div>
+
+        <!-- Footer Actions -->
+        <div class="pt-2 border-t border-[#2C2A27] flex items-center justify-between">
+          <button id="btn-sim-404" class="font-mono-tab text-[10.5px] text-[#EF4444] hover:underline">Simulate 404 Error</button>
+          <div class="flex items-center gap-2">
+            <button id="btn-probe-queue" class="h-8 px-3 bg-transparent hover:bg-[#262420] border border-[#3E3B36] text-[#EAE6DF] text-[12px] font-medium snap-90">
+              Add to Queue
+            </button>
+            <button id="btn-probe-now" class="h-8 px-3.5 bg-[#E58A35] hover:bg-[#D97724] text-[#141311] text-[12px] font-semibold snap-90">
+              Download Now
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- State C: Probe Error -->
+      <div id="probe-state-error" class="hidden p-5 space-y-4">
+        <div class="bg-[#DC2626]/15 border border-[#EF4444]/60 p-3.5">
+          <div class="font-mono-tab text-[11px] font-bold text-[#EF4444] mb-1">✕ EngineError::HttpStatus(404)</div>
+          <div class="text-[12px] text-[#EAE6DF]">Remote server returned HTTP 404 Not Found during pre-flight HEAD / Range verification. No database row or .part file was allocated.</div>
+        </div>
+        <div class="flex items-center justify-end gap-2">
+          <button id="btn-probe-edit-url" class="h-8 px-3 bg-transparent hover:bg-[#262420] border border-[#2C2A27] text-[#EAE6DF] text-[12px] font-medium snap-90">
+            Edit URL
+          </button>
+          <button id="btn-probe-retry" class="h-8 px-3.5 bg-[#E58A35] hover:bg-[#D97724] text-[#141311] text-[12px] font-semibold snap-90">
+            Retry Probe
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL 2: Settings Modal -->
+  <div id="settings-modal" class="hidden fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4">
+    <div class="bg-[#1E1D1A] border border-[#3A3733] w-full max-w-md shadow-2xl text-[#EAE6DF]">
+      <div class="h-10 bg-[#141311] text-[#EAE6DF] px-4 flex items-center justify-between border-b border-[#2A2825]">
+        <span class="font-mono-tab text-[11px] font-semibold tracking-wider">ENGINE SETTINGS // SQLITE 0002_SETTINGS</span>
+        <button id="btn-close-settings" class="text-[#9B968D] hover:text-[#EAE6DF] font-mono-tab text-[12px] px-1">✕</button>
+      </div>
+      <div class="p-4 space-y-3.5">
+        <div>
+          <label class="block text-[11px] font-semibold text-[#EAE6DF] mb-1">max_concurrent_downloads (FIFO Queue Slots)</label>
+          <input id="set-max-concurrent" type="number" min="1" max="8" class="w-full h-8 px-2.5 bg-[#141311] border border-[#2C2A27] text-[#EAE6DF] font-mono-tab text-[12px]" />
+        </div>
+        <div>
+          <label class="block text-[11px] font-semibold text-[#EAE6DF] mb-1">max_workers (Default Segments per Transfer)</label>
+          <input id="set-max-workers" type="number" min="1" max="32" class="w-full h-8 px-2.5 bg-[#141311] border border-[#2C2A27] text-[#EAE6DF] font-mono-tab text-[12px]" />
+        </div>
+        <div>
+          <label class="block text-[11px] font-semibold text-[#EAE6DF] mb-1">default_output_dir</label>
+          <input id="set-output-dir" type="text" class="w-full h-8 px-2.5 bg-[#141311] border border-[#2C2A27] text-[#EAE6DF] font-mono-tab text-[11.5px]" />
+        </div>
+        <div class="flex items-center justify-between pt-1">
+          <div>
+            <div class="text-[11.5px] font-semibold text-[#EAE6DF]">sync_on_complete</div>
+            <div class="text-[10.5px] text-[#9B968D]">fsync() final .part rename before marking Completed</div>
+          </div>
+          <input id="set-sync-complete" type="checkbox" class="w-4 h-4 accent-[#E58A35]" />
+        </div>
+        <div class="pt-3 border-t border-[#2C2A27] flex items-center justify-end gap-2">
+          <button id="btn-cancel-settings" class="h-8 px-3 bg-transparent hover:bg-[#262420] border border-[#2C2A27] text-[#EAE6DF] text-[12px] font-medium snap-90">Cancel</button>
+          <button id="btn-save-settings" class="h-8 px-4 bg-[#E58A35] hover:bg-[#D97724] text-[#141311] text-[12px] font-semibold snap-90">Save &amp; Apply</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL 2: Settings Modal -->
+  <div id="settings-modal" class="hidden fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
+    <div class="bg-[#F2EFE9] border border-[#181715] w-full max-w-md shadow-2xl text-[#141413]">
+      <div class="h-10 bg-[#181715] text-[#EAE6DF] px-4 flex items-center justify-between border-b border-[#2C2A27]">
+        <span class="font-mono-tab text-[11px] font-semibold tracking-wider">ENGINE SETTINGS // SQLITE 0002_SETTINGS</span>
+        <button id="btn-close-settings" class="text-[#9A948A] hover:text-[#EAE6DF] font-mono-tab text-[12px] px-1">✕</button>
+      </div>
+      <div class="p-4 space-y-3.5">
+        <div>
+          <label class="block text-[11px] font-semibold text-[#141413] mb-1">max_concurrent_downloads (FIFO Queue Slots)</label>
+          <input id="set-max-concurrent" type="number" min="1" max="8" class="w-full h-8 px-2.5 bg-white border border-[#C9C3B8] font-mono-tab text-[12px]" />
+        </div>
+        <div>
+          <label class="block text-[11px] font-semibold text-[#141413] mb-1">max_workers (Default Segments per Transfer)</label>
+          <input id="set-max-workers" type="number" min="1" max="32" class="w-full h-8 px-2.5 bg-white border border-[#C9C3B8] font-mono-tab text-[12px]" />
+        </div>
+        <div>
+          <label class="block text-[11px] font-semibold text-[#141413] mb-1">default_output_dir</label>
+          <input id="set-output-dir" type="text" class="w-full h-8 px-2.5 bg-white border border-[#C9C3B8] font-mono-tab text-[11.5px]" />
+        </div>
+        <div class="flex items-center justify-between pt-1">
+          <div>
+            <div class="text-[11.5px] font-semibold text-[#141413]">sync_on_complete</div>
+            <div class="text-[10.5px] text-[#5A5650]">fsync() final .part rename before marking Completed</div>
+          </div>
+          <input id="set-sync-complete" type="checkbox" class="w-4 h-4 accent-[#181715]" />
+        </div>
+        <div class="pt-3 border-t border-[#DFDBD2] flex items-center justify-end gap-2">
+          <button id="btn-cancel-settings" class="h-8 px-3 bg-transparent hover:bg-[#EAE5DC] border border-[#C9C3B8] text-[#141413] text-[12px] font-medium snap-90">Cancel</button>
+          <button id="btn-save-settings" class="h-8 px-4 bg-[#181715] hover:bg-[#2C2A27] text-[#EAE6DF] text-[12px] font-medium snap-90">Save &amp; Apply</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // =========================================================================
+    // Posthaze Engine State & Simulation Model
+    // =========================================================================
+    const GiB = 1024 * 1024 * 1024;
+    const MiB = 1024 * 1024;
+    const KiB = 1024;
+
+    const settings = {
+      max_concurrent_downloads: 2,
+      max_workers: 16,
+      default_output_dir: "D:\\Downloads\\Posthaze",
+      sync_on_complete: true
+    };
+
+    let activeFilter = "all";
+    let selectedId = "dl-01";
+    let tickCount = 0;
+    let nextIdNum = 9;
+    const sparklineHistory = new Array(36).fill(0);
+
+    // Helper: generate realistic segments for a transfer
+    function createSegments(totalBytes, count, baseProgress, inFlightDelta = 0, bisectedIndices = []) {
+      if (!totalBytes) return [];
+      const segs = [];
+      const chunkSize = Math.floor(totalBytes / count);
+      for (let i = 0; i < count; i++) {
+        const start = i * chunkSize;
+        const end = i === count - 1 ? totalBytes : (i + 1) * chunkSize;
+        const len = end - start;
+        // Slight realistic variance across segments
+        const variance = baseProgress === 0 || baseProgress === 1 ? 0 : ((i % 3) - 1) * 0.08;
+        const p = Math.max(0, Math.min(1, baseProgress + variance));
+        const checkpoint = Math.floor(start + len * p);
+        const cursor = Math.min(end, Math.floor(checkpoint + len * inFlightDelta));
+        segs.push({
+          id: i,
+          start,
+          end,
+          checkpoint,
+          cursor,
+          bisected: bisectedIndices.includes(i),
+          status: checkpoint >= end ? "Done" : (baseProgress > 0 ? "Active" : "Idle")
+        });
+      }
+      return segs;
+    }
+
+    // Pre-populated 8 realistic technical downloads
+    let downloads = [
+      {
+        id: "dl-01",
+        filename: "Qwen2.5-Coder-32B-Instruct-Q4_K_M.gguf",
+        url: "https://huggingface.co/Qwen/Qwen2.5-Coder-32B-Instruct-GGUF/resolve/main/qwen2.5-coder-32b-instruct-q4_k_m.gguf",
+        totalBytes: Math.round(19.85 * GiB),
+        state: "Active",
+        rangeCap: "206",
+        etag: "\"8f3a19c04e2b91c\"",
+        lastModified: "Tue, 12 Nov 2026 08:14:00 GMT",
+        baseSpeedBps: 142 * MiB,
+        currentSpeedBps: 142 * MiB,
+        segments: createSegments(Math.round(19.85 * GiB), 16, 0.44, 0.045, [4, 9, 13]),
+        failureReason: null
+      },
+      {
+        id: "dl-02",
+        filename: "cuda_12.6.2_560.94_windows.exe",
+        url: "https://developer.download.nvidia.com/compute/cuda/12.6.2/local_installers/cuda_12.6.2_560.94_windows.exe",
+        totalBytes: Math.round(3.21 * GiB),
+        state: "Active",
+        rangeCap: "206",
+        etag: "\"5d91b0a7c122e4f\"",
+        lastModified: "Mon, 04 Nov 2026 19:30:00 GMT",
+        baseSpeedBps: 68 * MiB,
+        currentSpeedBps: 68 * MiB,
+        segments: createSegments(Math.round(3.21 * GiB), 8, 0.71, 0.055, [2, 6]),
+        failureReason: null
+      },
+      {
+        id: "dl-03",
+        filename: "llvm-19.1.4-win64-symbols.tar.zst",
+        url: "https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.4/llvm-19.1.4-win64-symbols.tar.zst",
+        totalBytes: Math.round(4.60 * GiB),
+        state: "Queued",
+        rangeCap: "206",
+        etag: "\"3e109fa2c8b0114\"",
+        lastModified: "Fri, 15 Nov 2026 11:02:00 GMT",
+        baseSpeedBps: 95 * MiB,
+        currentSpeedBps: 0,
+        segments: createSegments(Math.round(4.60 * GiB), 12, 0, 0, []),
+        failureReason: null
+      },
+      {
+        id: "dl-04",
+        filename: "mistral-small-24b-bf16-00001-of-00004.safetensors",
+        url: "https://huggingface.co/mistralai/Mistral-Small-24B-Instruct-2501/resolve/main/model-00001-of-00004.safetensors",
+        totalBytes: Math.round(4.92 * GiB),
+        state: "Queued",
+        rangeCap: "206",
+        etag: "\"7c8412f9d0e4a11\"",
+        lastModified: "Wed, 13 Nov 2026 15:45:00 GMT",
+        baseSpeedBps: 110 * MiB,
+        currentSpeedBps: 0,
+        segments: createSegments(Math.round(4.92 * GiB), 16, 0, 0, []),
+        failureReason: null
+      },
+      {
+        id: "dl-05",
+        filename: "ubuntu-24.04.1-desktop-amd64.iso",
+        url: "https://releases.ubuntu.com/24.04.1/ubuntu-24.04.1-desktop-amd64.iso",
+        totalBytes: Math.round(5.78 * GiB),
+        state: "Paused",
+        rangeCap: "206",
+        etag: "\"1a409c88b2e7302\"",
+        lastModified: "Thu, 29 Aug 2026 14:20:00 GMT",
+        baseSpeedBps: 84 * MiB,
+        currentSpeedBps: 0,
+        segments: createSegments(Math.round(5.78 * GiB), 8, 0.624, 0, [3]),
+        failureReason: null
+      },
+      {
+        id: "dl-06",
+        filename: "rust-1.84.0-x86_64-pc-windows-msvc.msi",
+        url: "https://static.rust-lang.org/dist/rust-1.84.0-x86_64-pc-windows-msvc.msi",
+        totalBytes: Math.round(218.4 * MiB),
+        state: "Completed",
+        rangeCap: "206",
+        etag: "\"9b02c11f4a8e201\"",
+        lastModified: "Thu, 09 Jan 2026 16:00:00 GMT",
+        baseSpeedBps: 0,
+        currentSpeedBps: 0,
+        segments: createSegments(Math.round(218.4 * MiB), 8, 1.0, 0, []),
+        failureReason: null
+      },
+      {
+        id: "dl-07",
+        filename: "nightly-weights-snapshot.tar.gz",
+        url: "https://artifacts.internal.lab/builds/nightly-weights-snapshot.tar.gz",
+        totalBytes: Math.round(8.12 * GiB),
+        state: "Failed",
+        rangeCap: "206",
+        etag: "\"b4e8d0\"",
+        lastModified: "Thu, 19 Nov 2026 04:00:00 GMT",
+        baseSpeedBps: 88 * MiB,
+        currentSpeedBps: 0,
+        segments: createSegments(Math.round(8.12 * GiB), 8, 0.31, 0, []),
+        failureReason: {
+          code: "EngineError::ResourceChanged",
+          detail: "ETag mismatch (\"a9f1c2\" -> \"b4e8d0\") during resume validator check"
+        }
+      },
+      {
+        id: "dl-08",
+        filename: "live-telemetry-dump.jsonl.gz",
+        url: "https://stream.metrics.internal/v2/export/live-telemetry-dump.jsonl.gz",
+        totalBytes: null, // Unknown Size — Stream
+        streamBytes: Math.round(412.6 * MiB),
+        state: "Paused",
+        rangeCap: "200",
+        etag: null,
+        lastModified: null,
+        baseSpeedBps: 24 * MiB,
+        currentSpeedBps: 0,
+        segments: [],
+        failureReason: null
+      }
+    ];
+
+    // =========================================================================
+    // Formatting Helpers
+    // =========================================================================
+    function formatBytes(bytes) {
+      if (bytes === null || bytes === undefined) return "Unknown";
+      if (bytes >= GiB) return (bytes / GiB).toFixed(2) + " GiB";
+      if (bytes >= MiB) return (bytes / MiB).toFixed(1) + " MiB";
+      if (bytes >= KiB) return (bytes / KiB).toFixed(1) + " KiB";
+      return bytes + " B";
+    }
+
+    function formatSpeed(bps) {
+      if (!bps || bps <= 0) return "—";
+      if (bps >= MiB) return (bps / MiB).toFixed(1) + " MiB/s";
+      return (bps / KiB).toFixed(0) + " KiB/s";
+    }
+
+    function formatEta(remainingBytes, bps) {
+      if (!bps || bps <= 0 || remainingBytes === null) return "—";
+      const secs = Math.max(0, Math.round(remainingBytes / bps));
+      if (secs < 60) return `${secs}s`;
+      const mins = Math.floor(secs / 60);
+      const remS = secs % 60;
+      if (mins < 60) return `${mins}m ${String(remS).padStart(2, "0")}s`;
+      const hrs = Math.floor(mins / 60);
+      const remM = mins % 60;
+      return `${hrs}h ${String(remM).padStart(2, "0")}m`;
+    }
+
+    function getTransferStats(dl) {
+      if (dl.totalBytes === null) {
+        return {
+          checkpointed: dl.streamBytes || 0,
+          inFlight: dl.streamBytes || 0,
+          pctCheckpoint: 0,
+          pctInFlight: 0,
+          remaining: null
+        };
+      }
+      let checkpointed = 0;
+      let inFlight = 0;
+      for (const s of dl.segments) {
+        checkpointed += (s.checkpoint - s.start);
+        inFlight += (s.cursor - s.start);
+      }
+      const pctCheckpoint = Math.min(100, (checkpointed / dl.totalBytes) * 100);
+      const pctInFlight = Math.min(100, (inFlight / dl.totalBytes) * 100);
+      return {
+        checkpointed,
+        inFlight,
+        pctCheckpoint,
+        pctInFlight,
+        remaining: Math.max(0, dl.totalBytes - inFlight)
+      };
+    }
+
+    // =========================================================================
+    // Queue Admission Logic (FIFO)
+    // =========================================================================
+    function admitQueuedTransfers() {
+      const activeCount = downloads.filter(d => d.state === "Active").length;
+      let availableSlots = settings.max_concurrent_downloads - activeCount;
+      if (availableSlots <= 0) return;
+
+      for (const dl of downloads) {
+        if (availableSlots <= 0) break;
+        if (dl.state === "Queued") {
+          dl.state = "Active";
+          dl.currentSpeedBps = dl.baseSpeedBps;
+          dl.segments.forEach(s => {
+            if (s.checkpoint < s.end) s.status = "Active";
+          });
+          availableSlots--;
+        }
+      }
+    }
+
+    // =========================================================================
+    // Rendering Functions
+    // =========================================================================
+    function renderFilters() {
+      const counts = {
+        all: downloads.length,
+        Active: downloads.filter(d => d.state === "Active" || d.state === "Probing").length,
+        Queued: downloads.filter(d => d.state === "Queued").length,
+        Paused: downloads.filter(d => d.state === "Paused").length,
+        Completed: downloads.filter(d => d.state === "Completed").length,
+        Failed: downloads.filter(d => d.state === "Failed").length
+      };
+
+      const items = [
+        { key: "all", label: "All Transfers", mark: "≡", color: "text-[#EAE6DF]" },
+        { key: "Active", label: "Active", mark: "●", color: "text-[#E58A35]" },
+        { key: "Queued", label: "Queued", mark: "◌", color: "text-[#9B968D]" },
+        { key: "Paused", label: "Paused", mark: "❚❚", color: "text-[#9B968D]" },
+        { key: "Completed", label: "Completed", mark: "✓", color: "text-[#22C55E]" },
+        { key: "Failed", label: "Failed", mark: "✕", color: "text-[#EF4444]" }
+      ];
+
+      const nav = document.getElementById("filter-nav");
+      nav.innerHTML = items.map(item => {
+        const isActive = activeFilter === item.key;
+        return `
+          <button
+            onclick="setFilter('${item.key}')"
+            class="w-full flex items-center justify-between px-2.5 py-1.5 text-[12px] snap-90 ${
+              isActive
+                ? "bg-[#262420] text-[#EAE6DF] font-semibold border-l-2 border-[#E58A35]"
+                : "text-[#9B968D] hover:bg-[#1B1A17] hover:text-[#EAE6DF] border-l-2 border-transparent"
+            }"
+          >
+            <span class="flex items-center gap-2">
+              <span class="font-mono-tab w-3 text-center text-[11px] ${item.color}">${item.mark}</span>
+              <span>${item.label}</span>
+            </span>
+            <span class="font-mono-tab text-[10.5px] px-1.5 py-0.2 bg-[#141311] text-[#EAE6DF] border border-[#2A2825]">${counts[item.key]}</span>
+          </button>
+        `;
+      }).join("");
+    }
+
+    function renderTelemetry() {
+      const activeDownloads = downloads.filter(d => d.state === "Active");
+      const totalBps = activeDownloads.reduce((sum, d) => sum + d.currentSpeedBps, 0);
+      const mibPerSec = totalBps / MiB;
+      const mbps = (totalBps * 8) / 1_000_000;
+
+      document.getElementById("global-speed-mib").textContent = `${mibPerSec.toFixed(1)} MiB/s`;
+      document.getElementById("global-speed-mbps").textContent = `${mbps.toFixed(0)} Mbps`;
+      document.getElementById("telemetry-dot").style.opacity = activeDownloads.length > 0 ? "1" : "0.25";
+
+      // Queue slots
+      const slotsLabel = document.getElementById("queue-slots-label");
+      slotsLabel.textContent = `${activeDownloads.length} / ${settings.max_concurrent_downloads}`;
+
+      const barsEl = document.getElementById("queue-slots-bars");
+      let barsHtml = "";
+      for (let i = 0; i < settings.max_concurrent_downloads; i++) {
+        const filled = i < activeDownloads.length;
+        barsHtml += `<div class="h-1.5 flex-1 ${filled ? "bg-[#E58A35]" : "bg-[#2A2825]"}"></div>`;
+      }
+      barsEl.innerHTML = barsHtml;
+
+      // Update sparkline
+      sparklineHistory.push(mibPerSec);
+      if (sparklineHistory.length > 36) sparklineHistory.shift();
+      const maxVal = Math.max(50, ...sparklineHistory) * 1.15;
+      const pts = sparklineHistory.map((v, idx) => {
+        const x = (idx / (sparklineHistory.length - 1)) * 180;
+        const y = 30 - (v / maxVal) * 26;
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+      });
+      document.getElementById("sparkline-line").setAttribute("points", pts.join(" "));
+      document.getElementById("sparkline-fill").setAttribute("points", `0,32 ${pts.join(" ")} 180,32`);
+    }
+
+    function renderTable() {
+      const listEl = document.getElementById("transfers-list");
+      const emptyEl = document.getElementById("empty-state");
+
+      const filtered = downloads.filter(d => {
+        if (activeFilter === "all") return true;
+        if (activeFilter === "Active") return d.state === "Active" || d.state === "Probing";
+        return d.state === activeFilter;
+      });
+
+      if (filtered.length === 0) {
+        listEl.innerHTML = "";
+        emptyEl.classList.remove("hidden");
+        return;
+      }
+      emptyEl.classList.add("hidden");
+
+      // Compute FIFO queue ranks
+      const queuedIds = downloads.filter(d => d.state === "Queued").map(d => d.id);
+
+      listEl.innerHTML = filtered.map(dl => {
+        const isSelected = dl.id === selectedId;
+        const stats = getTransferStats(dl);
+
+        // State badge with fixed-width geometric marks
+        let stateHtml = "";
+        if (dl.state === "Active") {
+          stateHtml = `<span class="font-mono-tab text-[#E58A35] w-4 inline-block text-center">●</span><span class="font-mono-tab text-[10.5px] font-semibold text-[#EAE6DF]">ACTIVE</span>`;
+        } else if (dl.state === "Probing") {
+          stateHtml = `<span class="font-mono-tab text-[#E58A35] w-4 inline-block text-center animate-probe">◐</span><span class="font-mono-tab text-[10.5px] font-semibold text-[#E58A35]">PROBING</span>`;
+        } else if (dl.state === "Queued") {
+          const rank = queuedIds.indexOf(dl.id) + 1;
+          const badgeText = rank === 1 ? "#1 NEXT" : `#${rank}`;
+          stateHtml = `<span class="font-mono-tab text-[#9B968D] w-4 inline-block text-center">◌</span><span class="font-mono-tab text-[10px] px-1.5 py-0.2 bg-[#2A2825] border border-[#3E3B36] text-[#EAE6DF] font-semibold">${badgeText}</span>`;
+        } else if (dl.state === "Paused") {
+          stateHtml = `<span class="font-mono-tab text-[#9B968D] w-4 inline-block text-center">❚❚</span><span class="font-mono-tab text-[10.5px] text-[#9B968D]">PAUSED</span>`;
+        } else if (dl.state === "Completed") {
+          stateHtml = `<span class="font-mono-tab text-[#22C55E] w-4 inline-block text-center">✓</span><span class="font-mono-tab text-[10.5px] font-semibold text-[#22C55E]">COMPLETED</span>`;
+        } else if (dl.state === "Failed") {
+          stateHtml = `<span class="font-mono-tab text-[#EF4444] w-4 inline-block text-center">✕</span><span class="font-mono-tab text-[10.5px] font-semibold text-[#EF4444]">FAILED</span>`;
+        }
+
+        // Progress cell
+        let progressHtml = "";
+        if (dl.totalBytes === null) {
+          progressHtml = `
+            <div class="w-full">
+              <div class="flex justify-between font-mono-tab text-[10px] text-[#9B968D] mb-0.5">
+                <span>${formatBytes(dl.streamBytes)} / Stream</span>
+                <span>200</span>
+              </div>
+              <div class="h-1.5 w-full bg-[#141311] overflow-hidden">
+                <div class="h-full w-full ${dl.state === "Active" ? "stream-stripes" : "bg-[#3B82F6]/60"}"></div>
+              </div>
+            </div>
+          `;
+        } else {
+          const barColorCheck = dl.state === "Completed" ? "bg-[#22C55E]" : (dl.state === "Failed" ? "bg-[#EF4444]" : "bg-[#3B82F6]");
+          progressHtml = `
+            <div class="w-full">
+              <div class="flex justify-between font-mono-tab text-[10px] text-[#EAE6DF] mb-0.5">
+                <span>${formatBytes(stats.inFlight)} <span class="text-[#9B968D]">/ ${formatBytes(dl.totalBytes)}</span></span>
+                <span class="font-semibold">${stats.pctInFlight.toFixed(1)}%</span>
+              </div>
+              <div class="relative h-1.5 w-full bg-[#141311] overflow-hidden">
+                <div class="absolute inset-y-0 left-0 bg-[#E58A35]" style="width:${stats.pctInFlight.toFixed(2)}%"></div>
+                <div class="absolute inset-y-0 left-0 ${barColorCheck}" style="width:${stats.pctCheckpoint.toFixed(2)}%"></div>
+              </div>
+            </div>
+          `;
+        }
+
+        // Actions cell
+        let actionsHtml = "";
+        if (dl.state === "Active") {
+          actionsHtml = `
+            <button onclick="event.stopPropagation(); togglePause('${dl.id}')" title="Pause" class="px-1.5 py-0.5 text-[10px] font-mono-tab border border-[#3A3733] text-[#EAE6DF] hover:bg-[#EAE6DF] hover:text-[#141311] snap-90">❚❚</button>
+            <button onclick="event.stopPropagation(); deleteTransfer('${dl.id}')" title="Delete" class="px-1.5 py-0.5 text-[10px] font-mono-tab border border-[#3A3733] text-[#9B968D] hover:bg-[#DC2626] hover:text-white hover:border-[#DC2626] snap-90">✕</button>
+          `;
+        } else if (dl.state === "Paused" || dl.state === "Queued") {
+          actionsHtml = `
+            <button onclick="event.stopPropagation(); togglePause('${dl.id}')" title="Start / Resume" class="px-1.5 py-0.5 text-[10px] font-mono-tab border border-[#3A3733] text-[#EAE6DF] hover:bg-[#EAE6DF] hover:text-[#141311] snap-90">▶</button>
+            <button onclick="event.stopPropagation(); deleteTransfer('${dl.id}')" title="Delete" class="px-1.5 py-0.5 text-[10px] font-mono-tab border border-[#3A3733] text-[#9B968D] hover:bg-[#DC2626] hover:text-white hover:border-[#DC2626] snap-90">✕</button>
+          `;
+        } else if (dl.state === "Completed") {
+          actionsHtml = `
+            <button onclick="event.stopPropagation(); openFolderToast('${dl.filename}')" title="Open Folder" class="px-1.5 py-0.5 text-[10px] font-mono-tab border border-[#3A3733] text-[#EAE6DF] hover:bg-[#EAE6DF] hover:text-[#141311] snap-90">DIR</button>
+            <button onclick="event.stopPropagation(); deleteTransfer('${dl.id}')" title="Remove" class="px-1.5 py-0.5 text-[10px] font-mono-tab border border-[#3A3733] text-[#9B968D] hover:bg-[#DC2626] hover:text-white hover:border-[#DC2626] snap-90">✕</button>
+          `;
+        } else {
+          actionsHtml = `
+            <button onclick="event.stopPropagation(); deleteTransfer('${dl.id}')" title="Delete Record" class="px-1.5 py-0.5 text-[10px] font-mono-tab border border-[#3A3733] text-[#9B968D] hover:bg-[#DC2626] hover:text-white hover:border-[#DC2626] snap-90">✕</button>
+          `;
+        }
+
+        // Inline Errata Vermilion Recovery Strip for ResourceChanged
+        let errataStrip = "";
+        if (dl.state === "Failed" && dl.failureReason) {
+          errataStrip = `
+            <div style="background-color: rgba(220, 38, 38, 0.14);" class="border-b border-[#EF4444]/40 px-4 py-1.5 flex items-center justify-between gap-4">
+              <div class="flex items-center gap-2 font-mono-tab text-[10.5px] text-[#EF4444] min-w-0">
+                <span class="font-bold px-1.5 py-0.2 bg-[#DC2626] text-white shrink-0">ERRATA</span>
+                <span class="font-semibold shrink-0">${dl.failureReason.code}:</span>
+                <span class="text-[#EAE6DF] truncate">${dl.failureReason.detail}</span>
+              </div>
+              <div class="flex items-center gap-1.5 shrink-0">
+                <button onclick="event.stopPropagation(); restartFresh('${dl.id}')" class="h-6 px-2.5 bg-[#DC2626] hover:bg-[#EF4444] text-white font-mono-tab text-[10px] font-semibold snap-90">
+                  Restart Fresh (Overwrite .part)
+                </button>
+                <button onclick="event.stopPropagation(); deleteTransfer('${dl.id}')" class="h-6 px-2.5 bg-[#1E1D1A] hover:bg-[#262420] border border-[#EF4444]/70 text-[#EF4444] font-mono-tab text-[10px] font-semibold snap-90">
+                  Delete Record
+                </button>
+              </div>
+            </div>
+          `;
+        }
+
+        return `
+          <div
+            onclick="selectTransfer('${dl.id}')"
+            ondblclick="togglePause('${dl.id}')"
+            class="transfer-row grid grid-cols-[120px_minmax(220px,1.5fr)_minmax(210px,1.3fr)_100px_76px_74px_96px] items-center cursor-pointer snap-90 ${isSelected ? "selected" : ""}"
+          >
+            <div class="px-3 flex items-center gap-1.5 border-r border-[#2C2A27] h-full">${stateHtml}</div>
+            <div class="px-3 text-[12px] font-medium text-[#EAE6DF] truncate border-r border-[#2C2A27] h-full flex items-center" title="${dl.filename}">${dl.filename}</div>
+            <div class="px-3 border-r border-[#2C2A27] h-full flex items-center">${progressHtml}</div>
+            <div class="px-2.5 font-mono-tab text-[11px] text-right text-[#EAE6DF] border-r border-[#2C2A27] h-full flex items-center justify-end">${dl.state === "Active" ? formatSpeed(dl.currentSpeedBps) : "—"}</div>
+            <div class="px-2.5 font-mono-tab text-[11px] text-right text-[#9B968D] border-r border-[#2C2A27] h-full flex items-center justify-end">${dl.state === "Active" ? formatEta(stats.remaining, dl.currentSpeedBps) : "—"}</div>
+            <div class="px-2.5 font-mono-tab text-[11px] text-center text-[#9B968D] border-r border-[#2C2A27] h-full flex items-center justify-center">${dl.totalBytes === null ? "1 (200)" : dl.segments.length}</div>
+            <div class="px-2.5 flex items-center justify-end gap-1 h-full">${actionsHtml}</div>
+          </div>
+          ${errataStrip}
+        `;
+      }).join("");
+    }
+
+    function renderInspector() {
+      const dl = downloads.find(d => d.id === selectedId) || downloads[0];
+      if (!dl) {
+        document.getElementById("insp-id").textContent = "ID:--";
+        document.getElementById("insp-filename").textContent = "No transfer selected";
+        document.getElementById("insp-url").textContent = "";
+        document.getElementById("insp-validators").innerHTML = "";
+        document.getElementById("byte-map-bar").innerHTML = "";
+        document.getElementById("segment-grid").innerHTML = "";
+        return;
+      }
+
+      document.getElementById("insp-id").textContent = dl.id.toUpperCase();
+      document.getElementById("insp-filename").textContent = dl.filename;
+      document.getElementById("insp-url").textContent = dl.url;
+
+      // Stamped Validator Badges
+      const badges = [
+        `<span class="px-1.5 py-0.5 bg-[#1B1A17] border border-[#2A2825] text-[#EAE6DF]">HTTP ${dl.rangeCap}</span>`,
+        dl.etag ? `<span class="px-1.5 py-0.5 bg-[#1B1A17] border border-[#2A2825] text-[#9B968D]">ETag: <span class="text-[#EAE6DF]">${dl.etag}</span></span>` : "",
+        dl.lastModified ? `<span class="px-1.5 py-0.5 bg-[#1B1A17] border border-[#2A2825] text-[#9B968D] hidden xl:inline">LM: ${dl.lastModified.slice(5, 16)}</span>` : "",
+        `<span class="px-1.5 py-0.5 bg-[#1B1A17] border border-[#2A2825] ${settings.sync_on_complete ? "text-[#22C55E]" : "text-[#9B968D]"}">SYNC: ${settings.sync_on_complete ? "ON" : "OFF"}</span>`
+      ];
+      document.getElementById("insp-validators").innerHTML = badges.join("");
+
+      const rulerLabels = document.getElementById("ruler-labels");
+      const byteMapBar = document.getElementById("byte-map-bar");
+      const summaryEl = document.getElementById("insp-checkpoint-summary");
+      const segGrid = document.getElementById("segment-grid");
+
+      if (dl.totalBytes === null) {
+        rulerLabels.innerHTML = `<span>0 B</span><span>INDETERMINATE CHUNKED STREAM (HTTP 200 SINGLE-STREAM)</span><span>${formatBytes(dl.streamBytes)} RECEIVED</span>`;
+        byteMapBar.innerHTML = `<div class="h-full w-full ${dl.state === "Active" ? "stream-stripes" : "bg-[#2563EB]/40"}"></div>`;
+        summaryEl.textContent = `Single-Stream · ${formatBytes(dl.streamBytes)} flushed`;
+        segGrid.innerHTML = `
+          <div class="col-span-2 lg:col-span-4 bg-[#211F1C] border border-[#2C2A27] px-3 py-2 font-mono-tab text-[11px] text-[#9A948A]">
+            SEG #00 · [0 .. ∞) · Single-Stream Fallback (Server did not advertise Accept-Ranges: bytes)
+          </div>
+        `;
+        return;
+      }
+
+      const stats = getTransferStats(dl);
+      rulerLabels.innerHTML = `
+        <span>0% (0 B)</span>
+        <span>25% (${formatBytes(dl.totalBytes * 0.25)})</span>
+        <span>50% (${formatBytes(dl.totalBytes * 0.50)})</span>
+        <span>75% (${formatBytes(dl.totalBytes * 0.75)})</span>
+        <span>100% (${formatBytes(dl.totalBytes)})</span>
+      `;
+      summaryEl.textContent = `Checkpoint: ${formatBytes(stats.checkpointed)} (${stats.pctCheckpoint.toFixed(1)}%) · In-Flight: +${formatBytes(Math.max(0, stats.inFlight - stats.checkpointed))}`;
+
+      // Render proportional segments inside Byte-Map Bar
+      const segCount = dl.segments.length;
+      let barHtml = "";
+      for (const s of dl.segments) {
+        const leftPct = (s.start / dl.totalBytes) * 100;
+        const widthPct = ((s.end - s.start) / dl.totalBytes) * 100;
+        const segLen = s.end - s.start;
+        const checkPct = ((s.checkpoint - s.start) / segLen) * 100;
+        const flightPct = ((s.cursor - s.start) / segLen) * 100;
+        const checkColor = dl.state === "Completed" ? "#22C55E" : (dl.state === "Failed" ? "#EF4444" : "#3B82F6");
+
+        barHtml += `
+          <div class="absolute inset-y-0 border-r border-[#141311]" style="left:${leftPct}%; width:${widthPct}%;">
+            <div class="absolute inset-y-0 left-0 bg-[#E58A35]" style="width:${flightPct.toFixed(2)}%"></div>
+            <div class="absolute inset-y-0 left-0" style="width:${checkPct.toFixed(2)}%; background-color:${checkColor}"></div>
+            ${s.bisected ? `<div class="absolute inset-y-0 left-0 w-[1.5px] bg-[#EAE6DF]" title="Work-Steal Bisection"></div>` : ""}
+          </div>
+        `;
+      }
+      // Engraved major ruler ticks at 25/50/75%
+      barHtml += `
+        <div class="ruler-major-tick" style="left:25%"></div>
+        <div class="ruler-major-tick" style="left:50%"></div>
+        <div class="ruler-major-tick" style="left:75%"></div>
+      `;
+      byteMapBar.innerHTML = barHtml;
+
+      // Render Compact Segment Grid
+      segGrid.innerHTML = dl.segments.map(s => {
+        const segLen = s.end - s.start;
+        const checkPct = ((s.checkpoint - s.start) / segLen) * 100;
+        const statusColor = s.checkpoint >= s.end ? "text-[#22C55E]" : (dl.state === "Active" ? "text-[#E58A35]" : "text-[#9B968D]");
+        const statusLabel = s.checkpoint >= s.end ? "DONE" : (dl.state === "Active" ? "RECV" : dl.state.toUpperCase().slice(0, 4));
+        return `
+          <div class="bg-[#1B1A17] border border-[#2A2825] px-2.5 py-1.5 flex items-center justify-between font-mono-tab text-[10px]">
+            <div class="flex items-center gap-1.5 min-w-0">
+              <span class="text-[#EAE6DF] font-semibold">#${String(s.id).padStart(2, "0")}</span>
+              ${s.bisected ? `<span class="text-[9px] px-1 bg-[#2A2825] text-[#EAE6DF]" title="Work-stolen bisection">SPLIT</span>` : ""}
+              <span class="text-[#9B968D] truncate">[${formatBytes(s.start)}..${formatBytes(s.end)})</span>
+            </div>
+            <div class="flex items-center gap-2 shrink-0">
+              <span class="text-[#EAE6DF]">${checkPct.toFixed(0)}%</span>
+              <span class="${statusColor} font-semibold w-9 text-right">${statusLabel}</span>
+            </div>
+          </div>
+        `;
+      }).join("");
+    }
+
+    function renderAll() {
+      renderFilters();
+      renderTelemetry();
+      renderTable();
+      renderInspector();
+    }
+
+    // =========================================================================
+    // User Actions
+    // =========================================================================
+    window.setFilter = function(f) {
+      activeFilter = f;
+      renderAll();
+    };
+
+    window.selectTransfer = function(id) {
+      selectedId = id;
+      renderTable();
+      renderInspector();
+    };
+
+    window.togglePause = function(id) {
+      const dl = downloads.find(d => d.id === id);
+      if (!dl || dl.state === "Completed" || dl.state === "Failed") return;
+      if (dl.state === "Active") {
+        // Flush in-flight to checkpoint on clean pause
+        dl.segments.forEach(s => { s.checkpoint = s.cursor; });
+        dl.state = "Paused";
+        dl.currentSpeedBps = 0;
+        admitQueuedTransfers();
+      } else if (dl.state === "Paused" || dl.state === "Queued") {
+        const activeCount = downloads.filter(d => d.state === "Active").length;
+        if (activeCount < settings.max_concurrent_downloads) {
+          dl.state = "Active";
+          dl.currentSpeedBps = dl.baseSpeedBps;
+        } else {
+          dl.state = "Queued";
+        }
+      }
+      renderAll();
+    };
+
+    window.deleteTransfer = function(id) {
+      downloads = downloads.filter(d => d.id !== id);
+      if (selectedId === id) {
+        selectedId = downloads[0] ? downloads[0].id : null;
+      }
+      admitQueuedTransfers();
+      renderAll();
+    };
+
+    window.restartFresh = function(id) {
+      const dl = downloads.find(d => d.id === id);
+      if (!dl) return;
+      dl.failureReason = null;
+      dl.segments = createSegments(dl.totalBytes, dl.segments.length || 8, 0, 0, []);
+      const activeCount = downloads.filter(d => d.state === "Active").length;
+      if (activeCount < settings.max_concurrent_downloads) {
+        dl.state = "Active";
+        dl.currentSpeedBps = dl.baseSpeedBps;
+      } else {
+        dl.state = "Queued";
+      }
+      renderAll();
+    };
+
+    window.openFolderToast = function(filename) {
+      const inspUrl = document.getElementById("insp-url");
+      const prev = inspUrl.textContent;
+      inspUrl.textContent = `Opened explorer.exe /select,"${settings.default_output_dir}\\${filename}"`;
+      setTimeout(() => { inspUrl.textContent = prev; }, 2200);
+    };
+
+    // Batch Toolbar Buttons
+    document.getElementById("btn-pause-all").addEventListener("click", () => {
+      downloads.forEach(dl => {
+        if (dl.state === "Active") {
+          dl.segments.forEach(s => { s.checkpoint = s.cursor; });
+          dl.state = "Paused";
+          dl.currentSpeedBps = 0;
+        }
+      });
+      renderAll();
+    });
+
+    document.getElementById("btn-resume-all").addEventListener("click", () => {
+      downloads.forEach(dl => {
+        if (dl.state === "Paused") dl.state = "Queued";
+      });
+      admitQueuedTransfers();
+      renderAll();
+    });
+
+    document.getElementById("btn-clear-completed").addEventListener("click", () => {
+      downloads = downloads.filter(d => d.state !== "Completed");
+      if (!downloads.find(d => d.id === selectedId)) {
+        selectedId = downloads[0] ? downloads[0].id : null;
+      }
+      renderAll();
+    });
+
+    // =========================================================================
+    // Pre-Flight Probe Modal Logic
+    // =========================================================================
+    const probeModal = document.getElementById("probe-modal");
+    let probeCapMode = "206";
+    let currentProbeUrl = "";
+
+    function openProbeModal() {
+      const inputEl = document.getElementById("url-input");
+      let url = inputEl.value.trim();
+      if (!url) {
+        url = "https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-14B-GGUF/resolve/main/deepseek-r1-distill-qwen-14b.gguf";
+        inputEl.value = url;
+      }
+      currentProbeUrl = url;
+      probeCapMode = "206";
+
+      probeModal.classList.remove("hidden");
+      document.getElementById("probe-state-loading").classList.remove("hidden");
+      document.getElementById("probe-state-resolved").classList.add("hidden");
+      document.getElementById("probe-state-error").classList.add("hidden");
+      document.getElementById("probe-status-pill").textContent = "PROBING";
+      document.getElementById("probe-status-pill").className = "font-mono-tab text-[9.5px] px-1.5 py-0.5 bg-[#211F1C] border border-[#2C2A27] text-[#D97724]";
+      document.getElementById("probe-loading-url").textContent = url;
+
+      // 600ms simulated HEAD / Range probe
+      setTimeout(() => {
+        if (probeModal.classList.contains("hidden")) return;
+        showProbeResolved();
+      }, 600);
+    }
+
+    function showProbeResolved() {
+      document.getElementById("probe-state-loading").classList.add("hidden");
+      document.getElementById("probe-state-error").classList.add("hidden");
+      document.getElementById("probe-state-resolved").classList.remove("hidden");
+      document.getElementById("probe-status-pill").textContent = "RESOLVED";
+      document.getElementById("probe-status-pill").className = "font-mono-tab text-[9.5px] px-1.5 py-0.5 bg-[#15803D]/20 border border-[#15803D] text-[#15803D]";
+
+      const rawName = currentProbeUrl.split("/").pop() || "artifact.bin";
+      const dotIdx = rawName.lastIndexOf(".");
+      const disambiguated = dotIdx > 0 ? `${rawName.slice(0, dotIdx)} (1)${rawName.slice(dotIdx)}` : `${rawName} (1)`;
+
+      document.getElementById("probe-filename-input").value = disambiguated;
+      document.getElementById("probe-dir-input").value = settings.default_output_dir;
+      document.getElementById("probe-workers-slider").value = settings.max_workers;
+      document.getElementById("probe-workers-val").textContent = `${settings.max_workers} workers`;
+      updateProbeCapUI();
+    }
+
+    function updateProbeCapUI() {
+      const btn = document.getElementById("btn-toggle-probe-cap");
+      const slider = document.getElementById("probe-workers-slider");
+      const sizeEl = document.getElementById("probe-size-display");
+      if (probeCapMode === "206") {
+        btn.textContent = "HTTP 206 · MULTI-SEGMENT";
+        btn.className = "font-mono-tab text-[10px] px-2 py-1 border font-semibold snap-90 bg-[#2A2825] text-[#EAE6DF] border-[#3E3B36]";
+        slider.disabled = false;
+        sizeEl.textContent = "8.98 GiB (9,642,201,088 B)";
+      } else {
+        btn.textContent = "HTTP 200 · SINGLE-STREAM";
+        btn.className = "font-mono-tab text-[10px] px-2 py-1 border font-semibold snap-90 bg-[#1B1A17] text-[#9B968D] border-[#2A2825]";
+        slider.disabled = true;
+        document.getElementById("probe-workers-val").textContent = "1 worker (Single-Stream)";
+        sizeEl.textContent = "Unknown Size — Stream";
+      }
+    }
+
+    document.getElementById("btn-toggle-probe-cap").addEventListener("click", () => {
+      probeCapMode = probeCapMode === "206" ? "200" : "206";
+      updateProbeCapUI();
+    });
+
+    document.getElementById("probe-workers-slider").addEventListener("input", (e) => {
+      document.getElementById("probe-workers-val").textContent = `${e.target.value} workers`;
+    });
+
+    document.getElementById("btn-sim-404").addEventListener("click", () => {
+      document.getElementById("probe-state-resolved").classList.add("hidden");
+      document.getElementById("probe-state-error").classList.remove("hidden");
+      document.getElementById("probe-status-pill").textContent = "ERROR 404";
+      document.getElementById("probe-status-pill").className = "font-mono-tab text-[9.5px] px-1.5 py-0.5 bg-[#DC2626]/20 border border-[#DC2626] text-[#DC2626]";
+    });
+
+    document.getElementById("btn-probe-retry").addEventListener("click", openProbeModal);
+    document.getElementById("btn-probe-edit-url").addEventListener("click", () => {
+      probeModal.classList.add("hidden");
+      document.getElementById("url-input").focus();
+    });
+
+    function commitProbedTransfer(startImmediately) {
+      const filename = document.getElementById("probe-filename-input").value.trim() || "download.bin";
+      const workers = parseInt(document.getElementById("probe-workers-slider").value, 10) || 16;
+      const totalBytes = probeCapMode === "206" ? Math.round(8.98 * GiB) : null;
+      const id = `dl-${String(nextIdNum++).padStart(2, "0")}`;
+
+      const newDl = {
+        id,
+        filename,
+        url: currentProbeUrl,
+        totalBytes,
+        streamBytes: 0,
+        state: startImmediately ? "Active" : "Queued",
+        rangeCap: probeCapMode,
+        etag: probeCapMode === "206" ? "\"f12e88a90c4b112\"" : null,
+        lastModified: "Thu, 19 Nov 2026 12:40:00 GMT",
+        baseSpeedBps: 118 * MiB,
+        currentSpeedBps: startImmediately ? 118 * MiB : 0,
+        segments: totalBytes ? createSegments(totalBytes, workers, 0, 0, []) : [],
+        failureReason: null
+      };
+
+      downloads.unshift(newDl);
+      selectedId = id;
+      if (!startImmediately) admitQueuedTransfers();
+      probeModal.classList.add("hidden");
+      document.getElementById("url-input").value = "";
+      renderAll();
+    }
+
+    document.getElementById("btn-probe-now").addEventListener("click", () => commitProbedTransfer(true));
+    document.getElementById("btn-probe-queue").addEventListener("click", () => commitProbedTransfer(false));
+    document.getElementById("btn-paste-probe").addEventListener("click", openProbeModal);
+    document.getElementById("btn-empty-probe").addEventListener("click", openProbeModal);
+    document.getElementById("btn-close-probe").addEventListener("click", () => probeModal.classList.add("hidden"));
+    document.getElementById("url-input").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") openProbeModal();
+    });
+
+    // =========================================================================
+    // Settings Modal Logic
+    // =========================================================================
+    const settingsModal = document.getElementById("settings-modal");
+    function openSettingsModal() {
+      document.getElementById("set-max-concurrent").value = settings.max_concurrent_downloads;
+      document.getElementById("set-max-workers").value = settings.max_workers;
+      document.getElementById("set-output-dir").value = settings.default_output_dir;
+      document.getElementById("set-sync-complete").checked = settings.sync_on_complete;
+      settingsModal.classList.remove("hidden");
+    }
+
+    document.getElementById("btn-open-settings").addEventListener("click", openSettingsModal);
+    document.getElementById("btn-close-settings").addEventListener("click", () => settingsModal.classList.add("hidden"));
+    document.getElementById("btn-cancel-settings").addEventListener("click", () => settingsModal.classList.add("hidden"));
+    document.getElementById("btn-save-settings").addEventListener("click", () => {
+      settings.max_concurrent_downloads = Math.max(1, Math.min(8, parseInt(document.getElementById("set-max-concurrent").value, 10) || 2));
+      settings.max_workers = Math.max(1, Math.min(32, parseInt(document.getElementById("set-max-workers").value, 10) || 16));
+      settings.default_output_dir = document.getElementById("set-output-dir").value.trim() || "D:\\Downloads\\Posthaze";
+      settings.sync_on_complete = document.getElementById("set-sync-complete").checked;
+      admitQueuedTransfers();
+      settingsModal.classList.add("hidden");
+      renderAll();
+    });
+
+    // Keyboard Shortcuts
+    window.addEventListener("keydown", (e) => {
+      if (e.target.tagName === "INPUT") return;
+      if (e.key === " " && selectedId) {
+        e.preventDefault();
+        togglePause(selectedId);
+      } else if (e.ctrlKey && e.key === ",") {
+        e.preventDefault();
+        openSettingsModal();
+      }
+    });
+
+    // =========================================================================
+    // Live Telemetry & 2-Second Checkpoint Simulation Loop (250ms tick)
+    // =========================================================================
+    setInterval(() => {
+      tickCount++;
+      const isCheckpointFlush = (tickCount % 8 === 0); // Every 2.0 seconds
+
+      let stateChanged = false;
+      for (const dl of downloads) {
+        if (dl.state !== "Active") continue;
+
+        // Micro-jitter throughput for realism
+        const jitter = 0.88 + Math.random() * 0.24;
+        dl.currentSpeedBps = Math.round(dl.baseSpeedBps * jitter);
+        const bytesThisTick = Math.round(dl.currentSpeedBps * 0.25);
+
+        if (dl.totalBytes === null) {
+          dl.streamBytes = (dl.streamBytes || 0) + bytesThisTick;
+          continue;
+        }
+
+        const activeSegs = dl.segments.filter(s => s.cursor < s.end);
+        if (activeSegs.length === 0) {
+          dl.segments.forEach(s => { s.checkpoint = s.end; s.status = "Done"; });
+          dl.state = "Completed";
+          dl.currentSpeedBps = 0;
+          stateChanged = true;
+          continue;
+        }
+
+        const perSegBytes = Math.ceil(bytesThisTick / activeSegs.length);
+        for (const s of activeSegs) {
+          s.cursor = Math.min(s.end, s.cursor + Math.round(perSegBytes * (0.8 + Math.random() * 0.4)));
+          if (isCheckpointFlush || s.cursor >= s.end) {
+            s.checkpoint = s.cursor;
+          }
+          if (s.checkpoint >= s.end) {
+            s.status = "Done";
+          }
+        }
+      }
+
+      if (stateChanged) {
+        admitQueuedTransfers();
+      }
+      renderAll();
+    }, 250);
+
+    // Initial Render
+    renderAll();
+  </script>
+</body>
+</html>

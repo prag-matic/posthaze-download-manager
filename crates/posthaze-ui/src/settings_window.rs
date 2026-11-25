@@ -6,11 +6,11 @@ use gpui_kit::*;
 use posthaze_engine::{DownloadCategory, Settings};
 
 use crate::PosthazeApp;
-use crate::assets::BRAND_LOGO_SVG;
 use crate::bridge::EngineBridge;
 use crate::browser_integration::{
     query_browser_statuses, register_native_host, resolve_cli_executable,
 };
+use crate::grid_cells::grid_brand_plate;
 use crate::platform_hooks::{open_directory_in_shell, open_url_in_browser};
 use crate::settings_modal::{
     SETTINGS_SIDEBAR_WIDTH, SettingsAction, SettingsModalState, SettingsTab,
@@ -257,13 +257,19 @@ impl SettingsWindow {
     fn handle_action(&mut self, action: SettingsAction, window: &mut Window, cx: &mut Context<Self>) {
         match action {
             SettingsAction::CheckForUpdates => {
-                let _ = self.main_app.update(cx, |app, cx| {
-                    app.check_for_updates(false, cx);
+                let main_app = self.main_app.clone();
+                cx.defer(move |cx| {
+                    let _ = main_app.update(cx, |app, cx| {
+                        app.check_for_updates(false, cx);
+                    });
                 });
             }
             SettingsAction::InstallUpdate => {
-                let _ = self.main_app.update(cx, |app, cx| {
-                    app.install_available_update(cx);
+                let main_app = self.main_app.clone();
+                cx.defer(move |cx| {
+                    let _ = main_app.update(cx, |app, cx| {
+                        app.install_available_update(cx);
+                    });
                 });
             }
             SettingsAction::OpenReleaseNotes(url) => {
@@ -441,30 +447,7 @@ impl SettingsWindow {
                     .border_color(graphite_border())
                     .flex()
                     .items_center()
-                    .child(
-                        div()
-                            .h_full()
-                            .pr(px(10.0))
-                            .border_r_1()
-                            .border_color(graphite_border())
-                            .flex()
-                            .items_center()
-                            .gap(px(8.0))
-                            .child(
-                                svg()
-                                    .path(BRAND_LOGO_SVG)
-                                    .size(px(22.0))
-                                    .text_color(selenium_amber()),
-                            )
-                            .child(
-                                div()
-                                    .font_family(MONO_FONT)
-                                    .text_size(TYPE_MICRO)
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(silver_text())
-                                    .child("POSTHAZE"),
-                            ),
-                    )
+                    .child(grid_brand_plate())
                     .child(
                         div()
                             .flex_1()

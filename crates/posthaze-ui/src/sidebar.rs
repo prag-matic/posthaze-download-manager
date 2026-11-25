@@ -7,7 +7,8 @@ use gpui_kit::*;
 
 use crate::PosthazeApp;
 use crate::grid_cells::{
-    CellBorder, GridTone, grid_cell_button, grid_kv_row, grid_section_header,
+    CellBorder, GridTone, NavRowTone, grid_cell_button, grid_kv_row, grid_nav_row,
+    grid_section_header, grid_selection_bar, grid_status_dot,
 };
 use crate::theme::*;
 use crate::view_model::{
@@ -97,17 +98,11 @@ impl PosthazeApp {
                                 cx.notify();
                             }))
                             .child(
-                                div()
+                                grid_selection_bar(selected)
                                     .absolute()
                                     .left_0()
                                     .top_0()
-                                    .bottom_0()
-                                    .w(px(2.0))
-                                    .bg(if selected {
-                                        selenium_amber()
-                                    } else {
-                                        Hsla::transparent_black()
-                                    }),
+                                    .bottom_0(),
                             )
                             .child(Icon::new(tab_icon).size(px(16.0)).text_color(tab_color))
                     })),
@@ -127,11 +122,15 @@ impl PosthazeApp {
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .child(div().w(px(6.0)).h(px(6.0)).bg(if active_slots > 0 {
-                                    selenium_amber()
-                                } else {
-                                    graphite_border()
-                                })),
+                                .child(grid_status_dot(
+                                    if active_slots > 0 {
+                                        selenium_amber()
+                                    } else {
+                                        graphite_border()
+                                    },
+                                    6.0,
+                                    false,
+                                )),
                         )
                         .child(
                             div()
@@ -201,79 +200,18 @@ impl PosthazeApp {
                     .children(tabs.into_iter().enumerate().map(|(i, tab)| {
                         let count = counts[i];
                         let selected = self.filter == tab;
-                        let tab_icon = filter_tab_icon(tab);
-                        let tab_color = if selected {
-                            selenium_amber()
-                        } else {
-                            silver_muted()
-                        };
-                        div()
-                            .id(SharedString::from(format!("filter-{}", tab.label())))
-                            .h(px(34.0))
-                            .w_full()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .cursor_pointer()
-                            .bg(if selected {
-                                graphite_elevated()
-                            } else {
-                                Hsla::transparent_black()
-                            })
-                            .border_b_1()
-                            .border_color(graphite_border())
-                            .hover(|s| s.bg(graphite_elevated()))
-                            .on_click(cx.listener(move |app, _, _, cx| {
+                        grid_nav_row(
+                            SharedString::from(format!("filter-{}", tab.label())),
+                            filter_tab_icon(tab),
+                            tab.label(),
+                            selected,
+                            Some(count),
+                            NavRowTone::Graphite,
+                            cx.listener(move |app, _, _, cx| {
                                 app.filter = tab;
                                 cx.notify();
-                            }))
-                            .child(
-                                div()
-                                    .h_full()
-                                    .flex()
-                                    .items_center()
-                                    .child(div().w(px(3.0)).h_full().mr_2p5().bg(if selected {
-                                        selenium_amber()
-                                    } else {
-                                        Hsla::transparent_black()
-                                    }))
-                                    .child(
-                                        Icon::new(tab_icon)
-                                            .size(px(14.0))
-                                            .text_color(tab_color),
-                                    )
-                                    .child(
-                                        div()
-                                            .ml_2()
-                                            .font_family(MONO_FONT)
-                                            .text_size(TYPE_MICRO)
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(if selected {
-                                                silver_text()
-                                            } else {
-                                                silver_muted()
-                                            })
-                                            .child(tab.label()),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .w(px(44.0))
-                                    .h_full()
-                                    .border_l_1()
-                                    .border_color(graphite_border())
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .font_family(MONO_FONT)
-                                    .text_size(TYPE_MICRO)
-                                    .text_color(if selected {
-                                        silver_text()
-                                    } else {
-                                        silver_muted()
-                                    })
-                                    .child(count.to_string()),
-                            )
+                            }),
+                        )
                     })),
             )
             // Global Telemetry Grid & Footer Cells

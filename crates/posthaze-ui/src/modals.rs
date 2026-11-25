@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use gpui_kit::assets::IconName;
-use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::input::InputState;
 use gpui_kit::component::Icon;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
@@ -16,7 +16,9 @@ use posthaze_engine::{
 use crate::curl_parser::mask_header_summary;
 use crate::errors::describe_error;
 use crate::grid_cells::{
-    CellBorder, GridTone, grid_cell_button, grid_kv_row_with_bg, grid_modal_footer,
+    BadgeTone, CellBorder, GridTone, grid_badge, grid_cell_button, grid_check_option_row,
+    grid_compact_input_row, grid_input_box, grid_kv_row_with_bg, grid_modal_footer,
+    grid_progress_track, grid_status_dot,
 };
 use crate::theme::*;
 use crate::view_model::format_bytes;
@@ -367,7 +369,7 @@ where
                             .bg(graphite_elevated())
                             .border_1()
                             .border_color(graphite_border())
-                            .rounded(px(3.0))
+                            .rounded(RADIUS_BADGE)
                             .text_size(TYPE_MICRO)
                             .line_height(px(14.0))
                             .text_color(silver_muted())
@@ -530,25 +532,14 @@ where
                                             .text_color(silver_text())
                                             .child("Add Download"),
                                     )
-                                    .child(
-                                        div()
-                                            .px_1p5()
-                                            .py_0p5()
-                                            .rounded(px(3.0))
-                                            .bg(graphite_elevated())
-                                            .border_1()
-                                            .border_color(graphite_border())
-                                            .font_family(MONO_FONT)
-                                            .text_size(TYPE_MICRO)
-                                            .line_height(px(13.0))
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .text_color(if info.supports_ranges {
-                                                silver_text()
-                                            } else {
-                                                silver_muted()
-                                            })
-                                            .child(proto_label),
-                                    ),
+                                    .child(grid_badge(
+                                        proto_label,
+                                        if info.supports_ranges {
+                                            BadgeTone::Neutral
+                                        } else {
+                                            BadgeTone::Muted
+                                        },
+                                    )),
                             )
                             .child(
                                 div()
@@ -667,18 +658,7 @@ where
                                                                     .child(active_cat_name),
                                                             )
                                                             .when(is_auto_matched, |el| {
-                                                                el.child(
-                                                                    div()
-                                                                        .px_1()
-                                                                        .rounded(px(2.0))
-                                                                        .bg(graphite_elevated())
-                                                                        .border_1()
-                                                                        .border_color(graphite_border())
-                                                                        .font_family(MONO_FONT)
-                                                                        .text_size(px(9.5))
-                                                                        .text_color(selenium_amber())
-                                                                        .child("AUTO"),
-                                                                )
+                                                                el.child(grid_badge("AUTO", BadgeTone::Accent))
                                                             }),
                                                     )
                                                     .child(
@@ -821,7 +801,7 @@ where
                                 .mt_2()
                                 .px_2p5()
                                 .py_1p5()
-                                .rounded(px(3.0))
+                                .rounded(RADIUS_BADGE)
                                 .bg(graphite_elevated())
                                 .border_1()
                                 .border_color(graphite_border())
@@ -840,14 +820,7 @@ where
                                         .flex()
                                         .items_center()
                                         .gap_2()
-                                        .child(
-                                            div()
-                                                .w(px(6.0))
-                                                .h(px(6.0))
-                                                .flex_shrink_0()
-                                                .rounded(px(3.0))
-                                                .bg(dot_color),
-                                        )
+                                        .child(grid_status_dot(dot_color, 6.0, true))
                                         .child(
                                             div()
                                                 .flex_1()
@@ -994,13 +967,7 @@ where
                                     ),
                             )
                             .child(
-                                div()
-                                    .w_full()
-                                    .h(px(8.0))
-                                    .bg(byte_track_bg())
-                                    .border_1()
-                                    .border_color(graphite_border())
-                                    .flex()
+                                grid_progress_track(px(8.0), Some(graphite_border()))
                                     .items_stretch()
                                     .children((0..segment_count).map(|idx| {
                                         let fill = if !info.supports_ranges {
@@ -1041,24 +1008,14 @@ where
                             )
                             .when_some(header_summary, |el, summary| {
                                 el.child(
-                                    div()
+                                    grid_badge("cURL", BadgeTone::Accent)
                                         .id("preflight-headers-badge")
-                                        .px_1p5()
-                                        .py_0p5()
-                                        .rounded(px(3.0))
-                                        .bg(graphite_elevated())
-                                        .border_1()
-                                        .border_color(graphite_border())
-                                        .font_family(MONO_FONT)
-                                        .text_size(TYPE_MICRO)
-                                        .text_color(selenium_amber())
                                         .tooltip(move |window, cx| {
                                             gpui_kit::component::tooltip::Tooltip::new(
                                                 summary.clone(),
                                             )
                                             .build(window, cx)
-                                        })
-                                        .child("cURL"),
+                                        }),
                                 )
                             }),
                     )
@@ -1281,7 +1238,7 @@ where
                     .bg(table_header_bg())
                     .border_1()
                     .border_color(graphite_border())
-                    .rounded(px(4.0))
+                    .rounded(RADIUS_CONTROL)
                     .overflow_hidden()
                     .flex()
                     .items_stretch()
@@ -1338,28 +1295,14 @@ where
                                 .child("Verify Checksum / File Integrity"),
                         )
                         .when_some(verdict, |el, (matched, text)| {
-                            el.child(
-                                div()
-                                    .px_2()
-                                    .py_0p5()
-                                    .rounded(px(3.0))
-                                    .bg(graphite_elevated())
-                                    .border_1()
-                                    .border_color(if matched {
-                                        halide_emerald()
-                                    } else {
-                                        errata_vermilion()
-                                    })
-                                    .font_family(MONO_FONT)
-                                    .text_size(TYPE_MICRO)
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(if matched {
-                                        halide_emerald()
-                                    } else {
-                                        errata_vermilion()
-                                    })
-                                    .child(text),
-                            )
+                            el.child(grid_badge(
+                                text,
+                                if matched {
+                                    BadgeTone::Success
+                                } else {
+                                    BadgeTone::Danger
+                                },
+                            ))
                         }),
                 )
                 .child(
@@ -1415,7 +1358,7 @@ where
                             .bg(table_header_bg())
                             .border_1()
                             .border_color(graphite_border())
-                            .rounded(px(4.0))
+                            .rounded(RADIUS_CONTROL)
                             .font_family(MONO_FONT)
                             .text_size(TYPE_MICRO)
                             .text_color(selenium_amber())
@@ -1674,7 +1617,7 @@ where
                     } else {
                         graphite_elevated()
                     })
-                    .rounded(px(3.0))
+                    .rounded(RADIUS_BADGE)
                     .flex()
                     .items_center()
                     .justify_center()
@@ -1687,7 +1630,7 @@ where
                     })
                     .text_color(if selected {
                         if danger {
-                            gpui_kit::white()
+                            danger_foreground()
                         } else {
                             active_theme().accent_foreground.hsla()
                         }
@@ -1841,7 +1784,7 @@ fn modal_plate_card(width: Pixels, border_color: Hsla, body: Div, footer: Div) -
         .bg(modal_bg())
         .border_1()
         .border_color(border_color)
-        .rounded(px(6.0))
+        .rounded(RADIUS_MODAL)
         .shadow_lg()
         .overflow_hidden()
         .flex()
@@ -1859,39 +1802,7 @@ fn compact_input_row_with_action(
     state: &Entity<InputState>,
     trailing_action: Option<AnyElement>,
 ) -> impl IntoElement {
-    div()
-        .w_full()
-        .h(px(30.0))
-        .bg(input_bg())
-        .border_1()
-        .border_color(graphite_border())
-        .flex()
-        .items_center()
-        .child(
-            div()
-                .w(px(68.0))
-                .h_full()
-                .px_2()
-                .bg(graphite_elevated())
-                .border_r_1()
-                .border_color(graphite_border())
-                .flex()
-                .items_center()
-                .font_family(MONO_FONT)
-                .text_size(TYPE_MICRO)
-                .text_color(silver_muted())
-                .child(label),
-        )
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .px_1p5()
-                .font_family(MONO_FONT)
-                .text_size(TYPE_BODY)
-                .child(Input::new(state).appearance(false)),
-        )
-        .when_some(trailing_action, |el, action| el.child(action))
+    grid_compact_input_row(label, 68.0, state, trailing_action)
 }
 
 pub(crate) fn folder_paths_equal(a: &Path, b: &Path) -> bool {
@@ -1987,64 +1898,24 @@ where
             let resolved_dir = effective_category_dir(cat, default_dir)
                 .to_string_lossy()
                 .to_string();
-            div()
-                .id(("pf-cat-opt", idx))
-                .h(px(26.0))
-                .px_2p5()
-                .flex()
-                .items_center()
-                .justify_between()
-                .gap_2()
-                .cursor_pointer()
-                .bg(if selected {
-                    paper_selected()
-                } else {
-                    Hsla::transparent_black()
-                })
-                .hover(|s| s.bg(paper_hover()))
-                .on_click(move |_, window, cx| pick_cb(cat_id.clone(), window, cx))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_1p5()
-                        .child(
-                            div()
-                                .w(px(12.0))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .when(selected, |el| {
-                                    el.child(
-                                        Icon::new(IconName::Check)
-                                            .size(px(11.0))
-                                            .text_color(selenium_amber()),
-                                    )
-                                }),
-                        )
-                        .child(
-                            div()
-                                .text_size(TYPE_MICRO)
-                                .font_weight(if selected {
-                                    FontWeight::MEDIUM
-                                } else {
-                                    FontWeight::NORMAL
-                                })
-                                .text_color(silver_text())
-                                .child(cat.name.clone()),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .font_family(MONO_FONT)
-                        .text_size(TYPE_MICRO)
-                        .text_color(silver_muted())
-                        .text_right()
-                        .truncate()
-                        .child(resolved_dir),
-                )
+            let dir_el = div()
+                .flex_1()
+                .min_w_0()
+                .font_family(MONO_FONT)
+                .text_size(TYPE_MICRO)
+                .text_color(silver_muted())
+                .text_right()
+                .truncate()
+                .child(resolved_dir)
+                .into_any_element();
+            grid_check_option_row(
+                ("pf-cat-opt", idx),
+                px(26.0),
+                cat.name.clone(),
+                selected,
+                Some(dir_el),
+                move |_, window, cx| pick_cb(cat_id.clone(), window, cx),
+            )
         }))
         .into_any_element()
 }
@@ -2229,11 +2100,7 @@ pub(crate) fn labeled_input(label: &'static str, state: &Entity<InputState>) -> 
         grid_kv_row_with_bg(
             label,
             160.0,
-            div()
-                .w_full()
-                .font_family(MONO_FONT)
-                .text_size(TYPE_BODY)
-                .child(Input::new(state).appearance(false)),
+            grid_input_box(state),
             GridTone::Graphite,
             Some(input_bg()),
         ),

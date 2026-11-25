@@ -16,6 +16,16 @@ pub const TYPE_BODY: Pixels = px(12.0);
 pub const TYPE_MICRO: Pixels = px(11.0);
 pub const TYPE_HEADER: Pixels = px(10.5);
 
+/// Shape radii (in logical pixels) matching `docs/DESIGN.md`.
+pub const RADIUS_BADGE: Pixels = px(3.0);
+pub const RADIUS_CONTROL: Pixels = px(4.0);
+pub const RADIUS_MODAL: Pixels = px(6.0);
+
+/// Structural chrome dimensions (in logical pixels) shared across panels and headers.
+pub const SECTION_HEADER_HEIGHT: Pixels = px(28.0);
+pub const MODAL_FOOTER_HEIGHT: Pixels = px(34.0);
+pub const INDICATOR_BAR_WIDTH: Pixels = px(3.0);
+
 /// 32-bit packed RGBA color (`0xRRGGBBAA`) supporting opaque and translucent surfaces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RgbaHex(pub u32);
@@ -721,8 +731,8 @@ pub fn apply_theme_with_accent(
     Theme::change(mode, None, cx);
 
     let theme = Theme::global_mut(cx);
-    theme.radius = px(4.0);
-    theme.radius_lg = px(6.0);
+    theme.radius = RADIUS_CONTROL;
+    theme.radius_lg = RADIUS_MODAL;
     if palette.backdrop != ThemeBackdrop::Opaque {
         theme.background = Hsla::transparent_black();
         theme.tokens.background = Hsla::transparent_black().into();
@@ -905,6 +915,11 @@ pub fn errata_vermilion() -> Hsla {
 /// Translucent vermilion tint for errata & validation banners.
 pub fn errata_surface_bg() -> Hsla {
     errata_vermilion().opacity(0.14)
+}
+
+/// High-contrast foreground ink on filled danger surfaces.
+pub fn danger_foreground() -> Hsla {
+    gpui_kit::rgb(0xFFFFFF).into()
 }
 
 #[cfg(test)]

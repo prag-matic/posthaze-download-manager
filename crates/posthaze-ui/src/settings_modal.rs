@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use gpui_kit::assets::IconName;
-use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::input::InputState;
 use gpui_kit::component::Icon;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
@@ -14,8 +14,9 @@ use posthaze_engine::{
 };
 
 use crate::grid_cells::{
-    CellBorder, GridTone, grid_boxed_button, grid_cell_button, grid_cell_button_dyn,
-    grid_kv_row_with_bg, grid_modal_footer, grid_section_header,
+    BadgeTone, CellBorder, GridTone, NavRowTone, grid_badge, grid_boxed_button, grid_cell_button,
+    grid_cell_button_dyn, grid_input_box, grid_kv_row_with_bg, grid_modal_footer, grid_nav_row,
+    grid_progress_track, grid_section_header, grid_selection_bar,
 };
 use crate::modals::labeled_input;
 use crate::theme::*;
@@ -1002,45 +1003,17 @@ where
                         .children(SettingsTab::ALL.into_iter().map(|tab| {
                             let active = state.active_tab == tab;
                             let act = on_action.clone();
-                            div()
-                                .id(SharedString::from(format!("settings-tab-{}", tab.label())))
-                                .h(px(34.0))
-                                .w_full()
-                                .border_b_1()
-                                .border_color(graphite_border())
-                                .flex()
-                                .items_center()
-                                .cursor_pointer()
-                                .bg(if active {
-                                    paper_selected()
-                                } else {
-                                    Hsla::transparent_black()
-                                })
-                                .hover(|s| s.bg(paper_hover()))
-                                .on_click(move |_, window, cx| {
+                            grid_nav_row(
+                                SharedString::from(format!("settings-tab-{}", tab.label())),
+                                tab.icon(),
+                                tab.label(),
+                                active,
+                                None,
+                                NavRowTone::PaperSelection,
+                                move |_, window, cx| {
                                     act(SettingsAction::SelectTab(tab), window, cx);
-                                })
-                                .child(div().w(px(3.0)).h_full().mr_3().bg(if active {
-                                    selenium_amber()
-                                } else {
-                                    Hsla::transparent_black()
-                                }))
-                                .child(Icon::new(tab.icon()).size(px(14.0)).text_color(
-                                    if active {
-                                        selenium_amber()
-                                    } else {
-                                        silver_muted()
-                                    },
-                                ))
-                                .child(
-                                    div()
-                                        .ml_2()
-                                        .font_family(MONO_FONT)
-                                        .text_size(TYPE_MICRO)
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(if active { silver_text() } else { silver_muted() })
-                                        .child(tab.label()),
-                                )
+                                },
+                            )
                         })),
                 )
                 .child(
@@ -1074,7 +1047,7 @@ where
                                 )
                                 .child(
                                     div()
-                                        .text_xs()
+                                        .text_size(TYPE_BODY)
                                         .text_color(silver_muted())
                                         .child(state.active_tab.subtitle()),
                                 ),
@@ -1183,7 +1156,7 @@ fn setting_text(title: &'static str, description: &'static str) -> impl IntoElem
         )
         .child(
             div()
-                .text_xs()
+                .text_size(TYPE_BODY)
                 .line_height(px(16.0))
                 .text_color(silver_muted())
                 .child(description),
@@ -1279,9 +1252,7 @@ fn compact_input(
                 .border_color(graphite_border())
                 .flex()
                 .items_center()
-                .font_family(MONO_FONT)
-                .text_size(TYPE_BODY)
-                .child(Input::new(state).appearance(false)),
+                .child(grid_input_box(state)),
         )
         .when_some(unit, |el, u| {
             el.child(
@@ -1354,7 +1325,7 @@ where
                 )
                 .child(
                     div()
-                        .text_xs()
+                        .text_size(TYPE_BODY)
                         .line_height(px(16.0))
                         .text_color(silver_muted())
                         .child(description),
@@ -1655,11 +1626,7 @@ where
             .child(grid_kv_row_with_bg(
                 label,
                 96.0,
-                div()
-                    .w_full()
-                    .font_family(MONO_FONT)
-                    .text_size(TYPE_BODY)
-                    .child(Input::new(input).appearance(false)),
+                grid_input_box(input),
                 GridTone::Graphite,
                 Some(input_bg()),
             ))
@@ -1758,15 +1725,12 @@ where
                                 )
                         }))
                         .child(
-                            div()
-                                .flex_1()
+                            grid_input_box(input)
                                 .min_w(px(136.0))
                                 .h(px(22.0))
                                 .flex()
                                 .items_center()
-                                .font_family(MONO_FONT)
-                                .text_size(TYPE_MICRO)
-                                .child(Input::new(input).appearance(false)),
+                                .text_size(TYPE_MICRO),
                         )
                         .when(has_draft, |el| {
                             el.child(
@@ -1927,12 +1891,7 @@ where
                                                 .items_center()
                                                 .gap_2()
                                                 .pr_2()
-                                                .child(
-                                                    div()
-                                                        .w(px(3.0))
-                                                        .h_full()
-                                                        .bg(selenium_amber()),
-                                                )
+                                                .child(grid_selection_bar(true))
                                                 .child(
                                                     Icon::new(IconName::Folder)
                                                         .size(px(13.0))
@@ -1946,19 +1905,7 @@ where
                                                         .truncate()
                                                         .child(selected_cat.name.clone()),
                                                 )
-                                                .child(
-                                                    div()
-                                                        .flex_shrink_0()
-                                                        .px_1p5()
-                                                        .py_0p5()
-                                                        .bg(graphite_bg())
-                                                        .border_1()
-                                                        .border_color(graphite_border())
-                                                        .font_family(MONO_FONT)
-                                                        .text_size(px(10.0))
-                                                        .text_color(silver_muted())
-                                                        .child(cat_role_tag),
-                                                ),
+                                                .child(grid_badge(cat_role_tag, BadgeTone::Muted)),
                                         )
                                         .child(
                                             div()
@@ -2074,15 +2021,8 @@ where
                                                     .text_color(silver_muted()),
                                             )
                                             .child(
-                                                div()
-                                                    .flex_1()
-                                                    .min_w_0()
-                                                    .font_family(MONO_FONT)
-                                                    .text_size(TYPE_MICRO)
-                                                    .child(
-                                                        Input::new(&state.cat_filter_input)
-                                                            .appearance(false),
-                                                    ),
+                                                grid_input_box(&state.cat_filter_input)
+                                                    .text_size(TYPE_MICRO),
                                             )
                                             .child(
                                                 div()
@@ -2194,17 +2134,7 @@ where
                                                                 .min_w_0()
                                                                 .h_full()
                                                                 .gap_3()
-                                                                .child(
-                                                                    div()
-                                                                        .w(px(3.0))
-                                                                        .h_full()
-                                                                        .flex_shrink_0()
-                                                                        .bg(if is_sel {
-                                                                            selenium_amber()
-                                                                        } else {
-                                                                            Hsla::transparent_black()
-                                                                        }),
-                                                                )
+                                                                .child(grid_selection_bar(is_sel))
                                                                 .child(
                                                                     div()
                                                                         .w(px(124.0))
@@ -2993,7 +2923,7 @@ where
                 .gap_2p5()
                 .child(
                     div()
-                        .text_xs()
+                        .text_size(TYPE_BODY)
                         .line_height(px(18.0))
                         .text_color(silver_muted())
                         .child("Load the bundled extension in chrome://extensions (or edge://extensions) and click REGISTER NATIVE HOST. The Extension ID below is pre-filled for unpacked installs (edit only if using a custom ID)."),
@@ -3044,7 +2974,7 @@ where
                 .flex()
                 .items_center()
                 .justify_between()
-                .child(div().text_xs().text_color(silver_text()).child(*name))
+                .child(div().text_size(TYPE_BODY).text_color(silver_text()).child(*name))
                 .child(
                     div()
                         .font_family(MONO_FONT)
@@ -3224,16 +3154,7 @@ where
                 setting_row(
                     concat!("Posthaze v", env!("CARGO_PKG_VERSION")),
                     "Signed GitHub Releases update channel",
-                    div()
-                        .px_2()
-                        .py_1()
-                        .border_1()
-                        .border_color(graphite_border())
-                        .bg(graphite_elevated())
-                        .font_family(MONO_FONT)
-                        .text_size(TYPE_MICRO)
-                        .text_color(silver_muted())
-                        .child(install_mode),
+                    grid_badge(install_mode, BadgeTone::Muted),
                 ),
                 toggle_row(
                     "settings-auto-check-updates",
@@ -3257,18 +3178,12 @@ where
                         )
                         .when_some(progress_pct, |el, pct| {
                             el.child(
-                                div()
-                                    .h(px(6.0))
-                                    .w_full()
-                                    .bg(byte_track_bg())
-                                    .border_1()
-                                    .border_color(graphite_border())
-                                    .child(
-                                        div()
-                                            .h_full()
-                                            .w(relative(f32::from(pct) / 100.0))
-                                            .bg(selenium_amber()),
-                                    ),
+                                grid_progress_track(px(6.0), Some(graphite_border())).child(
+                                    div()
+                                        .h_full()
+                                        .w(relative(f32::from(pct) / 100.0))
+                                        .bg(selenium_amber()),
+                                ),
                             )
                         })
                         .child(

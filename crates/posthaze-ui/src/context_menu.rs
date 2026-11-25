@@ -8,6 +8,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use posthaze_engine::{DownloadId, DownloadState};
 
+use crate::grid_cells::grid_dropdown_surface;
 use crate::theme::*;
 use crate::view_model::DownloadRowView;
 
@@ -239,18 +240,12 @@ where
             on_close_right(window, cx);
         })
         .child(
-            div()
-                .id("context-menu-surface")
+            grid_dropdown_surface("context-menu-surface")
                 .absolute()
                 .left(pos.x)
                 .top(pos.y)
                 .w(px(MENU_WIDTH))
                 .py_1()
-                .bg(context_menu_bg())
-                .border_1()
-                .border_color(graphite_border())
-                .rounded(px(4.0))
-                .shadow_md()
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
                 .children(entries.into_iter().enumerate().map(|(idx, entry)| match entry {
@@ -289,7 +284,7 @@ where
                             .h(px(MENU_ITEM_HEIGHT))
                             .px_2p5()
                             .mx_1()
-                            .rounded(px(3.0))
+                            .rounded(RADIUS_BADGE)
                             .flex()
                             .items_center()
                             .gap_2()
@@ -300,7 +295,7 @@ where
                                 el.cursor_pointer()
                                     .hover(|s| {
                                         s.bg(if danger {
-                                            errata_vermilion().opacity(0.14)
+                                            errata_surface_bg()
                                         } else {
                                             paper_hover()
                                         })
