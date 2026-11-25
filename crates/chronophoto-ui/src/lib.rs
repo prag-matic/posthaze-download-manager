@@ -6,6 +6,8 @@ pub use gpui_kit;
 #[doc(hidden)]
 pub use gpui_kit as gpui;
 
+pub mod assets;
+pub mod components;
 pub mod palette;
 pub mod theme;
 pub mod tokens;
