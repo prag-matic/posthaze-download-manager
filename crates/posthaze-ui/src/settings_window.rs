@@ -1,22 +1,29 @@
 //! Independent, single-instance GPUI window for application and engine Settings.
 
+use chronophoto_ui::components::BrandPlate;
+use chronophoto_ui::palette::{PaletteTone, ThemeBackdrop};
+use chronophoto_ui::platform::{
+    apply_window_backdrop, assert_window_dark_mode, is_forced_mica_polarity,
+    sync_theme_and_backdrops,
+};
+use chronophoto_ui::theme::ChronoAppExt;
+use chronophoto_ui::tokens::TYPE_HEADER;
 use gpui_kit::component::input::InputEvent;
-use gpui_kit::component::TitleBar;
+use gpui_kit::component::{Theme, TitleBar};
 use gpui_kit::*;
 use posthaze_engine::{DownloadCategory, Settings};
 
 use crate::PosthazeApp;
+use crate::assets::BRAND_LOGO_SVG;
 use crate::bridge::EngineBridge;
 use crate::browser_integration::{
     query_browser_statuses, register_native_host, resolve_cli_executable,
 };
-use crate::grid_cells::grid_brand_plate;
 use crate::platform_hooks::{open_directory_in_shell, open_url_in_browser};
 use crate::settings_modal::{
     SETTINGS_SIDEBAR_WIDTH, SettingsAction, SettingsModalState, SettingsTab,
     render_settings_window_body,
 };
-use crate::theme::*;
 use crate::updater::UpdateState;
 
 const SETTINGS_WINDOW_WIDTH: f32 = 840.0;
@@ -61,7 +68,7 @@ impl SettingsWindow {
             size(px(SETTINGS_WINDOW_WIDTH), px(SETTINGS_WINDOW_HEIGHT)),
             cx,
         );
-        let active_palette = active_theme();
+        let active_palette = cx.chrono().palette;
         let main_app_for_fallback = main_app.clone();
         let fallback_theme = settings.ui_theme.clone();
         let fallback_accent = settings.ui_accent_override.clone();
@@ -102,7 +109,7 @@ impl SettingsWindow {
 
         let backdrop_failed = handle
             .update(cx, |_, window, _| {
-                let res = crate::platform_hooks::apply_window_backdrop(
+                let res = apply_window_backdrop(
                     window,
                     active_palette.backdrop,
                     active_palette.tone,
@@ -115,7 +122,7 @@ impl SettingsWindow {
             let (active_theme_id, active_accent) = main_app_for_fallback
                 .update(cx, |app, _| app.active_theme_selection())
                 .unwrap_or((fallback_theme, fallback_accent));
-            crate::sync_theme_and_backdrops(&active_theme_id, active_accent.as_deref(), cx);
+            sync_theme_and_backdrops(&active_theme_id, active_accent.as_deref(), cx);
         }
 
         Some(SettingsWindowHandle {
@@ -204,10 +211,10 @@ impl SettingsWindow {
             else {
                 return;
             };
-            if crate::is_forced_mica_polarity(&theme_id) {
-                let is_dark = active_theme().tone == PaletteTone::Dark;
+            if is_forced_mica_polarity(&theme_id) {
+                let is_dark = cx.chrono().palette.tone == PaletteTone::Dark;
                 window.defer(cx, move |window, _| {
-                    crate::platform_hooks::assert_window_dark_mode(window, is_dark);
+                    assert_window_dark_mode(window, is_dark);
                 });
             }
         });
@@ -432,11 +439,13 @@ impl SettingsWindow {
         window.remove_window();
     }
 
-    fn render_titlebar(&self) -> impl IntoElement {
+    fn render_titlebar(&self, cx: &App) -> impl IntoElement {
+        let palette = cx.chrono().palette;
+        let mono = Theme::global(cx).mono_font_family.clone();
         TitleBar::new()
             .pl_0()
-            .bg(titlebar_bg())
-            .border_color(graphite_border())
+            .bg(palette.titlebar_bg.hsla())
+            .border_color(palette.chrome_border.hsla())
             .child(
                 div()
                     .w(px(SETTINGS_SIDEBAR_WIDTH))
@@ -444,10 +453,10 @@ impl SettingsWindow {
                     .h_full()
                     .pl(px(12.0))
                     .border_r_1()
-                    .border_color(graphite_border())
+                    .border_color(palette.chrome_border.hsla())
                     .flex()
                     .items_center()
-                    .child(grid_brand_plate())
+                    .child(BrandPlate::new("POSTHAZE").logo_svg(BRAND_LOGO_SVG))
                     .child(
                         div()
                             .flex_1()
@@ -456,10 +465,10 @@ impl SettingsWindow {
                             .px(px(10.0))
                             .flex()
                             .items_center()
-                            .font_family(MONO_FONT)
+                            .font_family(mono)
                             .text_size(TYPE_HEADER)
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(silver_text())
+                            .text_color(palette.chrome_text.hsla())
                             .truncate()
                             .child("SETTINGS"),
                     ),
@@ -476,7 +485,7 @@ fn revert_preview_and_clear_handle(main_app: &WeakEntity<PosthazeApp>, cx: &mut 
         })
         .ok();
     if let Some((theme_id, accent)) = saved {
-        crate::sync_theme_and_backdrops(&theme_id, accent.as_deref(), cx);
+        sync_theme_and_backdrops(&theme_id, accent.as_deref(), cx);
     }
 }
 
@@ -493,12 +502,13 @@ impl Render for SettingsWindow {
         let e_cancel = cx.entity().clone();
         let e_apply = cx.entity().clone();
         let e_save = cx.entity().clone();
+        let chrome_text = cx.chrono().palette.chrome_text.hsla();
 
         div()
             .flex()
             .flex_col()
             .size_full()
-            .text_color(silver_text())
+            .text_color(chrome_text)
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|win, event: &KeyDownEvent, window, cx| {
                 let key = event.keystroke.key.as_str();
@@ -527,7 +537,7 @@ impl Render for SettingsWindow {
                     }
                 }
             }))
-            .child(self.render_titlebar())
+            .child(self.render_titlebar(cx))
             .child(render_settings_window_body(
                 &self.state,
                 &self.update_state,

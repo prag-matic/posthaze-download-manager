@@ -2,14 +2,15 @@
 
 use std::time::Duration;
 
+use chronophoto_ui::components::GridDropdownSurface;
+use chronophoto_ui::theme::ChronoAppExt;
+use chronophoto_ui::tokens::{RADIUS_BADGE, TYPE_BODY};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Icon;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use posthaze_engine::{DownloadId, DownloadState};
 
-use crate::grid_cells::grid_dropdown_surface;
-use crate::theme::*;
 use crate::view_model::DownloadRowView;
 
 const MENU_WIDTH: f32 = 252.0;
@@ -211,6 +212,7 @@ pub(crate) fn render_context_menu<F1, F2>(
     row: &DownloadRowView,
     anchor: Point<Pixels>,
     viewport: Size<Pixels>,
+    cx: &App,
     on_close: F1,
     on_action: F2,
 ) -> AnyElement
@@ -218,6 +220,14 @@ where
     F1: Fn(&mut Window, &mut App) + Clone + 'static,
     F2: Fn(DownloadId, ContextMenuAction, &mut Window, &mut App) + Clone + 'static,
 {
+    let palette = cx.chrono().palette;
+    let chrome_border = palette.chrome_border.hsla();
+    let chrome_text = palette.chrome_text.hsla();
+    let chrome_muted = palette.chrome_muted.hsla();
+    let danger_color = palette.danger.hsla();
+    let danger_surface = palette.danger_surface();
+    let surface_hover = palette.surface_hover.hsla();
+
     let entries = build_row_menu_items(row);
     let estimated_height = entries.iter().fold(10.0_f32, |acc, entry| {
         acc + match entry {
@@ -240,75 +250,80 @@ where
             on_close_right(window, cx);
         })
         .child(
-            grid_dropdown_surface("context-menu-surface")
+            div()
                 .absolute()
                 .left(pos.x)
                 .top(pos.y)
                 .w(px(MENU_WIDTH))
-                .py_1()
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-                .children(entries.into_iter().enumerate().map(|(idx, entry)| match entry {
-                    ContextMenuEntry::Separator => div()
-                        .my_1()
-                        .h(px(1.0))
-                        .w_full()
-                        .bg(graphite_border())
-                        .into_any_element(),
-                    ContextMenuEntry::Item {
-                        action,
-                        label,
-                        icon,
-                        enabled,
-                        danger,
-                    } => {
-                        let text_color = if !enabled {
-                            silver_muted().opacity(0.45)
-                        } else if danger {
-                            errata_vermilion()
-                        } else {
-                            silver_text()
-                        };
-                        let icon_color = if !enabled {
-                            silver_muted().opacity(0.45)
-                        } else if danger {
-                            errata_vermilion()
-                        } else {
-                            silver_muted()
-                        };
-                        let id = download_id.clone();
-                        let on_act = on_action.clone();
+                .child(
+                    GridDropdownSurface::new("context-menu-surface").child(
+                        div().py_1().children(entries.into_iter().enumerate().map(|(idx, entry)| {
+                            match entry {
+                                ContextMenuEntry::Separator => div()
+                                    .my_1()
+                                    .h(px(1.0))
+                                    .w_full()
+                                    .bg(chrome_border)
+                                    .into_any_element(),
+                                ContextMenuEntry::Item {
+                                    action,
+                                    label,
+                                    icon,
+                                    enabled,
+                                    danger,
+                                } => {
+                                    let text_color = if !enabled {
+                                        chrome_muted.opacity(0.45)
+                                    } else if danger {
+                                        danger_color
+                                    } else {
+                                        chrome_text
+                                    };
+                                    let icon_color = if !enabled {
+                                        chrome_muted.opacity(0.45)
+                                    } else if danger {
+                                        danger_color
+                                    } else {
+                                        chrome_muted
+                                    };
+                                    let id = download_id.clone();
+                                    let on_act = on_action.clone();
 
-                        div()
-                            .id(SharedString::from(format!("ctx-item-{idx}")))
-                            .h(px(MENU_ITEM_HEIGHT))
-                            .px_2p5()
-                            .mx_1()
-                            .rounded(RADIUS_BADGE)
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .text_size(TYPE_BODY)
-                            .line_height(px(18.0))
-                            .text_color(text_color)
-                            .when(enabled, |el| {
-                                el.cursor_pointer()
-                                    .hover(|s| {
-                                        s.bg(if danger {
-                                            errata_surface_bg()
-                                        } else {
-                                            paper_hover()
+                                    div()
+                                        .id(SharedString::from(format!("ctx-item-{idx}")))
+                                        .h(px(MENU_ITEM_HEIGHT))
+                                        .px_2p5()
+                                        .mx_1()
+                                        .rounded(RADIUS_BADGE)
+                                        .flex()
+                                        .items_center()
+                                        .gap_2()
+                                        .text_size(TYPE_BODY)
+                                        .line_height(px(18.0))
+                                        .text_color(text_color)
+                                        .when(enabled, |el| {
+                                            el.cursor_pointer()
+                                                .hover(move |s| {
+                                                    s.bg(if danger {
+                                                        danger_surface
+                                                    } else {
+                                                        surface_hover
+                                                    })
+                                                })
+                                                .on_click(move |_, window, cx| {
+                                                    on_act(id.clone(), action, window, cx);
+                                                })
                                         })
-                                    })
-                                    .on_click(move |_, window, cx| {
-                                        on_act(id.clone(), action, window, cx);
-                                    })
-                            })
-                            .child(Icon::new(icon).size(px(13.0)).text_color(icon_color))
-                            .child(label)
-                            .into_any_element()
-                    }
-                }))
+                                        .child(Icon::new(icon).size(px(13.0)).text_color(icon_color))
+                                        .child(label)
+                                        .into_any_element()
+                                }
+                            }
+                        })),
+                    ),
+                )
                 .with_animation(
                     "context-menu-enter",
                     Animation::new(Duration::from_millis(140)).with_easing(ease_out_quint()),

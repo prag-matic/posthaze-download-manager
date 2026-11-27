@@ -6231,6 +6231,7 @@ version = "0.2.3"
 dependencies = [
  "base64 0.22.1",
  "bytes",
+ "chronophoto-ui",
  "ed25519-dalek",
  "futures-util",
  "gpui-kit",
