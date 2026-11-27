@@ -68,11 +68,24 @@ mod tests {
             .expect("expected numeric px value")
     }
 
-    fn parse_hex_rgb(raw: &str) -> RgbaHex {
+    fn parse_ms(raw: &str) -> f32 {
         let trimmed = raw.trim().trim_matches('"').trim_matches('\'');
-        let hex = trimmed.strip_prefix('#').expect("expected #RRGGBB hex");
+        trimmed
+            .strip_suffix("ms")
+            .expect("expected ms suffix")
+            .parse::<f32>()
+            .expect("expected numeric ms value")
+    }
+
+    fn parse_hex_color(raw: &str) -> RgbaHex {
+        let trimmed = raw.trim().trim_matches('"').trim_matches('\'');
+        let hex = trimmed.strip_prefix('#').expect("expected #RRGGBB or #RRGGBBAA hex");
         let val = u32::from_str_radix(hex, 16).expect("valid hex");
-        RgbaHex::rgb(val)
+        match hex.len() {
+            6 => RgbaHex::rgb(val),
+            8 => RgbaHex::rgba(val),
+            other => panic!("unexpected hex length {other} for '{trimmed}'"),
+        }
     }
 
     #[test]
@@ -87,6 +100,7 @@ mod tests {
         let mut seen_radii = 0usize;
         let mut seen_spacing = 0usize;
         let mut seen_chrome = 0usize;
+        let mut seen_motion = 0usize;
 
         for raw_line in yaml.lines() {
             let line = raw_line.trim_end_matches('\r');
@@ -108,12 +122,9 @@ mod tests {
                 let val = v.trim();
                 match section {
                     "colors" => {
-                        let actual = parse_hex_rgb(val);
+                        let actual = parse_hex_color(val);
                         let expected = match key {
-                            "accent" => CHRONOPHOTOGRAPHIC.accent,
-                            "info" => CHRONOPHOTOGRAPHIC.info,
-                            "success" => CHRONOPHOTOGRAPHIC.success,
-                            "danger" => CHRONOPHOTOGRAPHIC.danger,
+                            "titlebar-bg" => CHRONOPHOTOGRAPHIC.titlebar_bg,
                             "chrome-bg" => CHRONOPHOTOGRAPHIC.chrome_bg,
                             "chrome-elevated" => CHRONOPHOTOGRAPHIC.chrome_elevated,
                             "chrome-border" => CHRONOPHOTOGRAPHIC.chrome_border,
@@ -124,7 +135,22 @@ mod tests {
                             "surface-selected" => CHRONOPHOTOGRAPHIC.surface_selected,
                             "surface-hover" => CHRONOPHOTOGRAPHIC.surface_hover,
                             "surface-border" => CHRONOPHOTOGRAPHIC.surface_border,
+                            "surface-text" => CHRONOPHOTOGRAPHIC.surface_text,
+                            "surface-muted" => CHRONOPHOTOGRAPHIC.surface_muted,
+                            "input-bg" => CHRONOPHOTOGRAPHIC.input_bg,
                             "track-bg" => CHRONOPHOTOGRAPHIC.track_bg,
+                            "modal-scrim" => CHRONOPHOTOGRAPHIC.modal_scrim,
+                            "modal-bg" => CHRONOPHOTOGRAPHIC.modal_bg,
+                            "popover-bg" => CHRONOPHOTOGRAPHIC.popover_bg,
+                            "accent" => CHRONOPHOTOGRAPHIC.accent,
+                            "accent-hover" => CHRONOPHOTOGRAPHIC.accent_hover,
+                            "accent-active" => CHRONOPHOTOGRAPHIC.accent_active,
+                            "accent-foreground" => CHRONOPHOTOGRAPHIC.accent_foreground,
+                            "info" => CHRONOPHOTOGRAPHIC.info,
+                            "success" => CHRONOPHOTOGRAPHIC.success,
+                            "danger" => CHRONOPHOTOGRAPHIC.danger,
+                            "danger-foreground" => CHRONOPHOTOGRAPHIC.danger_foreground,
+                            "focus-ring" => CHRONOPHOTOGRAPHIC.focus_ring,
                             other => panic!("unexpected color key in DESIGN.md: {other}"),
                         };
                         assert_eq!(actual, expected, "DESIGN.md color '{key}' drifted");
@@ -195,15 +221,28 @@ mod tests {
                         );
                         seen_chrome += 1;
                     }
+                    "motion" => {
+                        let actual = parse_ms(val);
+                        let expected = match key {
+                            "detent-flash-ms" => DETENT_FLASH_MS,
+                            other => panic!("unexpected motion key in DESIGN.md: {other}"),
+                        };
+                        assert!(
+                            (actual - expected).abs() < 1e-3,
+                            "DESIGN.md motion.{key} {actual} != {expected}"
+                        );
+                        seen_motion += 1;
+                    }
                     _ => {}
                 }
             }
         }
 
-        assert_eq!(seen_colors, 15, "expected 15 color tokens in DESIGN.md");
+        assert_eq!(seen_colors, 27, "expected 27 color tokens in DESIGN.md");
         assert_eq!(seen_types, 6, "expected 6 typography tokens in DESIGN.md");
         assert_eq!(seen_radii, 3, "expected 3 radius tokens in DESIGN.md");
         assert_eq!(seen_spacing, 5, "expected 5 spacing tokens in DESIGN.md");
         assert_eq!(seen_chrome, 3, "expected 3 chrome tokens in DESIGN.md");
+        assert_eq!(seen_motion, 1, "expected 1 motion token in DESIGN.md");
     }
 }

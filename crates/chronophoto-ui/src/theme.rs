@@ -64,6 +64,18 @@ impl ChronoTheme {
         cx.global::<Self>()
     }
 
+    /// Resolves the active monospace font family from [`Self::typography`] or
+    /// `gpui_kit::component::Theme`.
+    pub fn resolve_mono_font(&self, cx: &App) -> SharedString {
+        if let Some(ref font) = self.typography.mono_font {
+            return font.clone();
+        }
+        if let Some(theme) = cx.try_global::<Theme>() {
+            return theme.mono_font_family.clone();
+        }
+        "monospace".into()
+    }
+
     /// Applies `palette` and `typography` to [`ChronoTheme`] and synchronizes
     /// `gpui_kit::component::Theme` via `Theme::change` followed by `Theme::update`.
     pub fn apply(palette: ThemePalette, typography: ThemeTypography, cx: &mut App) {
@@ -79,6 +91,7 @@ impl ChronoTheme {
             theme.radius = RADIUS_CONTROL;
             theme.radius_lg = RADIUS_MODAL;
             theme.window_radius = px(0.0);
+            theme.cursor_blink = gpui_kit::base::input::CursorBlink::default();
 
             if palette.backdrop != ThemeBackdrop::Opaque {
                 theme.background = Hsla::transparent_black();
@@ -175,6 +188,8 @@ impl ChronoAppExt for App {
 }
 
 /// Resolves `id` with an optional accent override and applies it via [`ChronoTheme::apply`].
+///
+/// Preserves the active [`ThemeTypography`] if [`ChronoTheme`] is already initialized.
 pub fn apply_theme_with_accent(
     id: &str,
     accent_override: Option<&str>,
@@ -183,7 +198,11 @@ pub fn apply_theme_with_accent(
     cx: &mut App,
 ) -> ThemePalette {
     let palette = ThemeCatalog::new().resolve_palette(id, accent_override, os_appearance, mica_available);
-    ChronoTheme::apply(palette, ThemeTypography::default(), cx);
+    let typography = cx
+        .try_global::<ChronoTheme>()
+        .map(|c| c.typography.clone())
+        .unwrap_or_default();
+    ChronoTheme::apply(palette, typography, cx);
     palette
 }
 
@@ -226,10 +245,29 @@ mod gpui_tests {
             assert_eq!(cx.chrono().palette, CHRONOPHOTOGRAPHIC);
 
             let kit_theme = Theme::global(cx);
+            assert!(!kit_theme.cursor_blink.is_steady());
             assert_eq!(kit_theme.radius, RADIUS_CONTROL);
             assert_eq!(kit_theme.radius_lg, RADIUS_MODAL);
             assert_eq!(kit_theme.background, CHRONOPHOTOGRAPHIC.chrome_bg.hsla());
             assert_eq!(kit_theme.primary, CHRONOPHOTOGRAPHIC.accent.hsla());
+
+            // Verify resolve_mono_font works via ChronoTheme and custom typography is preserved on accent change.
+            assert!(!cx.chrono().resolve_mono_font(cx).is_empty());
+            let custom_typo = ThemeTypography {
+                mono_font: Some("JetBrains Mono".into()),
+                ui_scale: 1.15,
+                ..ThemeTypography::default()
+            };
+            ChronoTheme::apply(CHRONOPHOTOGRAPHIC, custom_typo.clone(), cx);
+            apply_theme_with_accent(
+                "chronophotographic",
+                Some("cobalt"),
+                WindowAppearance::Dark,
+                false,
+                cx,
+            );
+            assert_eq!(cx.chrono().typography, custom_typo);
+            assert_eq!(cx.chrono().resolve_mono_font(cx), "JetBrains Mono");
 
             let base_theme = cx.global::<gpui_kit::base::Theme>();
             assert_eq!(

@@ -17,13 +17,7 @@ use crate::theme::ChronoAppExt;
 
 /// Resolves the active monospace font family from `ChronoTheme` or `gpui_kit::component::Theme`.
 pub(crate) fn resolve_mono_font(cx: &App) -> SharedString {
-    if let Some(ref font) = cx.chrono().typography.mono_font {
-        return font.clone();
-    }
-    if let Some(theme) = cx.try_global::<gpui_kit::component::Theme>() {
-        return theme.mono_font_family.clone();
-    }
-    "monospace".into()
+    cx.chrono().resolve_mono_font(cx)
 }
 
 #[cfg(all(test, feature = "test-support"))]

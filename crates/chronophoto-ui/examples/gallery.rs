@@ -254,108 +254,113 @@ impl GalleryApp {
             .flex()
             .flex_col()
             .child(
-                div()
-                    .h(px(36.0))
-                    .px_3()
-                    .border_b_1()
+                TitleBar::new()
+                    .bg(palette.titlebar_bg.hsla())
                     .border_color(palette.chrome_border.hsla())
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .child(
-                        BrandPlate::new("CHRONOPHOTO GALLERY")
-                            .logo_icon(GalleryIcon::BrandMark)
-                            .subtitle("v0.1.0 workbench"),
-                    )
                     .child(
                         div()
+                            .flex_1()
+                            .h_full()
                             .flex()
                             .items_center()
-                            .gap_1p5()
-                            .when(cfg!(feature = "inspector"), |el| {
-                                el.child(GridBadge::new("INSPECTOR").tone(BadgeTone::Accent))
-                            })
+                            .justify_between()
+                            .gap_2()
                             .child(
-                                GridBoxedButton::new("toggle-appearance")
-                                    .icon(if is_dark {
-                                        IconName::Moon
-                                    } else {
-                                        IconName::Sun
+                                BrandPlate::new("CHRONOPHOTO GALLERY")
+                                    .logo_icon(GalleryIcon::BrandMark)
+                                    .subtitle("v0.1.0 workbench"),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_1p5()
+                                    .when(cfg!(feature = "inspector"), |el| {
+                                        el.child(GridBadge::new("INSPECTOR").tone(BadgeTone::Accent))
                                     })
-                                    .label(if is_dark { "OS: DARK" } else { "OS: LIGHT" })
-                                    .tone(GridTone::Chrome)
-                                    .compact(true)
-                                    .on_click(cx.listener(|app, _, window, cx| {
-                                        app.config.os_appearance = match app.config.os_appearance {
-                                            WindowAppearance::Dark
-                                            | WindowAppearance::VibrantDark => {
-                                                WindowAppearance::Light
-                                            }
-                                            _ => WindowAppearance::Dark,
-                                        };
-                                        app.apply_theme_to_window(window, cx);
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                GridBoxedButton::new("toggle-mica")
-                                    .icon(IconName::Layers)
-                                    .label(if self.config.simulated_mica_available {
-                                        "MICA: ON"
-                                    } else {
-                                        "MICA: FALLBACK"
-                                    })
-                                    .tone(if self.config.simulated_mica_available {
-                                        GridTone::Primary
-                                    } else {
-                                        GridTone::Chrome
-                                    })
-                                    .compact(true)
-                                    .on_click(cx.listener(|app, _, window, cx| {
-                                        app.config.simulated_mica_available =
-                                            !app.config.simulated_mica_available;
-                                        app.apply_theme_to_window(window, cx);
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                GridBoxedButton::new("scale-down")
-                                    .label("A-")
-                                    .tone(GridTone::Chrome)
-                                    .compact(true)
-                                    .on_click(cx.listener(|app, _, window, cx| {
-                                        let next = app.config.ui_scale - 0.05;
-                                        app.config.set_ui_scale(next);
-                                        app.apply_theme_to_window(window, cx);
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                GridBadge::new(format!("{scale_pct}%")).tone(BadgeTone::Neutral),
-                            )
-                            .child(
-                                GridBoxedButton::new("scale-up")
-                                    .label("A+")
-                                    .tone(GridTone::Chrome)
-                                    .compact(true)
-                                    .on_click(cx.listener(|app, _, window, cx| {
-                                        let next = app.config.ui_scale + 0.05;
-                                        app.config.set_ui_scale(next);
-                                        app.apply_theme_to_window(window, cx);
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                GridBoxedButton::new("open-modal")
-                                    .icon(IconName::Square)
-                                    .label("MODAL")
-                                    .tone(GridTone::Primary)
-                                    .compact(true)
-                                    .on_click(cx.listener(|app, _, _, cx| {
-                                        app.modal_open = true;
-                                        cx.notify();
-                                    })),
+                                    .child(
+                                        GridBoxedButton::new("toggle-appearance")
+                                            .icon(if is_dark {
+                                                IconName::Moon
+                                            } else {
+                                                IconName::Sun
+                                            })
+                                            .label(if is_dark { "OS: DARK" } else { "OS: LIGHT" })
+                                            .tone(GridTone::Chrome)
+                                            .compact(true)
+                                            .on_click(cx.listener(|app, _, window, cx| {
+                                                app.config.os_appearance =
+                                                    match app.config.os_appearance {
+                                                        WindowAppearance::Dark
+                                                        | WindowAppearance::VibrantDark => {
+                                                            WindowAppearance::Light
+                                                        }
+                                                        _ => WindowAppearance::Dark,
+                                                    };
+                                                app.apply_theme_to_window(window, cx);
+                                                cx.notify();
+                                            })),
+                                    )
+                                    .child(
+                                        GridBoxedButton::new("toggle-mica")
+                                            .icon(IconName::Layers)
+                                            .label(if self.config.simulated_mica_available {
+                                                "MICA: ON"
+                                            } else {
+                                                "MICA: FALLBACK"
+                                            })
+                                            .tone(if self.config.simulated_mica_available {
+                                                GridTone::Primary
+                                            } else {
+                                                GridTone::Chrome
+                                            })
+                                            .compact(true)
+                                            .on_click(cx.listener(|app, _, window, cx| {
+                                                app.config.simulated_mica_available =
+                                                    !app.config.simulated_mica_available;
+                                                app.apply_theme_to_window(window, cx);
+                                                cx.notify();
+                                            })),
+                                    )
+                                    .child(
+                                        GridBoxedButton::new("scale-down")
+                                            .label("A-")
+                                            .tone(GridTone::Chrome)
+                                            .compact(true)
+                                            .on_click(cx.listener(|app, _, window, cx| {
+                                                let next = app.config.ui_scale - 0.05;
+                                                app.config.set_ui_scale(next);
+                                                app.apply_theme_to_window(window, cx);
+                                                cx.notify();
+                                            })),
+                                    )
+                                    .child(
+                                        GridBadge::new(format!("{scale_pct}%"))
+                                            .tone(BadgeTone::Neutral),
+                                    )
+                                    .child(
+                                        GridBoxedButton::new("scale-up")
+                                            .label("A+")
+                                            .tone(GridTone::Chrome)
+                                            .compact(true)
+                                            .on_click(cx.listener(|app, _, window, cx| {
+                                                let next = app.config.ui_scale + 0.05;
+                                                app.config.set_ui_scale(next);
+                                                app.apply_theme_to_window(window, cx);
+                                                cx.notify();
+                                            })),
+                                    )
+                                    .child(
+                                        GridBoxedButton::new("open-modal")
+                                            .icon(IconName::Square)
+                                            .label("MODAL")
+                                            .tone(GridTone::Primary)
+                                            .compact(true)
+                                            .on_click(cx.listener(|app, _, _, cx| {
+                                                app.modal_open = true;
+                                                cx.notify();
+                                            })),
+                                    ),
                             ),
                     ),
             )

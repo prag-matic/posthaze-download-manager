@@ -68,6 +68,30 @@ impl GridTone {
             Self::Danger => palette.danger_foreground.hsla(),
         }
     }
+
+    /// Returns the recessed header/label background fill for this tone.
+    pub fn header_bg(self, palette: &ThemePalette) -> Hsla {
+        match self {
+            Self::Surface | Self::SurfaceSubtle => palette.surface_header_bg.hsla(),
+            Self::Chrome | Self::Primary | Self::Danger => palette.chrome_elevated.hsla(),
+        }
+    }
+
+    /// Returns the muted header/label foreground color for this tone.
+    pub fn muted_fg(self, palette: &ThemePalette) -> Hsla {
+        match self {
+            Self::Surface | Self::SurfaceSubtle => palette.surface_muted.hsla(),
+            Self::Chrome | Self::Primary | Self::Danger => palette.chrome_muted.hsla(),
+        }
+    }
+
+    /// Returns the default value-cell background fill for key-value rows of this tone.
+    pub fn kv_value_bg(self, palette: &ThemePalette) -> Hsla {
+        match self {
+            Self::Surface | Self::SurfaceSubtle => palette.surface_bg.hsla(),
+            Self::Chrome | Self::Primary | Self::Danger => Hsla::transparent_black(),
+        }
+    }
 }
 
 /// Which vertical `1px` cell dividers to draw on a [`crate::components::GridCellButton`].

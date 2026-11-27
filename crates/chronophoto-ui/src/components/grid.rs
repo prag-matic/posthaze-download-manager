@@ -282,18 +282,9 @@ impl RenderOnce for GridSectionHeader {
         let text_size = chrono.typography.scale(TYPE_HEADER);
         let mono = resolve_mono_font(cx);
 
-        let (bg, border_col, fg) = match self.tone {
-            GridTone::Surface | GridTone::SurfaceSubtle => (
-                palette.surface_header_bg.hsla(),
-                palette.surface_border.hsla(),
-                palette.surface_muted.hsla(),
-            ),
-            GridTone::Chrome | GridTone::Primary | GridTone::Danger => (
-                palette.chrome_elevated.hsla(),
-                palette.chrome_border.hsla(),
-                palette.chrome_muted.hsla(),
-            ),
-        };
+        let bg = self.tone.header_bg(palette);
+        let border_col = self.tone.border_color(palette);
+        let fg = self.tone.muted_fg(palette);
 
         div()
             .h(SECTION_HEADER_HEIGHT)
@@ -365,21 +356,12 @@ impl RenderOnce for GridKvRow {
         let text_size = chrono.typography.scale(TYPE_MICRO);
         let mono = resolve_mono_font(cx);
 
-        let (border_col, label_bg, label_fg, default_value_bg) = match self.tone {
-            GridTone::Surface | GridTone::SurfaceSubtle => (
-                palette.surface_border.hsla(),
-                palette.surface_header_bg.hsla(),
-                palette.surface_muted.hsla(),
-                palette.surface_bg.hsla(),
-            ),
-            GridTone::Chrome | GridTone::Primary | GridTone::Danger => (
-                palette.chrome_border.hsla(),
-                palette.chrome_elevated.hsla(),
-                palette.chrome_muted.hsla(),
-                Hsla::transparent_black(),
-            ),
-        };
-        let value_bg = self.value_bg.unwrap_or(default_value_bg);
+        let border_col = self.tone.border_color(palette);
+        let label_bg = self.tone.header_bg(palette);
+        let label_fg = self.tone.muted_fg(palette);
+        let value_bg = self
+            .value_bg
+            .unwrap_or_else(|| self.tone.kv_value_bg(palette));
 
         div()
             .min_h(px(32.0))

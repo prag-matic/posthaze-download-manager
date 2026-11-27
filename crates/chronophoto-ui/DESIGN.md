@@ -3,10 +3,7 @@ name: "Chronophoto UI"
 description: "Calibrated Chronophotographic Interval Plate design system built on GPUI and GPUI Kit."
 world: "Chronophotographic Interval Plate"
 colors:
-  accent: "#e58a35"
-  info: "#3b82f6"
-  success: "#22c55e"
-  danger: "#ef4444"
+  titlebar-bg: "#141311"
   chrome-bg: "#141311"
   chrome-elevated: "#1b1a17"
   chrome-border: "#2a2825"
@@ -17,7 +14,22 @@ colors:
   surface-selected: "#2d2b26"
   surface-hover: "#262420"
   surface-border: "#2c2a27"
+  surface-text: "#eae6df"
+  surface-muted: "#9b968d"
+  input-bg: "#141311"
   track-bg: "#0d0c0b"
+  modal-scrim: "#141413aa"
+  modal-bg: "#141311"
+  popover-bg: "#141311"
+  accent: "#e58a35"
+  accent-hover: "#d97724"
+  accent-active: "#c2661b"
+  accent-foreground: "#141311"
+  info: "#3b82f6"
+  success: "#22c55e"
+  danger: "#ef4444"
+  danger-foreground: "#141311"
+  focus-ring: "#524e48"
 typography:
   display:
     fontSize: "18px"
@@ -63,6 +75,8 @@ chrome:
   section-header-height: "28px"
   modal-footer-height: "34px"
   indicator-bar-width: "3px"
+motion:
+  detent-flash-ms: "240ms"
 ---
 
 # Chronophoto UI — Chronophotographic Interval Plate
