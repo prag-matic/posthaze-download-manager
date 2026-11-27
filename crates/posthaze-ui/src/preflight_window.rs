@@ -2,8 +2,16 @@
 
 use std::path::PathBuf;
 
-use gpui_kit::component::TitleBar;
+use chronophoto_ui::components::BrandPlate;
+use chronophoto_ui::palette::{PaletteTone, ThemeBackdrop};
+use chronophoto_ui::platform::{
+    apply_window_backdrop, assert_window_dark_mode, is_forced_mica_polarity,
+    sync_theme_and_backdrops,
+};
+use chronophoto_ui::theme::ChronoAppExt;
+use chronophoto_ui::tokens::TYPE_HEADER;
 use gpui_kit::component::input::InputState;
+use gpui_kit::component::{Theme, TitleBar};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use posthaze_engine::{
@@ -14,9 +22,9 @@ use posthaze_engine::{
 };
 
 use crate::PosthazeApp;
+use crate::assets::BRAND_LOGO_SVG;
 use crate::bridge::{EngineBridge, EngineCommand};
 use crate::curl_parser::{find_header_value, set_or_remove_header};
-use crate::grid_cells::grid_brand_plate;
 use crate::modals::{
     ConfirmAction, DuplicateBannerAction, DuplicateMatch, PreflightModalState, PreflightTab,
     category_dropdown_extra_height, folder_dropdown_extra_height, render_confirm_modal,
@@ -24,7 +32,6 @@ use crate::modals::{
 };
 use crate::notifications::ToastRequest;
 use crate::platform_hooks::open_file_in_shell;
-use crate::theme::*;
 
 /// Optional browser-capture metadata and transfer hints for [`PreflightWindow`].
 #[derive(Default, Clone)]
@@ -75,7 +82,7 @@ impl PreflightWindow {
         bounds.origin.x += px(cascade);
         bounds.origin.y += px(cascade);
 
-        let active_palette = active_theme();
+        let active_palette = cx.chrono().palette;
         let main_app_for_fallback = main_app.clone();
         let fallback_theme = settings.ui_theme.clone();
         let fallback_accent = settings.ui_accent_override.clone();
@@ -110,7 +117,7 @@ impl PreflightWindow {
         }) {
             let backdrop_failed = handle
                 .update(cx, |_, window, _| {
-                    let res = crate::platform_hooks::apply_window_backdrop(
+                    let res = apply_window_backdrop(
                         window,
                         active_palette.backdrop,
                         active_palette.tone,
@@ -123,7 +130,7 @@ impl PreflightWindow {
                 let (active_theme_id, active_accent) = main_app_for_fallback
                     .update(cx, |app, _| app.active_theme_selection())
                     .unwrap_or((fallback_theme, fallback_accent));
-                crate::sync_theme_and_backdrops(
+                sync_theme_and_backdrops(
                     &active_theme_id,
                     active_accent.as_deref(),
                     cx,
@@ -154,10 +161,10 @@ impl PreflightWindow {
             else {
                 return;
             };
-            if crate::is_forced_mica_polarity(&theme_id) {
-                let is_dark = active_theme().tone == PaletteTone::Dark;
+            if is_forced_mica_polarity(&theme_id) {
+                let is_dark = cx.chrono().palette.tone == PaletteTone::Dark;
                 window.defer(cx, move |window, _| {
-                    crate::platform_hooks::assert_window_dark_mode(window, is_dark);
+                    assert_window_dark_mode(window, is_dark);
                 });
             }
         });
@@ -810,6 +817,16 @@ impl PreflightWindow {
     }
 
     fn render_titlebar(&self, cx: &Context<Self>) -> impl IntoElement {
+        let palette = cx.chrono().palette;
+        let titlebar_bg = palette.titlebar_bg.hsla();
+        let chrome_border = palette.chrome_border.hsla();
+        let chrome_elevated = palette.chrome_elevated.hsla();
+        let chrome_text = palette.chrome_text.hsla();
+        let chrome_muted = palette.chrome_muted.hsla();
+        let surface_hover = palette.surface_hover.hsla();
+        let accent = palette.accent.hsla();
+        let mono = Theme::global(cx).mono_font_family.clone();
+
         let active_tab = match &self.state {
             PreflightModalState::Resolved { active_tab, .. } => Some(*active_tab),
             _ => None,
@@ -818,14 +835,14 @@ impl PreflightWindow {
         let e_opts = cx.entity().clone();
 
         TitleBar::new()
-            .bg(titlebar_bg())
-            .border_color(graphite_border())
+            .bg(titlebar_bg)
+            .border_color(chrome_border)
             .child(
                 div()
                     .h_full()
                     .flex()
                     .items_center()
-                    .child(grid_brand_plate())
+                    .child(BrandPlate::new("POSTHAZE").logo_svg(BRAND_LOGO_SVG))
                     .when_some(active_tab, |el, tab| {
                         el.child(
                             div()
@@ -834,16 +851,16 @@ impl PreflightWindow {
                                 .h_full()
                                 .px_2p5()
                                 .border_r_1()
-                                .border_color(graphite_border())
+                                .border_color(chrome_border)
                                 .flex()
                                 .items_center()
-                                .font_family(MONO_FONT)
+                                .font_family(mono.clone())
                                 .text_size(TYPE_HEADER)
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .cursor_pointer()
                                 .when(tab == PreflightTab::General, |el| {
-                                    el.bg(graphite_elevated())
-                                        .text_color(silver_text())
+                                    el.bg(chrome_elevated)
+                                        .text_color(chrome_text)
                                         .child(
                                             div()
                                                 .absolute()
@@ -851,12 +868,12 @@ impl PreflightWindow {
                                                 .left_0()
                                                 .right_0()
                                                 .h(px(2.0))
-                                                .bg(selenium_amber()),
+                                                .bg(accent),
                                         )
                                 })
                                 .when(tab != PreflightTab::General, |el| {
-                                    el.text_color(silver_muted())
-                                        .hover(|s| s.bg(paper_hover()).text_color(silver_text()))
+                                    el.text_color(chrome_muted)
+                                        .hover(move |s| s.bg(surface_hover).text_color(chrome_text))
                                 })
                                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                                 .on_click(move |_, window, cx| {
@@ -873,16 +890,16 @@ impl PreflightWindow {
                                 .h_full()
                                 .px_2p5()
                                 .border_r_1()
-                                .border_color(graphite_border())
+                                .border_color(chrome_border)
                                 .flex()
                                 .items_center()
-                                .font_family(MONO_FONT)
+                                .font_family(mono.clone())
                                 .text_size(TYPE_HEADER)
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .cursor_pointer()
                                 .when(tab == PreflightTab::Options, |el| {
-                                    el.bg(graphite_elevated())
-                                        .text_color(silver_text())
+                                    el.bg(chrome_elevated)
+                                        .text_color(chrome_text)
                                         .child(
                                             div()
                                                 .absolute()
@@ -890,12 +907,12 @@ impl PreflightWindow {
                                                 .left_0()
                                                 .right_0()
                                                 .h(px(2.0))
-                                                .bg(selenium_amber()),
+                                                .bg(accent),
                                         )
                                 })
                                 .when(tab != PreflightTab::Options, |el| {
-                                    el.text_color(silver_muted())
-                                        .hover(|s| s.bg(paper_hover()).text_color(silver_text()))
+                                    el.text_color(chrome_muted)
+                                        .hover(move |s| s.bg(surface_hover).text_color(chrome_text))
                                 })
                                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                                 .on_click(move |_, window, cx| {
@@ -912,12 +929,12 @@ impl PreflightWindow {
                                 .h_full()
                                 .px_2p5()
                                 .border_r_1()
-                                .border_color(graphite_border())
+                                .border_color(chrome_border)
                                 .flex()
                                 .items_center()
-                                .font_family(MONO_FONT)
+                                .font_family(mono)
                                 .text_size(TYPE_HEADER)
-                                .text_color(silver_muted())
+                                .text_color(chrome_muted)
                                 .child("ADD DOWNLOAD"),
                         )
                     }),
@@ -1090,6 +1107,7 @@ impl Render for PreflightWindow {
             let e_alt = cx.entity().clone();
             render_confirm_modal(
                 action,
+                cx,
                 move |_, cx| {
                     e_cancel.update(cx, |win, cx| {
                         win.overwrite_confirm = None;
@@ -1162,7 +1180,7 @@ impl Render for PreflightWindow {
             .flex()
             .flex_col()
             .size_full()
-            .text_color(silver_text())
+            .text_color(cx.chrono().palette.chrome_text.hsla())
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|win, event: &KeyDownEvent, window, cx| {
                 let key = event.keystroke.key.as_str();

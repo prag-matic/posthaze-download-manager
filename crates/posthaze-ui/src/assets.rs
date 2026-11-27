@@ -1,8 +1,9 @@
-//! Embedded brand assets combined with `gpui-kit`'s Lucide icon catalog.
+//! Embedded brand assets combined with `gpui-kit`'s Lucide icon catalog via
+//! [`chronophoto_ui::assets::CompositeAssetSource`].
 
 use std::borrow::Cow;
 
-use gpui_kit::assets::AllAssets;
+use chronophoto_ui::assets::CompositeAssetSource;
 use gpui_kit::{AssetSource, Result, SharedString};
 
 /// Asset path for the rounded-square Posthaze application icon (PNG).
@@ -30,35 +31,30 @@ const LOGO_MARK_DARK_BYTES: &[u8] =
 const LOGO_SVG_BYTES: &[u8] =
     include_bytes!("../../../assets/Logo Light SVG/Logo Light 32x32.svg");
 
+const BRAND_ASSETS: &[(&str, &[u8])] = &[
+    (BRAND_APP_ICON, APP_ICON_BYTES),
+    (BRAND_APP_ICON_SVG, APP_ICON_SVG_BYTES),
+    (BRAND_LOGO_MARK, LOGO_MARK_BYTES),
+    (BRAND_LOGO_MARK_DARK, LOGO_MARK_DARK_BYTES),
+    (BRAND_LOGO_SVG, LOGO_SVG_BYTES),
+];
+
 /// Composite [`AssetSource`] serving Posthaze brand assets and `gpui-kit` SVG icons.
 pub struct PosthazeAssets;
 
+impl PosthazeAssets {
+    const fn source() -> CompositeAssetSource {
+        CompositeAssetSource::new(BRAND_ASSETS)
+    }
+}
+
 impl AssetSource for PosthazeAssets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
-        match path {
-            BRAND_APP_ICON => Ok(Some(Cow::Borrowed(APP_ICON_BYTES))),
-            BRAND_APP_ICON_SVG => Ok(Some(Cow::Borrowed(APP_ICON_SVG_BYTES))),
-            BRAND_LOGO_MARK => Ok(Some(Cow::Borrowed(LOGO_MARK_BYTES))),
-            BRAND_LOGO_MARK_DARK => Ok(Some(Cow::Borrowed(LOGO_MARK_DARK_BYTES))),
-            BRAND_LOGO_SVG => Ok(Some(Cow::Borrowed(LOGO_SVG_BYTES))),
-            _ => AllAssets.load(path),
-        }
+        Self::source().load(path)
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
-        let mut items = AllAssets.list(path)?;
-        for asset in [
-            BRAND_APP_ICON,
-            BRAND_APP_ICON_SVG,
-            BRAND_LOGO_MARK,
-            BRAND_LOGO_MARK_DARK,
-            BRAND_LOGO_SVG,
-        ] {
-            if asset.starts_with(path) {
-                items.push(asset.into());
-            }
-        }
-        Ok(items)
+        Self::source().list(path)
     }
 }
 

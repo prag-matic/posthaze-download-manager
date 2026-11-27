@@ -10,7 +10,6 @@ mod curl_parser;
 mod diagnostics;
 mod drag_drop;
 mod errors;
-mod grid_cells;
 mod inspector;
 mod ipc;
 mod modals;
@@ -22,7 +21,6 @@ mod settings_modal;
 mod settings_window;
 mod sidebar;
 mod table;
-mod theme;
 mod tray;
 mod updater;
 mod view_model;
@@ -30,9 +28,18 @@ mod view_model;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use chronophoto_ui::components::{
+    AlertBanner, AlertTone, BrandPlate, CellBorder, GridCellButton, GridStatusDot, GridTone,
+    SashAxis, SplitSash,
+};
+use chronophoto_ui::platform::{
+    observe_window_backdrop_sync, spawn_mica_preference_listener, sync_theme_and_backdrops,
+};
+use chronophoto_ui::theme::ChronoAppExt;
+use chronophoto_ui::tokens::{TYPE_HEADER, TYPE_MICRO};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::input::{InputEvent, InputState};
-use gpui_kit::component::{Icon, InteractiveElementExt as _, TitleBar};
+use gpui_kit::component::{Icon, Theme, TitleBar};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use posthaze_engine::{
@@ -40,18 +47,15 @@ use posthaze_engine::{
     SegmentProgress, default_db_path, default_logs_dir,
 };
 
-use crate::assets::PosthazeAssets;
+use crate::assets::{BRAND_LOGO_SVG, PosthazeAssets};
 use crate::bridge::{EngineBridge, EngineCommand, EngineSnapshot};
 use crate::context_menu::{ContextMenuAction, ContextMenuState, render_context_menu};
 use crate::curl_parser::parse_url_or_curl;
-use crate::grid_cells::{
-    CellBorder, GridTone, grid_brand_plate, grid_cell_button, grid_status_dot,
-};
 use crate::inspector::{InspectorCallbacks, render_inspector};
 use crate::modals::{
     ConfirmAction, FileOpModalState, render_confirm_modal, render_file_op_modal,
 };
-use crate::motion::MotionState;
+use crate::motion::DownloadMotion;
 use crate::notifications::{
     ToastActivation, ToastDispatcher, ToastRequest, init_toast_notifications,
 };
@@ -63,7 +67,6 @@ use crate::platform_hooks::{
 use crate::preflight_window::PreflightWindow;
 use crate::settings_modal::SettingsTab;
 use crate::settings_window::{SettingsWindow, SettingsWindowHandle};
-use crate::theme::*;
 use crate::updater::UpdateState;
 use crate::view_model::{
     COLLAPSED_INSPECTOR_HEIGHT, DEFAULT_INSPECTOR_HEIGHT, DEFAULT_SIDEBAR_WIDTH,
@@ -73,13 +76,6 @@ use crate::view_model::{
     apply_magnetic_detent, compute_layout_profile, derive_display_filename, resolve_inspector_drag,
     resolve_keyboard_action, resolve_sidebar_drag,
 };
-
-/// Returns `true` when `theme_id` forces a specific Mica dark/light polarity
-/// (`"mica-dark"` or `"mica-light"`) rather than following the OS appearance.
-pub(crate) fn is_forced_mica_polarity(theme_id: &str) -> bool {
-    let preset = find_theme_preset(theme_id);
-    preset.is_mica && preset.badge != ThemeBadge::Auto
-}
 
 /// Resolves the active `(theme_id, accent_override)` pair, preferring an open
 /// Settings live-preview draft over persisted `Settings`.
@@ -93,98 +89,6 @@ fn resolve_active_theme_selection(
     } else {
         (saved_theme.to_string(), saved_accent.map(str::to_string))
     }
-}
-
-fn apply_palette_to_all_windows(
-    palette: ThemePalette,
-    current_window: &mut Option<&mut Window>,
-    cx: &mut App,
-) -> bool {
-    let mut any_failed = false;
-
-    let current_handle = if let Some(win) = current_window.as_deref_mut() {
-        if platform_hooks::apply_window_backdrop(win, palette.backdrop, palette.tone).is_err() {
-            any_failed = true;
-        }
-        win.refresh();
-        Some(win.window_handle())
-    } else {
-        None
-    };
-
-    for handle in cx.windows() {
-        if current_handle == Some(handle) {
-            continue;
-        }
-        let _ = handle.update(cx, |_, win, _| {
-            if platform_hooks::apply_window_backdrop(win, palette.backdrop, palette.tone).is_err() {
-                any_failed = true;
-            }
-            win.refresh();
-        });
-    }
-
-    any_failed
-}
-
-fn sync_theme_and_backdrops_inner(
-    theme_id: &str,
-    accent_override: Option<&str>,
-    mut current_window: Option<&mut Window>,
-    cx: &mut App,
-) -> ThemePalette {
-    let os_appearance = if let Some(win) = current_window.as_deref() {
-        win.appearance()
-    } else {
-        cx.windows()
-            .into_iter()
-            .find_map(|handle| handle.update(cx, |_, win, _| win.appearance()).ok())
-            .unwrap_or_else(platform_hooks::initial_os_appearance)
-    };
-
-    let mica_available = platform_hooks::mica_availability().is_ok();
-    let mut palette = theme::apply_theme_with_accent(
-        theme_id,
-        accent_override,
-        os_appearance,
-        mica_available,
-        cx,
-    );
-
-    let any_failed = apply_palette_to_all_windows(palette, &mut current_window, cx);
-    if any_failed && palette.backdrop != ThemeBackdrop::Opaque {
-        palette = theme::apply_theme_with_accent(
-            theme_id,
-            accent_override,
-            os_appearance,
-            false,
-            cx,
-        );
-        let _ = apply_palette_to_all_windows(palette, &mut current_window, cx);
-    }
-
-    palette
-}
-
-/// Synchronizes the active [`ThemePalette`], GPUI Kit tokens, and Win32 DWM
-/// backdrops across every open window (`PosthazeApp` and all `PreflightWindow`s).
-pub(crate) fn sync_theme_and_backdrops(
-    theme_id: &str,
-    accent_override: Option<&str>,
-    cx: &mut App,
-) -> ThemePalette {
-    sync_theme_and_backdrops_inner(theme_id, accent_override, None, cx)
-}
-
-/// Synchronizes the active [`ThemePalette`] and Win32 DWM backdrops across the
-/// currently borrowed `window` and all other open windows.
-pub(crate) fn sync_theme_and_backdrops_in_window(
-    theme_id: &str,
-    accent_override: Option<&str>,
-    window: &mut Window,
-    cx: &mut App,
-) -> ThemePalette {
-    sync_theme_and_backdrops_inner(theme_id, accent_override, Some(window), cx)
 }
 
 fn main() {
@@ -280,7 +184,7 @@ pub(crate) struct PosthazeApp {
     pub(crate) inspector_collapsed: bool,
     active_resize: Option<ActiveResize>,
     pub(crate) pending_file_drag: Option<PendingFileDrag>,
-    pub(crate) motion: MotionState,
+    pub(crate) motion: DownloadMotion,
     motion_loop_running: bool,
     startup_layout_applied: bool,
     pub(crate) table_scroll_handle: UniformListScrollHandle,
@@ -336,33 +240,10 @@ impl PosthazeApp {
         .detach();
 
         let appearance_entity = cx.entity().downgrade();
-        let _appearance_subscription = window.observe_window_appearance(move |window, cx| {
-            let Ok((theme_id, accent_override)) =
-                appearance_entity.update(cx, |app, _| app.active_theme_selection())
-            else {
-                return;
-            };
-            let palette = sync_theme_and_backdrops_in_window(
-                &theme_id,
-                accent_override.as_deref(),
-                window,
-                cx,
-            );
-            if is_forced_mica_polarity(&theme_id) {
-                let is_dark = palette.tone == PaletteTone::Dark;
-                window.defer(cx, move |window, cx| {
-                    platform_hooks::assert_window_dark_mode(window, is_dark);
-                    let current_handle = window.window_handle();
-                    for handle in cx.windows() {
-                        if handle == current_handle {
-                            continue;
-                        }
-                        let _ = handle.update(cx, |_, win, _| {
-                            platform_hooks::assert_window_dark_mode(win, is_dark);
-                        });
-                    }
-                });
-            }
+        let _appearance_subscription = observe_window_backdrop_sync(window, move |cx| {
+            appearance_entity
+                .update(cx, |app, _| app.active_theme_selection())
+                .ok()
         });
 
         let initial_theme_key = (
@@ -397,7 +278,7 @@ impl PosthazeApp {
             inspector_collapsed: true,
             active_resize: None,
             pending_file_drag: None,
-            motion: MotionState::default(),
+            motion: DownloadMotion::default(),
             motion_loop_running: false,
             startup_layout_applied: false,
             table_scroll_handle: UniformListScrollHandle::new(),
@@ -472,9 +353,10 @@ impl PosthazeApp {
 
     fn start_mica_preference_listener(&self, cx: &mut Context<Self>) {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<()>();
-        platform_hooks::spawn_mica_preference_listener(move || {
+        spawn_mica_preference_listener(move || {
             let _ = tx.send(());
-        });
+        })
+        .detach();
         cx.spawn(async move |this, cx| {
             while rx.recv().await.is_some() {
                 while rx.try_recv().is_ok() {}
@@ -775,8 +657,9 @@ impl PosthazeApp {
                         | ToastActivation::OpenUpdates
                 );
                 if restore_main {
-                    let _ = cx.update_window(window_handle, |_, window, _| {
-                        show_window_from_tray(window);
+                    let _ = cx.update_window(window_handle, |_, window, cx| {
+                        let palette = cx.chrono().palette;
+                        show_window_from_tray(window, palette.backdrop, palette.tone);
                     });
                 }
                 let _ = this.update(cx, |app, cx| match act {
@@ -821,12 +704,13 @@ impl PosthazeApp {
                 match action {
                     tray::TrayAction::ToggleShowHide => {
                         let hid = cx
-                            .update_window(window_handle, |_, window, _| {
+                            .update_window(window_handle, |_, window, cx| {
                                 if is_window_visible(window) && window.is_window_active() {
                                     hide_window_to_tray(window);
                                     true
                                 } else {
-                                    show_window_from_tray(window);
+                                    let palette = cx.chrono().palette;
+                                    show_window_from_tray(window, palette.backdrop, palette.tone);
                                     false
                                 }
                             })
@@ -865,8 +749,9 @@ impl PosthazeApp {
             while let Some(cmd) = rx.recv().await {
                 match cmd {
                     ipc::PipeCommand::ShowMainWindow => {
-                        let _ = cx.update_window(window_handle, |_, window, _| {
-                            show_window_from_tray(window);
+                        let _ = cx.update_window(window_handle, |_, window, cx| {
+                            let palette = cx.chrono().palette;
+                            show_window_from_tray(window, palette.backdrop, palette.tone);
                         });
                         let _ = this.update(cx, |app, cx| {
                             app.set_window_hidden(false, cx);
@@ -2020,6 +1905,7 @@ impl Render for PosthazeApp {
             px(animated_inspector_height),
             render_inspector_collapsed,
             inspector_motion,
+            cx,
             InspectorCallbacks {
                 on_restart_fresh: move |id: DownloadId, _: &mut Window, cx: &mut App| {
                     entity_restart.update(cx, |app, cx| app.restart_fresh_download(id, cx));
@@ -2171,6 +2057,7 @@ impl Render for PosthazeApp {
             let e_mode = cx.entity().clone();
             render_confirm_modal(
                 action,
+                cx,
                 move |_, cx| {
                     e_cancel.update(cx, |app, cx| {
                         app.confirm_modal = None;
@@ -2204,6 +2091,7 @@ impl Render for PosthazeApp {
                 row,
                 menu.anchor,
                 viewport,
+                cx,
                 move |_, cx| {
                     e_close.update(cx, |app, cx| {
                         app.context_menu = None;
@@ -2231,7 +2119,7 @@ impl Render for PosthazeApp {
             .flex()
             .flex_col()
             .size_full()
-            .text_color(carbon_text())
+            .text_color(cx.chrono().palette.surface_text.hsla())
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(move |app, event: &KeyDownEvent, window, cx| {
                 let key = event.keystroke.key.as_str();
@@ -2437,32 +2325,35 @@ impl Render for PosthazeApp {
                     .overflow_hidden()
                     // Left Navigation & Filter Rail (52px icon rail when collapsed, 180-380px when expanded)
                     .child(self.render_sidebar(self.queue.all_rows(), total_speed, active_slots, cx))
-                    .child(
-                        div()
-                            .id("sidebar-resize")
-                            .w(px(7.0))
-                            .h_full()
-                            .flex_shrink_0()
-                            .flex()
-                            .justify_center()
-                            .cursor_col_resize()
-                            .hover(|s| s.bg(paper_hover()))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|app, ev: &MouseDownEvent, _, cx| {
-                                    cx.stop_propagation();
-                                    let start_width = if app.sidebar_collapsed {
-                                        RAIL_SIDEBAR_WIDTH
-                                    } else {
-                                        app.sidebar_width
-                                    };
-                                    app.active_resize = Some(ActiveResize::Sidebar {
-                                        start_x: ev.position.x,
-                                        start_width,
-                                    });
-                                    cx.notify();
-                                }),
-                            )
+                    .child({
+                        let detent_flash = self.motion.sash_detent_flash(Instant::now());
+                        let is_snapped = !self.sidebar_collapsed
+                            && (self.sidebar_width - DEFAULT_SIDEBAR_WIDTH).abs() < 0.5;
+                        let label = if self.sidebar_collapsed {
+                            format!("RAIL {:.0} px", RAIL_SIDEBAR_WIDTH)
+                        } else if is_snapped {
+                            format!("{:.0} px · DEFAULT", self.sidebar_width)
+                        } else {
+                            format!("{:.0} px", self.sidebar_width)
+                        };
+                        SplitSash::new("sidebar-resize", SashAxis::Vertical)
+                            .active(resizing_sidebar)
+                            .snapped(is_snapped)
+                            .detent_flash(detent_flash)
+                            .readout(label)
+                            .on_mouse_down(cx.listener(|app, ev: &MouseDownEvent, _, cx| {
+                                cx.stop_propagation();
+                                let start_width = if app.sidebar_collapsed {
+                                    RAIL_SIDEBAR_WIDTH
+                                } else {
+                                    app.sidebar_width
+                                };
+                                app.active_resize = Some(ActiveResize::Sidebar {
+                                    start_x: ev.position.x,
+                                    start_width,
+                                });
+                                cx.notify();
+                            }))
                             .on_double_click(cx.listener(|app, _, _, cx| {
                                 let from = if app.sidebar_collapsed {
                                     RAIL_SIDEBAR_WIDTH
@@ -2476,63 +2367,7 @@ impl Render for PosthazeApp {
                                 app.ensure_motion_loop(cx);
                                 cx.notify();
                             }))
-                            .relative()
-                            .child({
-                                let detent_flash = self.motion.sash_detent_flash(Instant::now());
-                                let is_snapped = !self.sidebar_collapsed
-                                    && (self.sidebar_width - DEFAULT_SIDEBAR_WIDTH).abs() < 0.5;
-                                div()
-                                    .w(px(if resizing_sidebar || detent_flash > 0.05 {
-                                        2.0
-                                    } else {
-                                        1.0
-                                    }))
-                                    .h_full()
-                                    .bg(if detent_flash > 0.05 || (resizing_sidebar && is_snapped) {
-                                        cyanotype_blue()
-                                    } else if resizing_sidebar {
-                                        selenium_amber()
-                                    } else {
-                                        graphite_border()
-                                    })
-                            })
-                            .when(resizing_sidebar, |el| {
-                                let is_snapped = !self.sidebar_collapsed
-                                    && (self.sidebar_width - DEFAULT_SIDEBAR_WIDTH).abs() < 0.5;
-                                let label = if self.sidebar_collapsed {
-                                    format!("RAIL {:.0} px", RAIL_SIDEBAR_WIDTH)
-                                } else if is_snapped {
-                                    format!("{:.0} px · DEFAULT", self.sidebar_width)
-                                } else {
-                                    format!("{:.0} px", self.sidebar_width)
-                                };
-                                el.child(
-                                    deferred(
-                                        div()
-                                            .absolute()
-                                            .left(px(10.0))
-                                            .top(px(14.0))
-                                            .px_2()
-                                            .py_0p5()
-                                            .rounded(RADIUS_BADGE)
-                                            .bg(context_menu_bg())
-                                            .border_1()
-                                            .border_color(if is_snapped {
-                                                cyanotype_blue()
-                                            } else {
-                                                selenium_amber()
-                                            })
-                                            .shadow_md()
-                                            .font_family(MONO_FONT)
-                                            .text_size(TYPE_HEADER)
-                                            .text_color(silver_text())
-                                            .whitespace_nowrap()
-                                            .child(label),
-                                    )
-                                    .with_priority(10),
-                                )
-                            }),
-                    )
+                    })
                     // Main Right Column: Top Toolbar + Center Table + Collapsible & Resizable Bottom Inspector
                     .child(
                         div()
@@ -2546,50 +2381,20 @@ impl Render for PosthazeApp {
                             .child(self.render_toolbar(profile, cx))
                             .when_some(self.status_banner.clone(), |el, msg| {
                                 el.child(
-                                    div()
-                                        .px_4()
-                                        .py_1p5()
-                                        .bg(errata_surface_bg())
-                                        .border_b_1()
-                                        .border_color(errata_vermilion())
-                                        .flex()
-                                        .items_center()
-                                        .justify_between()
-                                        .gap_3()
-                                        .child(
-                                            div()
-                                                .flex()
-                                                .items_center()
-                                                .gap_2()
-                                                .min_w_0()
-                                                .child(
-                                                    Icon::new(IconName::TriangleAlert)
-                                                        .size(px(14.0))
-                                                        .text_color(errata_vermilion()),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .font_family(MONO_FONT)
-                                                        .text_size(TYPE_BODY)
-                                                        .text_color(silver_text())
-                                                        .truncate()
-                                                        .child(msg),
-                                                ),
-                                        )
-                                        .child(
-                                            div().h(px(26.0)).child(grid_cell_button(
-                                                "dismiss-status-banner",
-                                                Some(IconName::X),
-                                                None,
-                                                Some("Dismiss"),
-                                                GridTone::Danger,
-                                                CellBorder::Left,
-                                                true,
-                                                cx.listener(|app, _, _, cx| {
+                                    AlertBanner::new(msg)
+                                        .id("status-banner")
+                                        .tone(AlertTone::Danger)
+                                        .action(
+                                            GridCellButton::new("dismiss-status-banner")
+                                                .icon(IconName::X)
+                                                .tooltip("Dismiss")
+                                                .tone(GridTone::Danger)
+                                                .border(CellBorder::Left)
+                                                .compact(true)
+                                                .on_click(cx.listener(|app, _, _, cx| {
                                                     app.status_banner = None;
                                                     cx.notify();
-                                                }),
-                                            )),
+                                                })),
                                         ),
                                 )
                             })
@@ -2602,19 +2407,25 @@ impl Render for PosthazeApp {
                             .when(self.category_filter_dropdown_open, |el| {
                                 el.child(self.render_category_filter_overlay(cx))
                             })
-                            .child(
-                                div()
-                                    .id("inspector-resize")
-                                    .h(px(7.0))
-                                    .w_full()
-                                    .flex_shrink_0()
-                                    .flex()
-                                    .items_center()
-                                    .cursor_row_resize()
-                                    .hover(|s| s.bg(paper_hover()))
-                                    .on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(|app, ev: &MouseDownEvent, _, cx| {
+                            .child({
+                                let detent_flash = self.motion.sash_detent_flash(Instant::now());
+                                let is_snapped = !self.inspector_collapsed
+                                    && (self.inspector_height - DEFAULT_INSPECTOR_HEIGHT).abs()
+                                        < 0.5;
+                                let label = if self.inspector_collapsed {
+                                    format!("COLLAPSED {:.0} px", COLLAPSED_INSPECTOR_HEIGHT)
+                                } else if is_snapped {
+                                    format!("{:.0} px · DEFAULT", self.inspector_height)
+                                } else {
+                                    format!("{:.0} px", self.inspector_height)
+                                };
+                                SplitSash::new("inspector-resize", SashAxis::Horizontal)
+                                    .active(resizing_inspector)
+                                    .snapped(is_snapped)
+                                    .detent_flash(detent_flash)
+                                    .readout(label)
+                                    .on_mouse_down(cx.listener(
+                                        |app, ev: &MouseDownEvent, _, cx| {
                                             cx.stop_propagation();
                                             let start_height = if app.inspector_collapsed {
                                                 COLLAPSED_INSPECTOR_HEIGHT
@@ -2626,8 +2437,8 @@ impl Render for PosthazeApp {
                                                 start_height,
                                             });
                                             cx.notify();
-                                        }),
-                                    )
+                                        },
+                                    ))
                                     .on_double_click(cx.listener(|app, _, _, cx| {
                                         let from = if app.inspector_collapsed {
                                             COLLAPSED_INSPECTOR_HEIGHT
@@ -2636,75 +2447,13 @@ impl Render for PosthazeApp {
                                         };
                                         app.inspector_collapsed = false;
                                         app.inspector_height = DEFAULT_INSPECTOR_HEIGHT;
-                                        app.motion.animate_inspector(from, DEFAULT_INSPECTOR_HEIGHT);
+                                        app.motion
+                                            .animate_inspector(from, DEFAULT_INSPECTOR_HEIGHT);
                                         app.motion.trigger_sash_detent(Instant::now());
                                         app.ensure_motion_loop(cx);
                                         cx.notify();
                                     }))
-                                    .relative()
-                                    .child({
-                                        let detent_flash =
-                                            self.motion.sash_detent_flash(Instant::now());
-                                        let is_snapped = !self.inspector_collapsed
-                                            && (self.inspector_height - DEFAULT_INSPECTOR_HEIGHT)
-                                                .abs()
-                                                < 0.5;
-                                        div()
-                                            .h(px(if resizing_inspector || detent_flash > 0.05 {
-                                                2.0
-                                            } else {
-                                                1.0
-                                            }))
-                                            .w_full()
-                                            .bg(if detent_flash > 0.05
-                                                || (resizing_inspector && is_snapped)
-                                            {
-                                                cyanotype_blue()
-                                            } else if resizing_inspector {
-                                                selenium_amber()
-                                            } else {
-                                                graphite_border()
-                                            })
-                                    })
-                                    .when(resizing_inspector, |el| {
-                                        let is_snapped = !self.inspector_collapsed
-                                            && (self.inspector_height - DEFAULT_INSPECTOR_HEIGHT)
-                                                .abs()
-                                                < 0.5;
-                                        let label = if self.inspector_collapsed {
-                                            format!("COLLAPSED {:.0} px", COLLAPSED_INSPECTOR_HEIGHT)
-                                        } else if is_snapped {
-                                            format!("{:.0} px · DEFAULT", self.inspector_height)
-                                        } else {
-                                            format!("{:.0} px", self.inspector_height)
-                                        };
-                                        el.child(
-                                            deferred(
-                                                div()
-                                                    .absolute()
-                                                    .right(px(16.0))
-                                                    .top(px(-24.0))
-                                                    .px_2()
-                                                    .py_0p5()
-                                                    .rounded(RADIUS_BADGE)
-                                                    .bg(context_menu_bg())
-                                                    .border_1()
-                                                    .border_color(if is_snapped {
-                                                        cyanotype_blue()
-                                                    } else {
-                                                        selenium_amber()
-                                                    })
-                                                    .shadow_md()
-                                                    .font_family(MONO_FONT)
-                                                    .text_size(TYPE_HEADER)
-                                                    .text_color(silver_text())
-                                                    .whitespace_nowrap()
-                                                    .child(label),
-                                            )
-                                            .with_priority(10),
-                                        )
-                                    }),
-                            )
+                            })
                             .child(inspector),
                     ),
             )
@@ -2722,6 +2471,15 @@ impl PosthazeApp {
         total_count: usize,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let palette = cx.chrono().palette;
+        let titlebar_bg = palette.titlebar_bg.hsla();
+        let chrome_border = palette.chrome_border.hsla();
+        let chrome_muted = palette.chrome_muted.hsla();
+        let accent = palette.accent.hsla();
+        let accent_hover = palette.accent_hover.hsla();
+        let accent_fg = palette.accent_foreground.hsla();
+        let mono = Theme::global(cx).mono_font_family.clone();
+
         let update_chip = self.update_state.available_release().map(|info| {
             let label = format!("Update v{}", info.version);
             div()
@@ -2729,17 +2487,17 @@ impl PosthazeApp {
                 .h_full()
                 .px_2p5()
                 .border_r_1()
-                .border_color(graphite_border())
-                .bg(selenium_amber())
-                .hover(|s| s.bg(active_theme().accent_hover.hsla()))
+                .border_color(chrome_border)
+                .bg(accent)
+                .hover(move |s| s.bg(accent_hover))
                 .cursor_pointer()
                 .flex()
                 .items_center()
                 .gap_1()
-                .font_family(MONO_FONT)
+                .font_family(mono.clone())
                 .text_size(TYPE_MICRO)
                 .font_weight(FontWeight::SEMIBOLD)
-                .text_color(active_theme().accent_foreground.hsla())
+                .text_color(accent_fg)
                 .on_click(cx.listener(|app, _, _, cx| {
                     app.open_settings_window(SettingsTab::System, cx);
                 }))
@@ -2757,8 +2515,8 @@ impl PosthazeApp {
 
         TitleBar::new()
             .pl_0()
-            .bg(titlebar_bg())
-            .border_color(graphite_border())
+            .bg(titlebar_bg)
+            .border_color(chrome_border)
             .child(
                 div()
                     .h_full()
@@ -2769,12 +2527,12 @@ impl PosthazeApp {
                             .h_full()
                             .pl(px(12.0))
                             .border_r_1()
-                            .border_color(graphite_border())
+                            .border_color(chrome_border)
                             .flex()
                             .items_center()
                             .when(align_to_sidebar, |el| el.min_w(px(current_sidebar_w + 4.0)))
                             // Brand cell
-                            .child(grid_brand_plate())
+                            .child(BrandPlate::new("POSTHAZE").logo_svg(BRAND_LOGO_SVG))
                             // Version cell (stretches to meet the expanded sidebar sash seam)
                             .child(
                                 div()
@@ -2783,9 +2541,9 @@ impl PosthazeApp {
                                     .px_2p5()
                                     .flex()
                                     .items_center()
-                                    .font_family(MONO_FONT)
+                                    .font_family(mono.clone())
                                     .text_size(TYPE_HEADER)
-                                    .text_color(silver_muted())
+                                    .text_color(chrome_muted)
                                     .child(concat!("v", env!("CARGO_PKG_VERSION"), " beta")),
                             ),
                     )
@@ -2798,22 +2556,22 @@ impl PosthazeApp {
                                 .h_full()
                                 .px_3()
                                 .border_r_1()
-                                .border_color(graphite_border())
+                                .border_color(chrome_border)
                                 .flex()
                                 .items_center()
                                 .gap_2()
-                                .font_family(MONO_FONT)
+                                .font_family(mono)
                                 .text_size(TYPE_HEADER)
-                                .text_color(silver_muted())
-                                .child(grid_status_dot(
-                                    if active_slots > 0 {
-                                        selenium_amber()
+                                .text_color(chrome_muted)
+                                .child(
+                                    GridStatusDot::new(if active_slots > 0 {
+                                        accent
                                     } else {
-                                        graphite_border()
-                                    },
-                                    6.0,
-                                    false,
-                                ))
+                                        chrome_border
+                                    })
+                                    .size(6.0)
+                                    .round(false),
+                                )
                                 .child(if active_slots > 0 {
                                     format!(
                                         "Active {active_slots}/{} · {}",
@@ -2839,7 +2597,9 @@ impl Drop for PosthazeApp {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_forced_mica_polarity, resolve_active_theme_selection};
+    use chronophoto_ui::platform::is_forced_mica_polarity;
+
+    use super::resolve_active_theme_selection;
 
     #[test]
     fn is_forced_mica_polarity_identifies_forced_presets_only() {
