@@ -3,9 +3,18 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use chronophoto_ui::components::{
+    BadgeTone, CellBorder, GridBadge, GridCellButton, GridCheckOptionRow, GridCompactInputRow,
+    GridInputBox, GridKvRow, GridModalFooter, GridProgressTrack, GridStatusDot, GridTone,
+    ModalBackdrop, ModalPlate,
+};
+use chronophoto_ui::theme::ChronoAppExt;
+use chronophoto_ui::tokens::{
+    RADIUS_BADGE, RADIUS_CONTROL, TYPE_BODY, TYPE_HEADING, TYPE_MICRO,
+};
 use gpui_kit::assets::IconName;
-use gpui_kit::component::input::{Input, InputState};
-use gpui_kit::component::Icon;
+use gpui_kit::component::input::InputState;
+use gpui_kit::component::{Icon, Theme};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use posthaze_engine::{
@@ -15,10 +24,6 @@ use posthaze_engine::{
 
 use crate::curl_parser::mask_header_summary;
 use crate::errors::describe_error;
-use crate::grid_cells::{
-    CellBorder, GridTone, grid_cell_button, grid_kv_row_with_bg, grid_modal_footer,
-};
-use crate::theme::*;
 use crate::view_model::format_bytes;
 
 /// Action dispatched from the duplicate-URL banner inside Pre-Flight.
@@ -183,6 +188,22 @@ where
     F11: Fn(&mut Window, &mut App) + 'static,
     F12: Fn(String, &mut Window, &mut App) + Clone + 'static,
 {
+    let palette = cx.chrono().palette;
+    let chrome_bg = palette.chrome_bg.hsla();
+    let chrome_elevated = palette.chrome_elevated.hsla();
+    let chrome_border = palette.chrome_border.hsla();
+    let chrome_text = palette.chrome_text.hsla();
+    let chrome_muted = palette.chrome_muted.hsla();
+    let surface_bg = palette.surface_bg.hsla();
+    let surface_hover = palette.surface_hover.hsla();
+    let input_bg = palette.input_bg.hsla();
+    let track_bg = palette.track_bg.hsla();
+    let accent = palette.accent.hsla();
+    let info_color = palette.info.hsla();
+    let success = palette.success.hsla();
+    let danger = palette.danger.hsla();
+    let mono = Theme::global(cx).mono_font_family.clone();
+
     match state {
         PreflightModalState::Probing { url, headers } => div()
             .w_full()
@@ -194,13 +215,13 @@ where
                 div()
                     .w_full()
                     .h(px(3.0))
-                    .bg(byte_track_bg())
+                    .bg(track_bg)
                     .overflow_hidden()
                     .child(
                         div()
                             .w(px(120.0))
                             .h_full()
-                            .bg(selenium_amber())
+                            .bg(accent)
                             .with_animation(
                                 "preflight-shutter-sweep",
                                 Animation::new(Duration::from_millis(1050))
@@ -216,7 +237,7 @@ where
                     .flex_1()
                     .min_h_0()
                     .p_3()
-                    .bg(paper_bg())
+                    .bg(surface_bg)
                     .flex()
                     .flex_col()
                     .gap_2()
@@ -230,7 +251,7 @@ where
                                     .text_size(px(14.0))
                                     .line_height(px(18.0))
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(silver_text())
+                                    .text_color(chrome_text)
                                     .child("Probing target"),
                             )
                             .child(
@@ -245,7 +266,7 @@ where
                                             .child(
                                                 Icon::new(IconName::LoaderCircle)
                                                     .size(px(14.0))
-                                                    .text_color(selenium_amber()),
+                                                    .text_color(accent),
                                             )
                                             .with_animation(
                                                 "preflight-probing-pulse",
@@ -257,45 +278,45 @@ where
                                     )
                                     .child(
                                         div()
-                                            .font_family(MONO_FONT)
+                                            .font_family(mono.clone())
                                             .text_size(TYPE_MICRO)
-                                            .text_color(selenium_amber())
+                                            .text_color(accent)
                                             .child("HEAD / RANGE"),
                                     ),
                             ),
                     )
                     .child(
                         div()
-                            .font_family(MONO_FONT)
+                            .font_family(mono.clone())
                             .text_size(TYPE_MICRO)
                             .line_height(px(15.0))
-                            .text_color(silver_muted())
+                            .text_color(chrome_muted)
                             .truncate()
                             .child(url.clone()),
                     )
                     .when(!headers.is_empty(), |el| {
                         el.child(
                             div()
-                                .font_family(MONO_FONT)
+                                .font_family(mono)
                                 .text_size(TYPE_MICRO)
-                                .text_color(silver_muted())
+                                .text_color(chrome_muted)
                                 .child(format!("Sending {} custom header(s)", headers.len())),
                         )
                     }),
             )
             .child(
-                grid_modal_footer(GridTone::Graphite)
-                    .bg(graphite_bg())
-                    .child(grid_cell_button(
-                        "probe-cancel",
-                        Some(IconName::X),
-                        Some("Cancel"),
-                        None,
-                        GridTone::Graphite,
-                        CellBorder::Left,
-                        false,
-                        move |_, window, cx| on_close(window, cx),
-                    )),
+                div().bg(chrome_bg).child(
+                    GridModalFooter::new()
+                        .tone(GridTone::Chrome)
+                        .child(
+                            GridCellButton::new("probe-cancel")
+                                .icon(IconName::X)
+                                .label("Cancel")
+                                .tone(GridTone::Chrome)
+                                .border(CellBorder::Left)
+                                .on_click(move |_, window, cx| on_close(window, cx)),
+                        ),
+                ),
             ),
         PreflightModalState::Error {
             url,
@@ -311,7 +332,7 @@ where
                 .flex_1()
                 .min_h_0()
                 .border_t_2()
-                .border_color(errata_vermilion())
+                .border_color(danger)
                 .flex()
                 .flex_col()
                 .child(
@@ -320,103 +341,99 @@ where
                         .flex_1()
                         .min_h_0()
                         .p_3()
-                        .bg(paper_bg())
+                        .bg(surface_bg)
                         .flex()
                         .flex_col()
                         .gap_2()
                         .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_1p5()
-                        .child(
-                            Icon::new(IconName::TriangleAlert)
-                                .size(px(14.0))
-                                .text_color(errata_vermilion()),
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_1p5()
+                                .child(
+                                    Icon::new(IconName::TriangleAlert)
+                                        .size(px(14.0))
+                                        .text_color(danger),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(14.0))
+                                        .line_height(px(18.0))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(danger)
+                                        .child(diag.headline),
+                                ),
                         )
                         .child(
                             div()
-                                .text_size(px(14.0))
-                                .line_height(px(18.0))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(errata_vermilion())
-                                .child(diag.headline),
-                        ),
+                                .font_family(mono.clone())
+                                .text_size(TYPE_BODY)
+                                .line_height(px(16.0))
+                                .text_color(chrome_text)
+                                .child(diag.detail),
+                        )
+                        .child(
+                            div()
+                                .font_family(mono)
+                                .text_size(TYPE_MICRO)
+                                .line_height(px(14.0))
+                                .text_color(chrome_muted)
+                                .truncate()
+                                .child(url.clone()),
+                        )
+                        .when_some(diag.tip, |el, tip| {
+                            el.child(
+                                div()
+                                    .p_2()
+                                    .bg(chrome_elevated)
+                                    .border_1()
+                                    .border_color(chrome_border)
+                                    .rounded(RADIUS_BADGE)
+                                    .text_size(TYPE_MICRO)
+                                    .line_height(px(14.0))
+                                    .text_color(chrome_muted)
+                                    .child(tip),
+                            )
+                        }),
                 )
                 .child(
-                    div()
-                        .font_family(MONO_FONT)
-                        .text_size(TYPE_BODY)
-                        .line_height(px(16.0))
-                        .text_color(silver_text())
-                        .child(diag.detail),
-                )
-                .child(
-                    div()
-                        .font_family(MONO_FONT)
-                        .text_size(TYPE_MICRO)
-                        .line_height(px(14.0))
-                        .text_color(silver_muted())
-                        .truncate()
-                        .child(url.clone()),
-                )
-                .when_some(diag.tip, |el, tip| {
-                    el.child(
-                        div()
-                            .p_2()
-                            .bg(graphite_elevated())
-                            .border_1()
-                            .border_color(graphite_border())
-                            .rounded(px(3.0))
-                            .text_size(TYPE_MICRO)
-                            .line_height(px(14.0))
-                            .text_color(silver_muted())
-                            .child(tip),
-                    )
-                }),
-                )
-                .child(
-                    grid_modal_footer(GridTone::Graphite)
-                        .bg(graphite_bg())
-                        .child(grid_cell_button(
-                            "probe-edit",
-                            Some(IconName::Clipboard),
-                            Some("Edit URL"),
-                            None,
-                            GridTone::Graphite,
-                            CellBorder::Left,
-                            false,
-                            move |_, window, cx| {
-                                on_edit_url(url_edit.clone(), window, cx);
-                            },
-                        ))
-                        .child(grid_cell_button(
-                            "probe-close",
-                            Some(IconName::X),
-                            Some("CLOSE"),
-                            None,
-                            GridTone::Graphite,
-                            CellBorder::Left,
-                            false,
-                            move |_, window, cx| on_close(window, cx),
-                        ))
-                        .child(grid_cell_button(
-                            "probe-retry",
-                            Some(IconName::RefreshCw),
-                            Some("RETRY"),
-                            None,
-                            GridTone::Primary,
-                            CellBorder::Left,
-                            false,
-                            move |_, window, cx| {
-                                on_retry(
-                                    url_retry.clone(),
-                                    headers_retry.clone(),
-                                    window,
-                                    cx,
-                                );
-                            },
-                        )),
+                    div().bg(chrome_bg).child(
+                        GridModalFooter::new()
+                            .tone(GridTone::Chrome)
+                            .child(
+                                GridCellButton::new("probe-edit")
+                                    .icon(IconName::Clipboard)
+                                    .label("Edit URL")
+                                    .tone(GridTone::Chrome)
+                                    .border(CellBorder::Left)
+                                    .on_click(move |_, window, cx| {
+                                        on_edit_url(url_edit.clone(), window, cx);
+                                    }),
+                            )
+                            .child(
+                                GridCellButton::new("probe-close")
+                                    .icon(IconName::X)
+                                    .label("CLOSE")
+                                    .tone(GridTone::Chrome)
+                                    .border(CellBorder::Left)
+                                    .on_click(move |_, window, cx| on_close(window, cx)),
+                            )
+                            .child(
+                                GridCellButton::new("probe-retry")
+                                    .icon(IconName::RefreshCw)
+                                    .label("RETRY")
+                                    .tone(GridTone::Primary)
+                                    .border(CellBorder::Left)
+                                    .on_click(move |_, window, cx| {
+                                        on_retry(
+                                            url_retry.clone(),
+                                            headers_retry.clone(),
+                                            window,
+                                            cx,
+                                        );
+                                    }),
+                            ),
+                    ),
                 )
         }
         PreflightModalState::Resolved {
@@ -506,7 +523,7 @@ where
                         .min_h_0()
                         .px_4()
                         .py_3()
-                        .bg(paper_bg())
+                        .bg(surface_bg)
                         .flex()
                         .flex_col()
                 .when(*active_tab == PreflightTab::General, |el| {
@@ -527,35 +544,23 @@ where
                                             .text_size(px(14.0))
                                             .line_height(px(18.0))
                                             .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(silver_text())
+                                            .text_color(chrome_text)
                                             .child("Add Download"),
                                     )
                                     .child(
-                                        div()
-                                            .px_1p5()
-                                            .py_0p5()
-                                            .rounded(px(3.0))
-                                            .bg(graphite_elevated())
-                                            .border_1()
-                                            .border_color(graphite_border())
-                                            .font_family(MONO_FONT)
-                                            .text_size(TYPE_MICRO)
-                                            .line_height(px(13.0))
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .text_color(if info.supports_ranges {
-                                                silver_text()
-                                            } else {
-                                                silver_muted()
-                                            })
-                                            .child(proto_label),
+                                        GridBadge::new(proto_label).tone(if info.supports_ranges {
+                                            BadgeTone::Neutral
+                                        } else {
+                                            BadgeTone::Muted
+                                        }),
                                     ),
                             )
                             .child(
                                 div()
-                                    .font_family(MONO_FONT)
+                                    .font_family(mono.clone())
                                     .text_size(TYPE_MICRO)
                                     .line_height(px(14.0))
-                                    .text_color(silver_muted())
+                                    .text_color(chrome_muted)
                                     .truncate()
                                     .child(info.final_url.clone()),
                             ),
@@ -575,24 +580,24 @@ where
                                         .h_full()
                                         .px_2p5()
                                         .border_l_1()
-                                        .border_color(graphite_border())
+                                        .border_color(chrome_border)
                                         .flex()
                                         .items_center()
                                         .justify_center()
-                                        .font_family(MONO_FONT)
+                                        .font_family(mono.clone())
                                         .text_size(TYPE_MICRO)
                                         .font_weight(FontWeight::MEDIUM)
                                         .cursor_pointer()
                                         .when(ext_is_locked && ext_has_value, |el| {
-                                            el.bg(graphite_elevated())
-                                                .text_color(selenium_amber())
-                                                .hover(|s| s.bg(paper_hover()))
+                                            el.bg(chrome_elevated)
+                                                .text_color(accent)
+                                                .hover(move |s| s.bg(surface_hover))
                                         })
                                         .when(!(ext_is_locked && ext_has_value), |el| {
-                                            el.bg(graphite_bg())
-                                                .text_color(silver_muted())
-                                                .hover(|s| {
-                                                    s.bg(paper_hover()).text_color(silver_text())
+                                            el.bg(chrome_bg)
+                                                .text_color(chrome_muted)
+                                                .hover(move |s| {
+                                                    s.bg(surface_hover).text_color(chrome_text)
                                                 })
                                         })
                                         .tooltip(move |window, cx| {
@@ -614,9 +619,9 @@ where
                                             .id("pf-category-row")
                                             .h(px(30.0))
                                             .w_full()
-                                            .bg(input_bg())
+                                            .bg(input_bg)
                                             .border_1()
-                                            .border_color(graphite_border())
+                                            .border_color(chrome_border)
                                             .flex()
                                             .items_center()
                                             .overflow_hidden()
@@ -626,14 +631,14 @@ where
                                                     .flex_shrink_0()
                                                     .h_full()
                                                     .px_2()
-                                                    .bg(graphite_elevated())
+                                                    .bg(chrome_elevated)
                                                     .border_r_1()
-                                                    .border_color(graphite_border())
+                                                    .border_color(chrome_border)
                                                     .flex()
                                                     .items_center()
-                                                    .font_family(MONO_FONT)
+                                                    .font_family(mono.clone())
                                                     .text_size(TYPE_MICRO)
-                                                    .text_color(silver_muted())
+                                                    .text_color(chrome_muted)
                                                     .child("CATEGORY"),
                                             )
                                             .child(
@@ -648,7 +653,7 @@ where
                                                     .justify_between()
                                                     .gap_2()
                                                     .cursor_pointer()
-                                                    .hover(|s| s.bg(paper_hover()))
+                                                    .hover(move |s| s.bg(surface_hover))
                                                     .on_click(move |_, window, cx| {
                                                         on_toggle_category_dropdown(window, cx)
                                                     })
@@ -662,22 +667,14 @@ where
                                                                 div()
                                                                     .text_size(TYPE_BODY)
                                                                     .font_weight(FontWeight::MEDIUM)
-                                                                    .text_color(silver_text())
+                                                                    .text_color(chrome_text)
                                                                     .truncate()
                                                                     .child(active_cat_name),
                                                             )
                                                             .when(is_auto_matched, |el| {
                                                                 el.child(
-                                                                    div()
-                                                                        .px_1()
-                                                                        .rounded(px(2.0))
-                                                                        .bg(graphite_elevated())
-                                                                        .border_1()
-                                                                        .border_color(graphite_border())
-                                                                        .font_family(MONO_FONT)
-                                                                        .text_size(px(9.5))
-                                                                        .text_color(selenium_amber())
-                                                                        .child("AUTO"),
+                                                                    GridBadge::new("AUTO")
+                                                                        .tone(BadgeTone::Accent),
                                                                 )
                                                             }),
                                                     )
@@ -688,7 +685,7 @@ where
                                                             IconName::ChevronDown
                                                         })
                                                         .size(px(13.0))
-                                                        .text_color(silver_muted()),
+                                                        .text_color(chrome_muted),
                                                     ),
                                             ),
                                     )
@@ -697,6 +694,7 @@ where
                                             categories,
                                             selected_category_id,
                                             default_dir.as_path(),
+                                            cx,
                                             on_pick_category.clone(),
                                         ))
                                     }),
@@ -714,32 +712,32 @@ where
                                                 .h_full()
                                                 .flex()
                                                 .items_center()
-                                                .child(grid_cell_button(
-                                                    "pf-dir-dropdown",
-                                                    Some(if *dir_dropdown_open {
-                                                        IconName::ChevronUp
-                                                    } else {
-                                                        IconName::ChevronDown
-                                                    }),
-                                                    None,
-                                                    Some("Choose default or recent save folder"),
-                                                    GridTone::Graphite,
-                                                    CellBorder::Left,
-                                                    true,
-                                                    move |_, window, cx| {
-                                                        on_toggle_dir_dropdown(window, cx)
-                                                    },
-                                                ))
-                                                .child(grid_cell_button(
-                                                    "pf-browse-dir",
-                                                    Some(IconName::FolderOpen),
-                                                    None,
-                                                    Some("Choose another save folder"),
-                                                    GridTone::Graphite,
-                                                    CellBorder::Left,
-                                                    true,
-                                                    move |_, window, cx| on_browse_dir(window, cx),
-                                                ))
+                                                .child(
+                                                    GridCellButton::new("pf-dir-dropdown")
+                                                        .icon(if *dir_dropdown_open {
+                                                            IconName::ChevronUp
+                                                        } else {
+                                                            IconName::ChevronDown
+                                                        })
+                                                        .tooltip("Choose default or recent save folder")
+                                                        .tone(GridTone::Chrome)
+                                                        .border(CellBorder::Left)
+                                                        .compact(true)
+                                                        .on_click(move |_, window, cx| {
+                                                            on_toggle_dir_dropdown(window, cx)
+                                                        }),
+                                                )
+                                                .child(
+                                                    GridCellButton::new("pf-browse-dir")
+                                                        .icon(IconName::FolderOpen)
+                                                        .tooltip("Choose another save folder")
+                                                        .tone(GridTone::Chrome)
+                                                        .border(CellBorder::Left)
+                                                        .compact(true)
+                                                        .on_click(move |_, window, cx| {
+                                                            on_browse_dir(window, cx)
+                                                        }),
+                                                )
                                                 .into_any_element(),
                                         ),
                                     ))
@@ -749,6 +747,7 @@ where
                                             default_dir.as_path(),
                                             recent_folders,
                                             &current_dir_text,
+                                            cx,
                                             on_pick_recent_dir.clone(),
                                         ))
                                     }),
@@ -788,11 +787,11 @@ where
                             None => format!("Matched queue entry {}", dup.id.as_str()),
                         };
                         let dot_color = if is_failed {
-                            errata_vermilion()
+                            danger
                         } else if is_completed_present {
-                            halide_emerald()
+                            success
                         } else {
-                            selenium_amber()
+                            accent
                         };
                         let on_dup_primary = on_open_duplicate.clone();
                         let on_dup_secondary = on_open_duplicate.clone();
@@ -821,10 +820,10 @@ where
                                 .mt_2()
                                 .px_2p5()
                                 .py_1p5()
-                                .rounded(px(3.0))
-                                .bg(graphite_elevated())
+                                .rounded(RADIUS_BADGE)
+                                .bg(chrome_elevated)
                                 .border_1()
-                                .border_color(graphite_border())
+                                .border_color(chrome_border)
                                 .flex()
                                 .items_center()
                                 .justify_between()
@@ -840,21 +839,14 @@ where
                                         .flex()
                                         .items_center()
                                         .gap_2()
-                                        .child(
-                                            div()
-                                                .w(px(6.0))
-                                                .h(px(6.0))
-                                                .flex_shrink_0()
-                                                .rounded(px(3.0))
-                                                .bg(dot_color),
-                                        )
+                                        .child(GridStatusDot::new(dot_color).size(6.0).round(true))
                                         .child(
                                             div()
                                                 .flex_1()
                                                 .min_w_0()
-                                                .font_family(MONO_FONT)
+                                                .font_family(mono.clone())
                                                 .text_size(TYPE_MICRO)
-                                                .text_color(silver_text())
+                                                .text_color(chrome_text)
                                                 .truncate()
                                                 .child(banner_text),
                                         ),
@@ -867,11 +859,11 @@ where
                                             .px_1p5()
                                             .py_0p5()
                                             .rounded(px(2.0))
-                                            .font_family(MONO_FONT)
+                                            .font_family(mono.clone())
                                             .text_size(TYPE_MICRO)
-                                            .text_color(silver_muted())
+                                            .text_color(chrome_muted)
                                             .cursor_pointer()
-                                            .hover(|s| s.text_color(silver_text()))
+                                            .hover(move |s| s.text_color(chrome_text))
                                             .on_click(move |_, window, cx| {
                                                 on_dup_secondary(
                                                     DuplicateBannerAction::ShowExisting(
@@ -890,16 +882,16 @@ where
                                         .px_2()
                                         .py_0p5()
                                         .rounded(px(2.0))
-                                        .bg(graphite_bg())
+                                        .bg(chrome_bg)
                                         .border_1()
-                                        .border_color(graphite_border())
-                                        .font_family(MONO_FONT)
+                                        .border_color(chrome_border)
+                                        .font_family(mono.clone())
                                         .text_size(TYPE_MICRO)
                                         .font_weight(FontWeight::MEDIUM)
-                                        .text_color(silver_text())
+                                        .text_color(chrome_text)
                                         .cursor_pointer()
-                                        .hover(|s| {
-                                            s.bg(paper_hover()).border_color(selenium_amber())
+                                        .hover(move |s| {
+                                            s.bg(surface_hover).border_color(accent)
                                         })
                                         .on_click(move |_, window, cx| {
                                             on_dup_primary(primary_action.clone(), window, cx);
@@ -927,10 +919,10 @@ where
                                             .flex()
                                             .items_center()
                                             .gap_2()
-                                            .font_family(MONO_FONT)
+                                            .font_family(mono.clone())
                                             .text_size(TYPE_MICRO)
                                             .child(
-                                                div().text_color(silver_text()).child(
+                                                div().text_color(chrome_text).child(
                                                     if info.supports_ranges {
                                                         format!("{segment_count} PARALLEL SEGMENTS")
                                                     } else {
@@ -941,9 +933,9 @@ where
                                             .child(
                                                 div()
                                                     .text_color(if info.supports_ranges {
-                                                        selenium_amber()
+                                                        accent
                                                     } else {
-                                                        silver_muted()
+                                                        chrome_muted
                                                     })
                                                     .child(segment_meta),
                                             ),
@@ -952,72 +944,70 @@ where
                                         div()
                                             .h(px(24.0))
                                             .border_1()
-                                            .border_color(graphite_border())
+                                            .border_color(chrome_border)
                                             .flex()
                                             .items_center()
                                             .when(info.supports_ranges, |el| {
                                                 let dec = on_worker_delta.clone();
-                                                el.child(grid_cell_button(
-                                                    "w-dec",
-                                                    Some(IconName::Minus),
-                                                    None,
-                                                    Some("Decrease workers"),
-                                                    GridTone::Graphite,
-                                                    CellBorder::Right,
-                                                    true,
-                                                    move |_, window, cx| dec(-1, window, cx),
-                                                ))
+                                                el.child(
+                                                    GridCellButton::new("w-dec")
+                                                        .icon(IconName::Minus)
+                                                        .tooltip("Decrease workers")
+                                                        .tone(GridTone::Chrome)
+                                                        .border(CellBorder::Right)
+                                                        .compact(true)
+                                                        .on_click(move |_, window, cx| {
+                                                            dec(-1, window, cx)
+                                                        }),
+                                                )
                                             })
                                             .child(
                                                 div()
                                                     .w(px(28.0))
                                                     .text_center()
-                                                    .font_family(MONO_FONT)
+                                                    .font_family(mono.clone())
                                                     .text_size(TYPE_BODY)
-                                                    .text_color(silver_text())
+                                                    .text_color(chrome_text)
                                                     .child(workers.to_string()),
                                             )
                                             .when(info.supports_ranges, |el| {
-                                                el.child(grid_cell_button(
-                                                    "w-inc",
-                                                    Some(IconName::Plus),
-                                                    None,
-                                                    Some("Increase workers"),
-                                                    GridTone::Graphite,
-                                                    CellBorder::Left,
-                                                    true,
-                                                    move |_, window, cx| {
-                                                        on_worker_delta(1, window, cx)
-                                                    },
-                                                ))
+                                                el.child(
+                                                    GridCellButton::new("w-inc")
+                                                        .icon(IconName::Plus)
+                                                        .tooltip("Increase workers")
+                                                        .tone(GridTone::Chrome)
+                                                        .border(CellBorder::Left)
+                                                        .compact(true)
+                                                        .on_click(move |_, window, cx| {
+                                                            on_worker_delta(1, window, cx)
+                                                        }),
+                                                )
                                             }),
                                     ),
                             )
                             .child(
                                 div()
-                                    .w_full()
-                                    .h(px(8.0))
-                                    .bg(byte_track_bg())
-                                    .border_1()
-                                    .border_color(graphite_border())
-                                    .flex()
-                                    .items_stretch()
-                                    .children((0..segment_count).map(|idx| {
-                                        let fill = if !info.supports_ranges {
-                                            silver_muted().opacity(0.45)
-                                        } else if idx == 0 {
-                                            selenium_amber()
-                                        } else {
-                                            cyanotype_blue().opacity(0.85)
-                                        };
-                                        div()
-                                            .flex_1()
-                                            .h_full()
-                                            .bg(fill)
-                                            .when(idx > 0, |el| {
-                                                el.border_l_1().border_color(byte_track_bg())
-                                            })
-                                    }))
+                                    .child(
+                                        GridProgressTrack::new()
+                                            .height(px(8.0))
+                                            .border_color(chrome_border)
+                                            .children((0..segment_count).map(|idx| {
+                                                let fill = if !info.supports_ranges {
+                                                    chrome_muted.opacity(0.45)
+                                                } else if idx == 0 {
+                                                    accent
+                                                } else {
+                                                    info_color.opacity(0.85)
+                                                };
+                                                div()
+                                                    .flex_1()
+                                                    .h_full()
+                                                    .bg(fill)
+                                                    .when(idx > 0, |el| {
+                                                        el.border_l_1().border_color(track_bg)
+                                                    })
+                                            })),
+                                    )
                                     .with_animation(
                                         "preflight-interval-reveal",
                                         Animation::new(Duration::from_millis(180))
@@ -1034,31 +1024,22 @@ where
                             .justify_between()
                             .child(
                                 div()
-                                    .font_family(MONO_FONT)
+                                    .font_family(mono)
                                     .text_size(TYPE_MICRO)
-                                    .text_color(silver_muted())
+                                    .text_color(chrome_muted)
                                     .child("REQUEST HEADERS"),
                             )
                             .when_some(header_summary, |el, summary| {
                                 el.child(
                                     div()
                                         .id("preflight-headers-badge")
-                                        .px_1p5()
-                                        .py_0p5()
-                                        .rounded(px(3.0))
-                                        .bg(graphite_elevated())
-                                        .border_1()
-                                        .border_color(graphite_border())
-                                        .font_family(MONO_FONT)
-                                        .text_size(TYPE_MICRO)
-                                        .text_color(selenium_amber())
                                         .tooltip(move |window, cx| {
                                             gpui_kit::component::tooltip::Tooltip::new(
                                                 summary.clone(),
                                             )
                                             .build(window, cx)
                                         })
-                                        .child("cURL"),
+                                        .child(GridBadge::new("cURL").tone(BadgeTone::Accent)),
                                 )
                             }),
                     )
@@ -1067,46 +1048,43 @@ where
                     .child(compact_input_row("AGENT", user_agent_input))
                 }),
                 )
-                .child(div().w_full().h(px(1.0)).bg(graphite_border()))
+                .child(div().w_full().h(px(1.0)).bg(chrome_border))
                 .child(
                     div()
                         .h(px(34.0))
                         .w_full()
-                        .bg(graphite_bg())
+                        .bg(chrome_bg)
                         .flex()
                         .justify_end()
-                        .child(grid_cell_button(
-                            "pf-cancel",
-                            Some(IconName::X),
-                            Some("Cancel"),
-                            None,
-                            GridTone::Graphite,
-                            CellBorder::Left,
-                            false,
-                            move |_, window, cx| on_close(window, cx),
-                        ))
+                        .child(
+                            GridCellButton::new("pf-cancel")
+                                .icon(IconName::X)
+                                .label("Cancel")
+                                .tone(GridTone::Chrome)
+                                .border(CellBorder::Left)
+                                .on_click(move |_, window, cx| on_close(window, cx)),
+                        )
                         .when(show_add_paused, |el| {
-                            el.child(grid_cell_button(
-                                "pf-queue",
-                                Some(IconName::Clock),
-                                Some("ADD PAUSED"),
-                                Some("Save to list in Paused state without starting transfer"),
-                                GridTone::Graphite,
-                                CellBorder::Left,
-                                false,
-                                move |_, window, cx| confirm_queue(false, window, cx),
-                            ))
+                            el.child(
+                                GridCellButton::new("pf-queue")
+                                    .icon(IconName::Clock)
+                                    .label("ADD PAUSED")
+                                    .tooltip(
+                                        "Save to list in Paused state without starting transfer",
+                                    )
+                                    .tone(GridTone::Chrome)
+                                    .border(CellBorder::Left)
+                                    .on_click(move |_, window, cx| confirm_queue(false, window, cx)),
+                            )
                         })
-                        .child(grid_cell_button(
-                            "pf-now",
-                            Some(IconName::Download),
-                            Some("DOWNLOAD NOW"),
-                            None,
-                            GridTone::Primary,
-                            CellBorder::Left,
-                            false,
-                            move |_, window, cx| confirm_now(true, window, cx),
-                        )),
+                        .child(
+                            GridCellButton::new("pf-now")
+                                .icon(IconName::Download)
+                                .label("DOWNLOAD NOW")
+                                .tone(GridTone::Primary)
+                                .border(CellBorder::Left)
+                                .on_click(move |_, window, cx| confirm_now(true, window, cx)),
+                        ),
                 )
         }
     }
@@ -1134,6 +1112,17 @@ where
     F6: Fn(PathBuf, &mut Window, &mut App) + Clone + 'static,
     F7: Fn(&mut Window, &mut App) + Clone + 'static,
 {
+    let palette = cx.chrono().palette;
+    let chrome_elevated = palette.chrome_elevated.hsla();
+    let chrome_border = palette.chrome_border.hsla();
+    let chrome_text = palette.chrome_text.hsla();
+    let chrome_muted = palette.chrome_muted.hsla();
+    let surface_header_bg = palette.surface_header_bg.hsla();
+    let accent = palette.accent.hsla();
+    let success = palette.success.hsla();
+    let danger = palette.danger.hsla();
+    let mono = Theme::global(cx).mono_font_family.clone();
+
     let on_backdrop_close = on_cancel.clone();
     let card = match state {
         FileOpModalState::Rename { input, error, .. } => file_op_form_card(
@@ -1144,6 +1133,7 @@ where
             px(460.0),
             input,
             error.as_deref(),
+            cx,
             on_cancel,
             on_confirm,
         ),
@@ -1156,20 +1146,39 @@ where
             ..
         } => {
             let current_dir_text = input.read(cx).value();
-            let body = div()
+            let footer = GridModalFooter::new()
+                .tone(GridTone::Chrome)
+                .child(
+                    GridCellButton::new("fileop-cancel")
+                        .icon(IconName::X)
+                        .label("CANCEL")
+                        .tone(GridTone::Chrome)
+                        .border(CellBorder::Left)
+                        .on_click(move |_, window, cx| on_cancel(window, cx)),
+                )
+                .child(
+                    GridCellButton::new("fileop-save")
+                        .icon(IconName::FolderOpen)
+                        .label("Move File")
+                        .tone(GridTone::Primary)
+                        .border(CellBorder::Left)
+                        .on_click(move |_, window, cx| on_confirm(window, cx)),
+                );
+            ModalPlate::new(px(520.0))
+                .border_color(chrome_border)
                 .child(
                     div()
                         .text_size(TYPE_HEADING)
                         .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(silver_text())
+                        .text_color(chrome_text)
                         .child("Move Completed File"),
                 )
                 .when_some(error.as_deref().map(str::to_string), |el, err| {
                     el.child(
                         div()
-                            .font_family(MONO_FONT)
+                            .font_family(mono.clone())
                             .text_size(TYPE_MICRO)
-                            .text_color(errata_vermilion())
+                            .text_color(danger)
                             .child(err),
                     )
                 })
@@ -1186,30 +1195,32 @@ where
                                     .h_full()
                                     .flex()
                                     .items_center()
-                                    .child(grid_cell_button(
-                                        "move-dir-dropdown",
-                                        Some(if *dropdown_open {
-                                            IconName::ChevronUp
-                                        } else {
-                                            IconName::ChevronDown
-                                        }),
-                                        None,
-                                        Some("Choose default or recent save folder"),
-                                        GridTone::Graphite,
-                                        CellBorder::Left,
-                                        true,
-                                        move |_, window, cx| on_toggle_move_dropdown(window, cx),
-                                    ))
-                                    .child(grid_cell_button(
-                                        "move-browse-dir",
-                                        Some(IconName::FolderOpen),
-                                        None,
-                                        Some("Choose another save folder"),
-                                        GridTone::Graphite,
-                                        CellBorder::Left,
-                                        true,
-                                        move |_, window, cx| on_browse_move_dir(window, cx),
-                                    ))
+                                    .child(
+                                        GridCellButton::new("move-dir-dropdown")
+                                            .icon(if *dropdown_open {
+                                                IconName::ChevronUp
+                                            } else {
+                                                IconName::ChevronDown
+                                            })
+                                            .tooltip("Choose default or recent save folder")
+                                            .tone(GridTone::Chrome)
+                                            .border(CellBorder::Left)
+                                            .compact(true)
+                                            .on_click(move |_, window, cx| {
+                                                on_toggle_move_dropdown(window, cx)
+                                            }),
+                                    )
+                                    .child(
+                                        GridCellButton::new("move-browse-dir")
+                                            .icon(IconName::FolderOpen)
+                                            .tooltip("Choose another save folder")
+                                            .tone(GridTone::Chrome)
+                                            .border(CellBorder::Left)
+                                            .compact(true)
+                                            .on_click(move |_, window, cx| {
+                                                on_browse_move_dir(window, cx)
+                                            }),
+                                    )
                                     .into_any_element(),
                             ),
                         ))
@@ -1219,32 +1230,12 @@ where
                                 default_dir,
                                 recent_folders,
                                 &current_dir_text,
+                                cx,
                                 on_pick_move_dir,
                             ))
                         }),
-                );
-            let footer = grid_modal_footer(GridTone::Graphite)
-                .child(grid_cell_button(
-                    "fileop-cancel",
-                    Some(IconName::X),
-                    Some("CANCEL"),
-                    None,
-                    GridTone::Graphite,
-                    CellBorder::Left,
-                    false,
-                    move |_, window, cx| on_cancel(window, cx),
-                ))
-                .child(grid_cell_button(
-                    "fileop-save",
-                    Some(IconName::FolderOpen),
-                    Some("Move File"),
-                    None,
-                    GridTone::Primary,
-                    CellBorder::Left,
-                    false,
-                    move |_, window, cx| on_confirm(window, cx),
-                ));
-            modal_plate_card(px(520.0), graphite_border(), body, footer)
+                )
+                .footer(footer)
         }
         FileOpModalState::Integrity {
             filename,
@@ -1278,10 +1269,10 @@ where
                 let on_copy = on_copy_hash.clone();
                 let value_for_copy = value.clone();
                 div()
-                    .bg(table_header_bg())
+                    .bg(surface_header_bg)
                     .border_1()
-                    .border_color(graphite_border())
-                    .rounded(px(4.0))
+                    .border_color(chrome_border)
+                    .rounded(RADIUS_CONTROL)
                     .overflow_hidden()
                     .flex()
                     .items_stretch()
@@ -1296,35 +1287,42 @@ where
                             .gap_0p5()
                             .child(
                                 div()
-                                    .font_family(MONO_FONT)
+                                    .font_family(mono.clone())
                                     .text_size(TYPE_MICRO)
-                                    .text_color(silver_muted())
+                                    .text_color(chrome_muted)
                                     .child(label),
                             )
                             .child(
                                 div()
-                                    .font_family(MONO_FONT)
+                                    .font_family(mono.clone())
                                     .text_size(TYPE_MICRO)
-                                    .text_color(halide_emerald())
+                                    .text_color(success)
                                     .truncate()
                                     .child(value),
                             ),
                     )
-                    .child(grid_cell_button(
-                        id_key,
-                        Some(IconName::Copy),
-                        Some("COPY"),
-                        None,
-                        GridTone::Graphite,
-                        CellBorder::Left,
-                        false,
-                        move |_, window, cx| {
-                            on_copy(label, value_for_copy.clone(), window, cx);
-                        },
-                    ))
+                    .child(
+                        GridCellButton::new(id_key)
+                            .icon(IconName::Copy)
+                            .label("COPY")
+                            .tone(GridTone::Chrome)
+                            .border(CellBorder::Left)
+                            .on_click(move |_, window, cx| {
+                                on_copy(label, value_for_copy.clone(), window, cx);
+                            }),
+                    )
             };
 
-            let body = div()
+            let footer = GridModalFooter::new().tone(GridTone::Chrome).child(
+                GridCellButton::new("hash-close")
+                    .icon(IconName::Check)
+                    .label("CLOSE")
+                    .tone(GridTone::Primary)
+                    .border(CellBorder::Left)
+                    .on_click(move |_, window, cx| on_cancel(window, cx)),
+            );
+            ModalPlate::new(px(580.0))
+                .border_color(chrome_border)
                 .child(
                     div()
                         .flex()
@@ -1334,39 +1332,22 @@ where
                             div()
                                 .text_size(TYPE_HEADING)
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(silver_text())
+                                .text_color(chrome_text)
                                 .child("Verify Checksum / File Integrity"),
                         )
                         .when_some(verdict, |el, (matched, text)| {
-                            el.child(
-                                div()
-                                    .px_2()
-                                    .py_0p5()
-                                    .rounded(px(3.0))
-                                    .bg(graphite_elevated())
-                                    .border_1()
-                                    .border_color(if matched {
-                                        halide_emerald()
-                                    } else {
-                                        errata_vermilion()
-                                    })
-                                    .font_family(MONO_FONT)
-                                    .text_size(TYPE_MICRO)
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(if matched {
-                                        halide_emerald()
-                                    } else {
-                                        errata_vermilion()
-                                    })
-                                    .child(text),
-                            )
+                            el.child(GridBadge::new(text).tone(if matched {
+                                BadgeTone::Success
+                            } else {
+                                BadgeTone::Danger
+                            }))
                         }),
                 )
                 .child(
                     div()
-                        .font_family(MONO_FONT)
+                        .font_family(mono.clone())
                         .text_size(TYPE_MICRO)
-                        .text_color(silver_muted())
+                        .text_color(chrome_muted)
                         .truncate()
                         .child(filename.clone()),
                 )
@@ -1374,25 +1355,22 @@ where
                     "EXPECT",
                     expected_input,
                     Some(
-                        grid_cell_button(
-                            "hash-paste-expected",
-                            Some(IconName::Clipboard),
-                            Some("PASTE"),
-                            Some("Paste expected SHA-256 / SHA-512 / MD5 / CRC32 / BLAKE3 hash"),
-                            GridTone::Graphite,
-                            CellBorder::Left,
-                            false,
-                            move |_, window, cx| on_paste_expected(window, cx),
-                        )
-                        .into_any_element(),
+                        GridCellButton::new("hash-paste-expected")
+                            .icon(IconName::Clipboard)
+                            .label("PASTE")
+                            .tooltip("Paste expected SHA-256 / SHA-512 / MD5 / CRC32 / BLAKE3 hash")
+                            .tone(GridTone::Chrome)
+                            .border(CellBorder::Left)
+                            .on_click(move |_, window, cx| on_paste_expected(window, cx))
+                            .into_any_element(),
                     ),
                 ))
                 .when_some(error.clone(), |el, err| {
                     el.child(
                         div()
-                            .font_family(MONO_FONT)
+                            .font_family(mono.clone())
                             .text_size(TYPE_MICRO)
-                            .text_color(errata_vermilion())
+                            .text_color(danger)
                             .child(err),
                     )
                 })
@@ -1412,36 +1390,30 @@ where
                     el.child(
                         div()
                             .p_2p5()
-                            .bg(table_header_bg())
+                            .bg(surface_header_bg)
                             .border_1()
-                            .border_color(graphite_border())
-                            .rounded(px(4.0))
-                            .font_family(MONO_FONT)
+                            .border_color(chrome_border)
+                            .rounded(RADIUS_CONTROL)
+                            .font_family(mono)
                             .text_size(TYPE_MICRO)
-                            .text_color(selenium_amber())
+                            .text_color(accent)
                             .child("Computing SHA-256, BLAKE3, SHA-512, MD5, and CRC32 digests..."),
                     )
-                });
-            let footer = grid_modal_footer(GridTone::Graphite).child(grid_cell_button(
-                "hash-close",
-                Some(IconName::Check),
-                Some("CLOSE"),
-                None,
-                GridTone::Primary,
-                CellBorder::Left,
-                false,
-                move |_, window, cx| on_cancel(window, cx),
-            ));
-            modal_plate_card(px(580.0), graphite_border(), body, footer)
+                })
+                .footer(footer)
         }
     };
 
-    modal_backdrop(card, on_backdrop_close)
+    let _ = chrome_elevated;
+    ModalBackdrop::new(card)
+        .on_close(move |window, cx| on_backdrop_close(window, cx))
+        .into_any_element()
 }
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn render_confirm_modal<F1, F2, F3, F4>(
     action: &ConfirmAction,
+    cx: &App,
     on_cancel: F1,
     on_confirm: F2,
     on_change_file_mode: F3,
@@ -1586,6 +1558,17 @@ where
         | ConfirmAction::DuplicateOngoing { .. } => (None, false),
     };
 
+    let palette = cx.chrono().palette;
+    let chrome_elevated = palette.chrome_elevated.hsla();
+    let chrome_border = palette.chrome_border.hsla();
+    let chrome_text = palette.chrome_text.hsla();
+    let chrome_muted = palette.chrome_muted.hsla();
+    let accent = palette.accent.hsla();
+    let accent_fg = palette.accent_foreground.hsla();
+    let danger = palette.danger.hsla();
+    let danger_fg = palette.danger_foreground.hsla();
+    let mono = Theme::global(cx).mono_font_family.clone();
+
     let is_duplicate_ongoing = matches!(action, ConfirmAction::DuplicateOngoing { .. });
     let (accent_color, confirm_tone) = match action {
         ConfirmAction::DeleteDownload {
@@ -1596,7 +1579,7 @@ where
             file_mode: Some(DeleteFileMode::Permanent),
             ..
         }
-        | ConfirmAction::OverwriteCollision { .. } => (errata_vermilion(), GridTone::Danger),
+        | ConfirmAction::OverwriteCollision { .. } => (danger, GridTone::Danger),
         ConfirmAction::DeleteDownload {
             file_mode: Some(DeleteFileMode::RecycleBin),
             ..
@@ -1605,14 +1588,49 @@ where
             file_mode: Some(DeleteFileMode::RecycleBin),
             ..
         }
-        | ConfirmAction::DuplicateOngoing { .. } => (selenium_amber(), GridTone::Primary),
+        | ConfirmAction::DuplicateOngoing { .. } => (accent, GridTone::Primary),
         ConfirmAction::DeleteDownload { .. }
         | ConfirmAction::DeleteMultiple { .. }
-        | ConfirmAction::ClearCompleted { .. } => (graphite_border(), GridTone::Danger),
+        | ConfirmAction::ClearCompleted { .. } => (chrome_border, GridTone::Danger),
     };
 
     let on_backdrop_close = on_cancel.clone();
-    let body = div()
+    let footer = GridModalFooter::new()
+        .tone(GridTone::Chrome)
+        .child(
+            GridCellButton::new("confirm-cancel")
+                .icon(IconName::X)
+                .label("CANCEL")
+                .tone(GridTone::Chrome)
+                .border(CellBorder::Left)
+                .on_click(move |_, window, cx| on_cancel(window, cx)),
+        )
+        .when(is_duplicate_ongoing, |footer| {
+            footer.child(
+                GridCellButton::new("confirm-alt")
+                    .icon(IconName::Download)
+                    .label("SEPARATE COPY")
+                    .tooltip("Download a separate copy under an auto-renamed filename")
+                    .tone(GridTone::Chrome)
+                    .border(CellBorder::Left)
+                    .on_click(move |_, window, cx| on_alt_confirm(window, cx)),
+            )
+        })
+        .child(
+            GridCellButton::new("confirm-proceed")
+                .icon(if is_duplicate_ongoing {
+                    IconName::ArrowUpRight
+                } else {
+                    IconName::Trash
+                })
+                .label(confirm_label)
+                .tone(confirm_tone)
+                .border(CellBorder::Left)
+                .on_click(move |_, window, cx| on_confirm(window, cx)),
+        );
+
+    let card = ModalPlate::new(px(460.0))
+        .border_color(accent_color)
         .child(
             div()
                 .flex()
@@ -1622,9 +1640,9 @@ where
                     Icon::new(IconName::TriangleAlert)
                         .size(px(16.0))
                         .text_color(if confirm_tone == GridTone::Danger {
-                            errata_vermilion()
+                            danger
                         } else {
-                            selenium_amber()
+                            accent
                         }),
                 )
                 .child(
@@ -1632,7 +1650,7 @@ where
                         .text_size(TYPE_HEADING)
                         .line_height(px(22.0))
                         .font_weight(FontWeight::BOLD)
-                        .text_color(silver_text())
+                        .text_color(chrome_text)
                         .child(title),
                 ),
         )
@@ -1640,14 +1658,14 @@ where
             div()
                 .text_size(TYPE_BODY)
                 .line_height(px(18.0))
-                .text_color(silver_muted())
+                .text_color(chrome_muted)
                 .child(detail),
         )
         .when(show_mode_selector, |el| {
             let mode_chip = |id: &'static str,
                              label: &'static str,
                              target: Option<DeleteFileMode>,
-                             danger: bool| {
+                             is_danger: bool| {
                 let selected = active_mode == target;
                 let cb = on_change_file_mode.clone();
                 div()
@@ -1657,28 +1675,20 @@ where
                     .px_2()
                     .border_1()
                     .border_color(if selected {
-                        if danger {
-                            errata_vermilion()
-                        } else {
-                            selenium_amber()
-                        }
+                        if is_danger { danger } else { accent }
                     } else {
-                        graphite_border()
+                        chrome_border
                     })
                     .bg(if selected {
-                        if danger {
-                            errata_vermilion()
-                        } else {
-                            selenium_amber()
-                        }
+                        if is_danger { danger } else { accent }
                     } else {
-                        graphite_elevated()
+                        chrome_elevated
                     })
-                    .rounded(px(3.0))
+                    .rounded(RADIUS_BADGE)
                     .flex()
                     .items_center()
                     .justify_center()
-                    .font_family(MONO_FONT)
+                    .font_family(mono.clone())
                     .text_size(TYPE_MICRO)
                     .font_weight(if selected {
                         FontWeight::BOLD
@@ -1686,15 +1696,11 @@ where
                         FontWeight::MEDIUM
                     })
                     .text_color(if selected {
-                        if danger {
-                            gpui_kit::white()
-                        } else {
-                            active_theme().accent_foreground.hsla()
-                        }
-                    } else if danger {
-                        errata_vermilion()
+                        if is_danger { danger_fg } else { accent_fg }
+                    } else if is_danger {
+                        danger
                     } else {
-                        silver_text()
+                        chrome_text
                     })
                     .cursor_pointer()
                     .on_click(move |_, window, cx| cb(target, window, cx))
@@ -1708,9 +1714,9 @@ where
                     .gap_1p5()
                     .child(
                         div()
-                            .font_family(MONO_FONT)
+                            .font_family(mono.clone())
                             .text_size(TYPE_MICRO)
-                            .text_color(silver_muted())
+                            .text_color(chrome_muted)
                             .child("COMPLETED FILE ON DISK"),
                     )
                     .child(
@@ -1733,47 +1739,12 @@ where
                             )),
                     ),
             )
-        });
-    let footer = grid_modal_footer(GridTone::Graphite)
-        .child(grid_cell_button(
-            "confirm-cancel",
-            Some(IconName::X),
-            Some("CANCEL"),
-            None,
-            GridTone::Graphite,
-            CellBorder::Left,
-            false,
-            move |_, window, cx| on_cancel(window, cx),
-        ))
-        .when(is_duplicate_ongoing, |footer| {
-            footer.child(grid_cell_button(
-                "confirm-alt",
-                Some(IconName::Download),
-                Some("SEPARATE COPY"),
-                Some("Download a separate copy under an auto-renamed filename"),
-                GridTone::Graphite,
-                CellBorder::Left,
-                false,
-                move |_, window, cx| on_alt_confirm(window, cx),
-            ))
         })
-        .child(grid_cell_button(
-            "confirm-proceed",
-            Some(if is_duplicate_ongoing {
-                IconName::ArrowUpRight
-            } else {
-                IconName::Trash
-            }),
-            Some(confirm_label),
-            None,
-            confirm_tone,
-            CellBorder::Left,
-            false,
-            move |_, window, cx| on_confirm(window, cx),
-        ));
-    let card = modal_plate_card(px(460.0), accent_color, body, footer);
+        .footer(footer);
 
-    modal_backdrop(card, on_backdrop_close)
+    ModalBackdrop::new(card)
+        .on_close(move |window, cx| on_backdrop_close(window, cx))
+        .into_any_element()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1785,73 +1756,62 @@ fn file_op_form_card<F1, F2>(
     width: Pixels,
     input: &Entity<InputState>,
     error: Option<&str>,
+    cx: &App,
     on_cancel: F1,
     on_confirm: F2,
-) -> Div
+) -> ModalPlate
 where
     F1: Fn(&mut Window, &mut App) + 'static,
     F2: Fn(&mut Window, &mut App) + 'static,
 {
-    let body = div()
+    let palette = cx.chrono().palette;
+    let chrome_border = palette.chrome_border.hsla();
+    let chrome_text = palette.chrome_text.hsla();
+    let danger = palette.danger.hsla();
+    let mono = Theme::global(cx).mono_font_family.clone();
+
+    let footer = GridModalFooter::new()
+        .tone(GridTone::Chrome)
+        .child(
+            GridCellButton::new("fileop-cancel")
+                .icon(IconName::X)
+                .label("CANCEL")
+                .tone(GridTone::Chrome)
+                .border(CellBorder::Left)
+                .on_click(move |_, window, cx| on_cancel(window, cx)),
+        )
+        .child(
+            GridCellButton::new("fileop-save")
+                .icon(confirm_icon)
+                .label(confirm_label)
+                .tone(GridTone::Primary)
+                .border(CellBorder::Left)
+                .on_click(move |_, window, cx| on_confirm(window, cx)),
+        );
+    ModalPlate::new(width)
+        .border_color(chrome_border)
         .child(
             div()
                 .text_size(TYPE_HEADING)
                 .font_weight(FontWeight::SEMIBOLD)
-                .text_color(silver_text())
+                .text_color(chrome_text)
                 .child(title),
         )
         .when_some(error.map(str::to_string), |el, err| {
             el.child(
                 div()
-                    .font_family(MONO_FONT)
+                    .font_family(mono)
                     .text_size(TYPE_MICRO)
-                    .text_color(errata_vermilion())
+                    .text_color(danger)
                     .child(err),
             )
         })
-        .child(labeled_input(input_label, input));
-    let footer = grid_modal_footer(GridTone::Graphite)
-        .child(grid_cell_button(
-            "fileop-cancel",
-            Some(IconName::X),
-            Some("CANCEL"),
-            None,
-            GridTone::Graphite,
-            CellBorder::Left,
-            false,
-            move |_, window, cx| on_cancel(window, cx),
-        ))
-        .child(grid_cell_button(
-            "fileop-save",
-            Some(confirm_icon),
-            Some(confirm_label),
-            None,
-            GridTone::Primary,
-            CellBorder::Left,
-            false,
-            move |_, window, cx| on_confirm(window, cx),
-        ));
-    modal_plate_card(width, graphite_border(), body, footer)
-}
-
-/// Outer plate shell for in-window modals with padded body content and a flush full-bleed footer.
-fn modal_plate_card(width: Pixels, border_color: Hsla, body: Div, footer: Div) -> Div {
-    div()
-        .w(width)
-        .bg(modal_bg())
-        .border_1()
-        .border_color(border_color)
-        .rounded(px(6.0))
-        .shadow_lg()
-        .overflow_hidden()
-        .flex()
-        .flex_col()
-        .child(body.w_full().p_5().flex().flex_col().gap_3())
-        .child(footer.bg(graphite_bg()))
+        .child(labeled_input(input_label, input, cx))
+        .footer(footer)
 }
 
 fn compact_input_row(label: &'static str, state: &Entity<InputState>) -> impl IntoElement {
-    compact_input_row_with_action(label, state, None)
+    GridCompactInputRow::new(label, state)
 }
 
 fn compact_input_row_with_action(
@@ -1859,39 +1819,11 @@ fn compact_input_row_with_action(
     state: &Entity<InputState>,
     trailing_action: Option<AnyElement>,
 ) -> impl IntoElement {
-    div()
-        .w_full()
-        .h(px(30.0))
-        .bg(input_bg())
-        .border_1()
-        .border_color(graphite_border())
-        .flex()
-        .items_center()
-        .child(
-            div()
-                .w(px(68.0))
-                .h_full()
-                .px_2()
-                .bg(graphite_elevated())
-                .border_r_1()
-                .border_color(graphite_border())
-                .flex()
-                .items_center()
-                .font_family(MONO_FONT)
-                .text_size(TYPE_MICRO)
-                .text_color(silver_muted())
-                .child(label),
-        )
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .px_1p5()
-                .font_family(MONO_FONT)
-                .text_size(TYPE_BODY)
-                .child(Input::new(state).appearance(false)),
-        )
-        .when_some(trailing_action, |el, action| el.child(action))
+    let row = GridCompactInputRow::new(label, state);
+    match trailing_action {
+        Some(action) => row.trailing_action(action),
+        None => row,
+    }
 }
 
 pub(crate) fn folder_paths_equal(a: &Path, b: &Path) -> bool {
@@ -1963,21 +1895,28 @@ fn render_category_dropdown_panel<F1>(
     categories: &[DownloadCategory],
     selected_id: &str,
     default_dir: &Path,
+    cx: &App,
     on_pick: F1,
 ) -> AnyElement
 where
     F1: Fn(String, &mut Window, &mut App) + Clone + 'static,
 {
+    let palette = cx.chrono().palette;
+    let popover_bg = palette.popover_bg.hsla();
+    let chrome_border = palette.chrome_border.hsla();
+    let chrome_muted = palette.chrome_muted.hsla();
+    let mono = Theme::global(cx).mono_font_family.clone();
+
     div()
         .id("pf-cat-menu")
         .w_full()
         .max_h(px(158.0))
         .overflow_y_scroll()
-        .bg(context_menu_bg())
+        .bg(popover_bg)
         .border_b_1()
         .border_l_1()
         .border_r_1()
-        .border_color(graphite_border())
+        .border_color(chrome_border)
         .flex()
         .flex_col()
         .children(categories.iter().enumerate().map(|(idx, cat)| {
@@ -1987,64 +1926,21 @@ where
             let resolved_dir = effective_category_dir(cat, default_dir)
                 .to_string_lossy()
                 .to_string();
-            div()
-                .id(("pf-cat-opt", idx))
-                .h(px(26.0))
-                .px_2p5()
-                .flex()
-                .items_center()
-                .justify_between()
-                .gap_2()
-                .cursor_pointer()
-                .bg(if selected {
-                    paper_selected()
-                } else {
-                    Hsla::transparent_black()
-                })
-                .hover(|s| s.bg(paper_hover()))
+            let dir_el = div()
+                .flex_1()
+                .min_w_0()
+                .font_family(mono.clone())
+                .text_size(TYPE_MICRO)
+                .text_color(chrome_muted)
+                .text_right()
+                .truncate()
+                .child(resolved_dir)
+                .into_any_element();
+            GridCheckOptionRow::new(("pf-cat-opt", idx), cat.name.clone())
+                .height(px(26.0))
+                .selected(selected)
+                .trailing(dir_el)
                 .on_click(move |_, window, cx| pick_cb(cat_id.clone(), window, cx))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_1p5()
-                        .child(
-                            div()
-                                .w(px(12.0))
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .when(selected, |el| {
-                                    el.child(
-                                        Icon::new(IconName::Check)
-                                            .size(px(11.0))
-                                            .text_color(selenium_amber()),
-                                    )
-                                }),
-                        )
-                        .child(
-                            div()
-                                .text_size(TYPE_MICRO)
-                                .font_weight(if selected {
-                                    FontWeight::MEDIUM
-                                } else {
-                                    FontWeight::NORMAL
-                                })
-                                .text_color(silver_text())
-                                .child(cat.name.clone()),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .font_family(MONO_FONT)
-                        .text_size(TYPE_MICRO)
-                        .text_color(silver_muted())
-                        .text_right()
-                        .truncate()
-                        .child(resolved_dir),
-                )
         }))
         .into_any_element()
 }
@@ -2068,11 +1964,23 @@ fn render_folder_dropdown_panel<F1>(
     default_dir: &Path,
     recent_folders: &[PathBuf],
     current_dir_text: &str,
+    cx: &App,
     on_pick: F1,
 ) -> AnyElement
 where
     F1: Fn(PathBuf, &mut Window, &mut App) + Clone + 'static,
 {
+    let palette = cx.chrono().palette;
+    let popover_bg = palette.popover_bg.hsla();
+    let chrome_elevated = palette.chrome_elevated.hsla();
+    let chrome_border = palette.chrome_border.hsla();
+    let chrome_text = palette.chrome_text.hsla();
+    let chrome_muted = palette.chrome_muted.hsla();
+    let surface_selected = palette.surface_selected.hsla();
+    let surface_hover = palette.surface_hover.hsla();
+    let accent = palette.accent.hsla();
+    let mono = Theme::global(cx).mono_font_family.clone();
+
     let current_path = PathBuf::from(current_dir_text.trim());
     let filtered_recent: Vec<PathBuf> = recent_folders
         .iter()
@@ -2102,11 +2010,11 @@ where
             .gap_2()
             .cursor_pointer()
             .bg(if selected {
-                paper_selected()
+                surface_selected
             } else {
                 Hsla::transparent_black()
             })
-            .hover(|s| s.bg(paper_hover()))
+            .hover(move |s| s.bg(surface_hover))
             .tooltip(move |window, cx| {
                 gpui_kit::component::tooltip::Tooltip::new(tip_path.clone()).build(window, cx)
             })
@@ -2127,28 +2035,28 @@ where
                                 el.child(
                                     Icon::new(IconName::Check)
                                         .size(px(11.0))
-                                        .text_color(selenium_amber()),
+                                        .text_color(accent),
                                 )
                             }),
                     )
                     .child(
                         div()
-                            .font_family(MONO_FONT)
+                            .font_family(mono.clone())
                             .text_size(TYPE_MICRO)
                             .font_weight(if selected {
                                 FontWeight::MEDIUM
                             } else {
                                 FontWeight::NORMAL
                             })
-                            .text_color(silver_text())
+                            .text_color(chrome_text)
                             .child(label),
                     )
                     .when_some(role_hint, |el, tag| {
                         el.child(
                             div()
-                                .font_family(MONO_FONT)
+                                .font_family(mono.clone())
                                 .text_size(px(9.5))
-                                .text_color(silver_muted().opacity(0.65))
+                                .text_color(chrome_muted.opacity(0.65))
                                 .child(tag),
                         )
                     }),
@@ -2157,9 +2065,9 @@ where
                 div()
                     .flex_1()
                     .min_w_0()
-                    .font_family(MONO_FONT)
+                    .font_family(mono.clone())
                     .text_size(TYPE_MICRO)
-                    .text_color(silver_muted())
+                    .text_color(chrome_muted)
                     .text_right()
                     .truncate()
                     .child(full_path),
@@ -2172,11 +2080,11 @@ where
     div()
         .id((id_prefix, 999usize))
         .w_full()
-        .bg(context_menu_bg())
+        .bg(popover_bg)
         .border_b_1()
         .border_l_1()
         .border_r_1()
-        .border_color(graphite_border())
+        .border_color(chrome_border)
         .flex()
         .flex_col()
         .overflow_hidden()
@@ -2188,31 +2096,31 @@ where
             def_selected,
         ))
         .when(filtered_recent.is_empty(), |el| {
-            el.child(div().w_full().h(px(1.0)).bg(graphite_border()))
+            el.child(div().w_full().h(px(1.0)).bg(chrome_border))
                 .child(
                     div()
                         .h(px(24.0))
                         .px_2p5()
                         .flex()
                         .items_center()
-                        .font_family(MONO_FONT)
+                        .font_family(mono.clone())
                         .text_size(TYPE_MICRO)
-                        .text_color(silver_muted().opacity(0.7))
+                        .text_color(chrome_muted.opacity(0.7))
                         .child("Use the folder button to save to another location"),
                 )
         })
         .when(!filtered_recent.is_empty(), |el| {
-            el.child(div().w_full().h(px(1.0)).bg(graphite_border()))
+            el.child(div().w_full().h(px(1.0)).bg(chrome_border))
                 .child(
                     div()
                         .h(px(20.0))
                         .px_2p5()
-                        .bg(graphite_elevated())
+                        .bg(chrome_elevated)
                         .flex()
                         .items_center()
-                        .font_family(MONO_FONT)
+                        .font_family(mono.clone())
                         .text_size(px(9.0))
-                        .text_color(silver_muted())
+                        .text_color(chrome_muted)
                         .child("RECENT LOCATIONS"),
                 )
                 .children(filtered_recent.into_iter().enumerate().map(|(i, folder)| {
@@ -2224,55 +2132,18 @@ where
         .into_any_element()
 }
 
-pub(crate) fn labeled_input(label: &'static str, state: &Entity<InputState>) -> impl IntoElement {
-    div().border_t_1().border_color(graphite_border()).child(
-        grid_kv_row_with_bg(
-            label,
-            160.0,
-            div()
-                .w_full()
-                .font_family(MONO_FONT)
-                .text_size(TYPE_BODY)
-                .child(Input::new(state).appearance(false)),
-            GridTone::Graphite,
-            Some(input_bg()),
-        ),
+pub(crate) fn labeled_input(
+    label: &'static str,
+    state: &Entity<InputState>,
+    cx: &App,
+) -> impl IntoElement {
+    let palette = cx.chrono().palette;
+    div().border_t_1().border_color(palette.chrome_border.hsla()).child(
+        GridKvRow::new(label, GridInputBox::new(state))
+            .label_width(160.0)
+            .tone(GridTone::Chrome)
+            .value_bg(palette.input_bg.hsla()),
     )
-}
-
-pub(crate) fn modal_backdrop<F>(card: impl IntoElement, on_close: F) -> AnyElement
-where
-    F: Fn(&mut Window, &mut App) + 'static,
-{
-    div()
-        .id("modal-backdrop")
-        .absolute()
-        .inset_0()
-        .occlude()
-        .p_4()
-        .bg(modal_scrim())
-        .flex()
-        .items_center()
-        .justify_center()
-        .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-        .on_scroll(|_, _, cx| cx.stop_propagation())
-        .on_click(move |_, window, cx| on_close(window, cx))
-        .child(
-            div()
-                .id("modal-card-stop")
-                .max_w_full()
-                .max_h_full()
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
-                .on_click(|_, _, cx| cx.stop_propagation())
-                .child(card)
-                .with_animation(
-                    "modal-card-enter",
-                    Animation::new(Duration::from_millis(140)).with_easing(ease_out_quint()),
-                    |el, delta| el.mt(px((1.0 - delta) * 8.0)).opacity(0.65 + 0.35 * delta),
-                ),
-        )
-        .into_any_element()
 }
 
 #[cfg(test)]

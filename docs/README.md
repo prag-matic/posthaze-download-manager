@@ -23,6 +23,7 @@ Documentation is a first-class part of Posthaze Download Manager.
   - [0010 — Dedicated background Tokio runtime bridged to GPUI via `EngineEvent` broadcast](adr/0010-tokio-gpui-runtime-bridge.md)
   - [0011 — Hot-swappable proxy client and shared bandwidth limiter](adr/0011-hot-swappable-proxy-client-and-bandwidth-limiter.md)
   - [0012 — Ed25519-signed in-app auto updater](adr/0012-ed25519-signed-auto-updater.md)
+  - [0013 — Extract reusable design system into `chronophoto-ui`](adr/0013-chronophoto-ui-design-system-extraction.md)
 
 ## Implemented Milestones & Tickets
 
@@ -54,6 +55,7 @@ Documentation is a first-class part of Posthaze Download Manager.
 - [Research: `misterdownloadmanager` (`mdm-engine`) vs. Posthaze Engine Comparison](research/misterdownloadmanager-engine-comparison.md)
 - [Research: `misterdownloadmanager` Quality-of-Life (QOL) & UX Improvements](research/misterdownloadmanager-qol-improvements.md)
 - [Research: `misterdownloadmanager` vs. Posthaze Browser Extension & Bridge Comparison](research/misterdownloadmanager-extension-comparison.md)
+- [Research: Extracting Posthaze's Design System for Multi-Project Reuse & Continuous Evolution](research/reusable-design-system-extraction.md)
 
 ## Agent Workflow Configuration
 

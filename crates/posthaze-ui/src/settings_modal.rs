@@ -2,9 +2,22 @@
 
 use std::path::PathBuf;
 
+use chronophoto_ui::components::{
+    BadgeTone, CellBorder, GridBadge, GridBoxedButton, GridCellButton, GridInputBox, GridKvRow,
+    GridModalFooter, GridNavRow, GridProgressTrack, GridSectionHeader, GridSelectionBar, GridTone,
+    NavRowTone,
+};
+use chronophoto_ui::palette::{
+    ACCENT_PRESETS, BUILTIN_THEME_PRESETS, ThemeBadge, ThemeCatalog, ThemePreset,
+};
+use chronophoto_ui::platform::{
+    MicaFallbackReason, mica_availability, sync_theme_and_backdrops_in_window,
+};
+use chronophoto_ui::theme::ChronoAppExt;
+use chronophoto_ui::tokens::{TYPE_BODY, TYPE_HEADER, TYPE_HEADING, TYPE_MICRO};
 use gpui_kit::assets::IconName;
-use gpui_kit::component::input::{Input, InputState};
-use gpui_kit::component::Icon;
+use gpui_kit::component::input::InputState;
+use gpui_kit::component::{Icon, Theme};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use posthaze_engine::{
@@ -13,12 +26,7 @@ use posthaze_engine::{
     find_extension_conflicts, normalize_extension_list, normalize_pattern_list, resolve_category,
 };
 
-use crate::grid_cells::{
-    CellBorder, GridTone, grid_boxed_button, grid_cell_button, grid_cell_button_dyn,
-    grid_kv_row_with_bg, grid_modal_footer, grid_section_header,
-};
 use crate::modals::labeled_input;
-use crate::theme::*;
 use crate::updater::UpdateState;
 
 /// Width of the left navigation sidebar in the standalone Settings window (shared with `TitleBar`
@@ -786,7 +794,7 @@ impl SettingsModalState {
             SettingsAction::BrowseSaveFolder => {}
             SettingsAction::SetAccentOverride(accent) => {
                 self.draft.ui_accent_override = accent;
-                crate::sync_theme_and_backdrops_in_window(
+                sync_theme_and_backdrops_in_window(
                     &self.draft.ui_theme,
                     self.draft.ui_accent_override.as_deref(),
                     window,
@@ -794,9 +802,10 @@ impl SettingsModalState {
                 );
             }
             SettingsAction::SetTheme(theme_id) => {
-                let preset = crate::theme::find_theme_preset(&theme_id);
+                let catalog = ThemeCatalog::new();
+                let preset = catalog.find_theme_preset(&theme_id);
                 self.draft.ui_theme = preset.id.to_string();
-                crate::sync_theme_and_backdrops_in_window(
+                sync_theme_and_backdrops_in_window(
                     &self.draft.ui_theme,
                     self.draft.ui_accent_override.as_deref(),
                     window,
@@ -860,7 +869,7 @@ impl SettingsModalState {
                 self.system_feedback = Some(Ok(
                     "Restored factory defaults. Click Apply or Save Settings to keep.".to_string(),
                 ));
-                crate::sync_theme_and_backdrops_in_window(
+                sync_theme_and_backdrops_in_window(
                     &self.draft.ui_theme,
                     self.draft.ui_accent_override.as_deref(),
                     window,
@@ -967,13 +976,25 @@ where
     F3: Fn(&mut Window, &mut App) + 'static,
     F4: Fn(&mut Window, &mut App) + 'static,
 {
+    let palette = cx.chrono().palette;
+    let chrome_bg = palette.chrome_bg.hsla();
+    let chrome_border = palette.chrome_border.hsla();
+    let chrome_text = palette.chrome_text.hsla();
+    let chrome_muted = palette.chrome_muted.hsla();
+    let surface_bg = palette.surface_bg.hsla();
+    let danger = palette.danger.hsla();
+    let danger_surface = palette.danger_surface();
+    let mono = Theme::global(cx).mono_font_family.clone();
+
     let body = match state.active_tab {
-        SettingsTab::General => render_general_tab(state, on_action.clone()),
+        SettingsTab::General => render_general_tab(state, cx, on_action.clone()),
         SettingsTab::Downloads => render_downloads_tab(state, cx, on_action.clone()),
-        SettingsTab::Network => render_network_tab(state, on_action.clone()),
-        SettingsTab::Appearance => render_appearance_tab(state, on_action.clone()),
-        SettingsTab::Integrations => render_integrations_tab(state, on_action.clone()),
-        SettingsTab::System => render_system_tab(state, update_state, is_portable, on_action.clone()),
+        SettingsTab::Network => render_network_tab(state, cx, on_action.clone()),
+        SettingsTab::Appearance => render_appearance_tab(state, cx, on_action.clone()),
+        SettingsTab::Integrations => render_integrations_tab(state, cx, on_action.clone()),
+        SettingsTab::System => {
+            render_system_tab(state, update_state, is_portable, cx, on_action.clone())
+        }
     };
 
     div()
@@ -993,54 +1014,25 @@ where
                         .w(px(SETTINGS_SIDEBAR_WIDTH))
                         .flex_shrink_0()
                         .h_full()
-                        .bg(graphite_bg())
+                        .bg(chrome_bg)
                         .border_r_1()
-                        .border_color(graphite_border())
+                        .border_color(chrome_border)
                         .flex()
                         .flex_col()
-                        .child(grid_section_header("SECTIONS", GridTone::Graphite))
+                        .child(GridSectionHeader::new("SECTIONS").tone(GridTone::Chrome))
                         .children(SettingsTab::ALL.into_iter().map(|tab| {
                             let active = state.active_tab == tab;
                             let act = on_action.clone();
-                            div()
-                                .id(SharedString::from(format!("settings-tab-{}", tab.label())))
-                                .h(px(34.0))
-                                .w_full()
-                                .border_b_1()
-                                .border_color(graphite_border())
-                                .flex()
-                                .items_center()
-                                .cursor_pointer()
-                                .bg(if active {
-                                    paper_selected()
-                                } else {
-                                    Hsla::transparent_black()
-                                })
-                                .hover(|s| s.bg(paper_hover()))
-                                .on_click(move |_, window, cx| {
-                                    act(SettingsAction::SelectTab(tab), window, cx);
-                                })
-                                .child(div().w(px(3.0)).h_full().mr_3().bg(if active {
-                                    selenium_amber()
-                                } else {
-                                    Hsla::transparent_black()
-                                }))
-                                .child(Icon::new(tab.icon()).size(px(14.0)).text_color(
-                                    if active {
-                                        selenium_amber()
-                                    } else {
-                                        silver_muted()
-                                    },
-                                ))
-                                .child(
-                                    div()
-                                        .ml_2()
-                                        .font_family(MONO_FONT)
-                                        .text_size(TYPE_MICRO)
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(if active { silver_text() } else { silver_muted() })
-                                        .child(tab.label()),
-                                )
+                            GridNavRow::new(
+                                SharedString::from(format!("settings-tab-{}", tab.label())),
+                                tab.icon(),
+                                tab.label(),
+                            )
+                            .selected(active)
+                            .tone(NavRowTone::SurfaceSelection)
+                            .on_click(move |_, window, cx| {
+                                act(SettingsAction::SelectTab(tab), window, cx);
+                            })
                         })),
                 )
                 .child(
@@ -1049,7 +1041,7 @@ where
                         .flex_1()
                         .min_w_0()
                         .h_full()
-                        .bg(paper_bg())
+                        .bg(surface_bg)
                         .px_5()
                         .py_4()
                         .overflow_y_scroll()
@@ -1060,22 +1052,22 @@ where
                             div()
                                 .pb_3()
                                 .border_b_1()
-                                .border_color(graphite_border())
+                                .border_color(chrome_border)
                                 .flex()
                                 .flex_col()
                                 .gap_1()
                                 .child(
                                     div()
-                                        .font_family(MONO_FONT)
+                                        .font_family(mono.clone())
                                         .text_size(TYPE_HEADING)
                                         .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(silver_text())
+                                        .text_color(chrome_text)
                                         .child(state.active_tab.label()),
                                 )
                                 .child(
                                     div()
-                                        .text_xs()
-                                        .text_color(silver_muted())
+                                        .text_size(TYPE_BODY)
+                                        .text_color(chrome_muted)
                                         .child(state.active_tab.subtitle()),
                                 ),
                         )
@@ -1088,53 +1080,56 @@ where
                     .w_full()
                     .px_4()
                     .py_2()
-                    .bg(errata_surface_bg())
+                    .bg(danger_surface)
                     .border_t_1()
-                    .border_color(errata_vermilion())
-                    .font_family(MONO_FONT)
+                    .border_color(danger)
+                    .font_family(mono)
                     .text_size(TYPE_MICRO)
-                    .text_color(errata_vermilion())
+                    .text_color(danger)
                     .child(err),
             )
         })
         .child(
-            grid_modal_footer(GridTone::Graphite)
-                .h(px(36.0))
-                .child(grid_cell_button(
-                    "settings-cancel",
-                    Some(IconName::X),
-                    Some("Cancel"),
-                    None,
-                    GridTone::Graphite,
-                    CellBorder::Left,
-                    false,
-                    move |_, window, cx| on_cancel(window, cx),
-                ))
-                .child(grid_cell_button(
-                    "settings-apply",
-                    Some(IconName::Check),
-                    Some("Apply"),
-                    Some("Save settings and keep this window open"),
-                    GridTone::Graphite,
-                    CellBorder::Left,
-                    false,
-                    move |_, window, cx| on_apply(window, cx),
-                ))
-                .child(grid_cell_button(
-                    "settings-save",
-                    Some(IconName::Check),
-                    Some("Save settings"),
-                    None,
-                    GridTone::Primary,
-                    CellBorder::Left,
-                    false,
-                    move |_, window, cx| on_save(window, cx),
-                )),
+            div().bg(chrome_bg).child(
+                GridModalFooter::new()
+                    .tone(GridTone::Chrome)
+                    .child(
+                        GridCellButton::new("settings-cancel")
+                            .icon(IconName::X)
+                            .label("Cancel")
+                            .tone(GridTone::Chrome)
+                            .border(CellBorder::Left)
+                            .on_click(move |_, window, cx| on_cancel(window, cx)),
+                    )
+                    .child(
+                        GridCellButton::new("settings-apply")
+                            .icon(IconName::Check)
+                            .label("Apply")
+                            .tooltip("Save settings and keep this window open")
+                            .tone(GridTone::Chrome)
+                            .border(CellBorder::Left)
+                            .on_click(move |_, window, cx| on_apply(window, cx)),
+                    )
+                    .child(
+                        GridCellButton::new("settings-save")
+                            .icon(IconName::Check)
+                            .label("Save settings")
+                            .tone(GridTone::Primary)
+                            .border(CellBorder::Left)
+                            .on_click(move |_, window, cx| on_save(window, cx)),
+                    ),
+            ),
         )
         .into_any_element()
 }
 
-fn settings_section(title: &'static str, rows: Vec<AnyElement>) -> AnyElement {
+fn settings_section(title: &'static str, rows: Vec<AnyElement>, cx: &App) -> AnyElement {
+    let palette = cx.chrono().palette;
+    let chrome_elevated = palette.chrome_elevated.hsla();
+    let chrome_border = palette.chrome_border.hsla();
+    let chrome_muted = palette.chrome_muted.hsla();
+    let mono = Theme::global(cx).mono_font_family.clone();
+
     div()
         .w_full()
         .flex()
@@ -1143,31 +1138,32 @@ fn settings_section(title: &'static str, rows: Vec<AnyElement>) -> AnyElement {
         .child(
             div()
                 .px_0p5()
-                .font_family(MONO_FONT)
+                .font_family(mono)
                 .text_size(TYPE_HEADER)
                 .font_weight(FontWeight::SEMIBOLD)
-                .text_color(silver_muted())
+                .text_color(chrome_muted)
                 .child(title),
         )
         .child(
             div()
                 .w_full()
-                .bg(graphite_elevated().opacity(0.45))
+                .bg(chrome_elevated.opacity(0.45))
                 .border_1()
-                .border_color(graphite_border())
+                .border_color(chrome_border)
                 .flex()
                 .flex_col()
                 .children(rows.into_iter().enumerate().map(|(idx, row)| {
                     div()
                         .w_full()
-                        .when(idx > 0, |el| el.border_t_1().border_color(graphite_border()))
+                        .when(idx > 0, |el| el.border_t_1().border_color(chrome_border))
                         .child(row)
                 })),
         )
         .into_any_element()
 }
 
-fn setting_text(title: &'static str, description: &'static str) -> impl IntoElement {
+fn setting_text(title: &'static str, description: &'static str, cx: &App) -> impl IntoElement {
+    let palette = cx.chrono().palette;
     div()
         .flex_1()
         .min_w_0()
@@ -1178,14 +1174,14 @@ fn setting_text(title: &'static str, description: &'static str) -> impl IntoElem
             div()
                 .text_size(TYPE_BODY)
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(silver_text())
+                .text_color(palette.chrome_text.hsla())
                 .child(title),
         )
         .child(
             div()
-                .text_xs()
+                .text_size(TYPE_BODY)
                 .line_height(px(16.0))
-                .text_color(silver_muted())
+                .text_color(palette.chrome_muted.hsla())
                 .child(description),
         )
 }
@@ -1194,6 +1190,7 @@ fn setting_row(
     title: &'static str,
     description: &'static str,
     control: impl IntoElement,
+    cx: &App,
 ) -> AnyElement {
     div()
         .w_full()
@@ -1203,7 +1200,7 @@ fn setting_row(
         .items_center()
         .justify_between()
         .gap_4()
-        .child(setting_text(title, description))
+        .child(setting_text(title, description, cx))
         .child(div().flex_shrink_0().child(control))
         .into_any_element()
 }
@@ -1220,18 +1217,20 @@ fn stacked_row(content: impl IntoElement) -> AnyElement {
         .into_any_element()
 }
 
-fn inline_feedback_banner(feedback: &Result<String, String>) -> AnyElement {
+fn inline_feedback_banner(feedback: &Result<String, String>, cx: &App) -> AnyElement {
+    let palette = cx.chrono().palette;
+    let mono = Theme::global(cx).mono_font_family.clone();
     let (bg, border, text_col, msg) = match feedback {
         Ok(msg) => (
-            graphite_elevated(),
-            halide_emerald(),
-            halide_emerald(),
+            palette.chrome_elevated.hsla(),
+            palette.success.hsla(),
+            palette.success.hsla(),
             msg.clone(),
         ),
         Err(err) => (
-            errata_surface_bg(),
-            errata_vermilion(),
-            errata_vermilion(),
+            palette.danger_surface(),
+            palette.danger.hsla(),
+            palette.danger.hsla(),
             err.clone(),
         ),
     };
@@ -1241,21 +1240,22 @@ fn inline_feedback_banner(feedback: &Result<String, String>) -> AnyElement {
         .bg(bg)
         .border_1()
         .border_color(border)
-        .font_family(MONO_FONT)
+        .font_family(mono)
         .text_size(TYPE_MICRO)
         .text_color(text_col)
         .child(msg)
         .into_any_element()
 }
 
-fn segmented_track() -> Div {
+fn segmented_track(cx: &App) -> Div {
+    let palette = cx.chrono().palette;
     div()
         .h(px(28.0))
-        .bg(graphite_elevated())
+        .bg(palette.chrome_elevated.hsla())
         .border_t_1()
         .border_b_1()
         .border_l_1()
-        .border_color(graphite_border())
+        .border_color(palette.chrome_border.hsla())
         .flex()
         .items_center()
 }
@@ -1264,7 +1264,10 @@ fn compact_input(
     state: &Entity<InputState>,
     width: Pixels,
     unit: Option<&'static str>,
+    cx: &App,
 ) -> impl IntoElement {
+    let palette = cx.chrono().palette;
+    let mono = Theme::global(cx).mono_font_family.clone();
     div()
         .flex()
         .items_center()
@@ -1274,21 +1277,19 @@ fn compact_input(
                 .w(width)
                 .h(px(30.0))
                 .px_2p5()
-                .bg(input_bg())
+                .bg(palette.input_bg.hsla())
                 .border_1()
-                .border_color(graphite_border())
+                .border_color(palette.chrome_border.hsla())
                 .flex()
                 .items_center()
-                .font_family(MONO_FONT)
-                .text_size(TYPE_BODY)
-                .child(Input::new(state).appearance(false)),
+                .child(GridInputBox::new(state)),
         )
         .when_some(unit, |el, u| {
             el.child(
                 div()
-                    .font_family(MONO_FONT)
+                    .font_family(mono)
                     .text_size(TYPE_MICRO)
-                    .text_color(silver_muted())
+                    .text_color(palette.chrome_muted.hsla())
                     .child(u),
             )
         })
@@ -1300,6 +1301,7 @@ fn toggle_row<F>(
     description: &'static str,
     checked: bool,
     action: SettingsAction,
+    cx: &App,
     on_action: F,
 ) -> AnyElement
 where
@@ -1311,6 +1313,7 @@ where
         description.to_string(),
         checked,
         action,
+        cx,
         on_action,
     )
 }
@@ -1321,11 +1324,21 @@ fn toggle_row_dyn<F>(
     description: String,
     checked: bool,
     action: SettingsAction,
+    cx: &App,
     on_action: F,
 ) -> AnyElement
 where
     F: Fn(SettingsAction, &mut Window, &mut App) + 'static,
 {
+    let palette = cx.chrono().palette;
+    let surface_hover = palette.surface_hover.hsla();
+    let chrome_text = palette.chrome_text.hsla();
+    let chrome_muted = palette.chrome_muted.hsla();
+    let chrome_border = palette.chrome_border.hsla();
+    let chrome_elevated = palette.chrome_elevated.hsla();
+    let accent = palette.accent.hsla();
+    let accent_fg = palette.accent_foreground.hsla();
+
     div()
         .id(id)
         .w_full()
@@ -1336,7 +1349,7 @@ where
         .justify_between()
         .gap_4()
         .cursor_pointer()
-        .hover(|s| s.bg(paper_hover()))
+        .hover(move |s| s.bg(surface_hover))
         .on_click(move |_, window, cx| on_action(action.clone(), window, cx))
         .child(
             div()
@@ -1349,14 +1362,14 @@ where
                     div()
                         .text_size(TYPE_BODY)
                         .font_weight(FontWeight::MEDIUM)
-                        .text_color(silver_text())
+                        .text_color(chrome_text)
                         .child(title),
                 )
                 .child(
                     div()
-                        .text_xs()
+                        .text_size(TYPE_BODY)
                         .line_height(px(16.0))
-                        .text_color(silver_muted())
+                        .text_color(chrome_muted)
                         .child(description),
                 ),
         )
@@ -1368,16 +1381,8 @@ where
                 .rounded(px(9.0))
                 .flex_shrink_0()
                 .border_1()
-                .border_color(if checked {
-                    selenium_amber()
-                } else {
-                    graphite_border()
-                })
-                .bg(if checked {
-                    selenium_amber()
-                } else {
-                    graphite_elevated()
-                })
+                .border_color(if checked { accent } else { chrome_border })
+                .bg(if checked { accent } else { chrome_elevated })
                 .flex()
                 .items_center()
                 .when(checked, |el| el.justify_end())
@@ -1386,11 +1391,7 @@ where
                         .w(px(12.0))
                         .h(px(12.0))
                         .rounded(px(6.0))
-                        .bg(if checked {
-                            active_theme().accent_foreground.hsla()
-                        } else {
-                            silver_muted()
-                        }),
+                        .bg(if checked { accent_fg } else { chrome_muted }),
                 ),
         )
         .into_any_element()
@@ -1409,18 +1410,14 @@ where
     let tone = if selected {
         GridTone::Primary
     } else {
-        GridTone::Graphite
+        GridTone::Chrome
     };
-    grid_cell_button(
-        id,
-        None,
-        Some(label),
-        None,
-        tone,
-        CellBorder::Right,
-        true,
-        move |_, window, cx| on_action(action.clone(), window, cx),
-    )
+    GridCellButton::new(id)
+        .label(label)
+        .tone(tone)
+        .border(CellBorder::Right)
+        .compact(true)
+        .on_click(move |_, window, cx| on_action(action.clone(), window, cx))
 }
 
 fn preset_btn<F>(
@@ -1432,29 +1429,25 @@ fn preset_btn<F>(
 where
     F: Fn(SettingsAction, &mut Window, &mut App) + 'static,
 {
-    grid_boxed_button(
-        id,
-        px(28.0),
-        None,
-        Some(label),
-        None,
-        GridTone::Graphite,
-        true,
-        move |_, window, cx| on_action(action.clone(), window, cx),
-    )
+    GridBoxedButton::new(id)
+        .height(px(28.0))
+        .label(label)
+        .tone(GridTone::Chrome)
+        .compact(true)
+        .on_click(move |_, window, cx| on_action(action.clone(), window, cx))
 }
 
-fn swatch_dot(hex: u32) -> impl IntoElement {
+fn swatch_dot(hex: u32, border_col: Hsla) -> impl IntoElement {
     div()
         .w(px(10.0))
         .h(px(10.0))
         .rounded(px(2.0))
         .bg(rgb(hex))
         .border_1()
-        .border_color(graphite_border())
+        .border_color(border_col)
 }
 
-fn render_general_tab<F>(state: &SettingsModalState, on_action: F) -> AnyElement
+fn render_general_tab<F>(state: &SettingsModalState, cx: &App, on_action: F) -> AnyElement
 where
     F: Fn(SettingsAction, &mut Window, &mut App) + Clone + 'static,
 {
@@ -1471,6 +1464,7 @@ where
                     "Keep active Downloads and Browser Capture running in the tray when closing the main window (Ctrl+Q or Tray -> Quit to exit).",
                     state.draft.ui_close_to_tray,
                     SettingsAction::ToggleCloseToTray,
+                    cx,
                     on_action.clone(),
                 ),
                 toggle_row(
@@ -1479,9 +1473,11 @@ where
                     "Start Posthaze minimized to the System Tray automatically when you sign in to Windows.",
                     state.draft.launch_on_startup,
                     SettingsAction::ToggleLaunchOnStartup,
+                    cx,
                     on_action.clone(),
                 ),
             ],
+            cx,
         ))
         .child(settings_section(
             "Desktop Notifications",
@@ -1492,6 +1488,7 @@ where
                     "Show a Windows notification when a new download is added to the queue.",
                     state.draft.notify_on_added,
                     SettingsAction::ToggleNotifyAdded,
+                    cx,
                     on_action.clone(),
                 ),
                 toggle_row(
@@ -1500,6 +1497,7 @@ where
                     "Show a Windows notification when a new download begins transferring.",
                     state.draft.notify_on_started,
                     SettingsAction::ToggleNotifyStarted,
+                    cx,
                     on_action.clone(),
                 ),
                 toggle_row(
@@ -1508,6 +1506,7 @@ where
                     "Show a Windows notification when a file finishes.",
                     state.draft.notify_on_completed,
                     SettingsAction::ToggleNotifyCompleted,
+                    cx,
                     on_action.clone(),
                 ),
                 toggle_row(
@@ -1516,6 +1515,7 @@ where
                     "Show a Windows notification if a download stops with an error.",
                     state.draft.notify_on_failed,
                     SettingsAction::ToggleNotifyFailed,
+                    cx,
                     on_action.clone(),
                 ),
                 toggle_row(
@@ -1524,9 +1524,11 @@ where
                     "Suppress notifications while you are actively viewing Posthaze.",
                     state.draft.notify_only_inactive,
                     SettingsAction::ToggleNotifyOnlyInactive,
+                    cx,
                     on_action,
                 ),
             ],
+            cx,
         ))
         .into_any_element()
 }
@@ -1645,29 +1647,38 @@ where
     let has_ext_draft = !state.cat_extensions_input.read(cx).value().trim().is_empty();
     let has_pat_draft = !state.cat_patterns_input.read(cx).value().trim().is_empty();
 
+    let palette = cx.chrono().palette;
+    let chrome_bg = palette.chrome_bg.hsla();
+    let chrome_elevated = palette.chrome_elevated.hsla();
+    let chrome_border = palette.chrome_border.hsla();
+    let chrome_text = palette.chrome_text.hsla();
+    let chrome_muted = palette.chrome_muted.hsla();
+    let surface_selected = palette.surface_selected.hsla();
+    let surface_hover = palette.surface_hover.hsla();
+    let input_bg = palette.input_bg.hsla();
+    let accent = palette.accent.hsla();
+    let danger = palette.danger.hsla();
+    let mono = Theme::global(cx).mono_font_family.clone();
+
     let compact_cat_field = |label: &'static str, input: &Entity<InputState>| {
         div()
             .w_full()
             .border_t_1()
             .border_l_1()
             .border_r_1()
-            .border_color(graphite_border())
-            .child(grid_kv_row_with_bg(
-                label,
-                96.0,
-                div()
-                    .w_full()
-                    .font_family(MONO_FONT)
-                    .text_size(TYPE_BODY)
-                    .child(Input::new(input).appearance(false)),
-                GridTone::Graphite,
-                Some(input_bg()),
-            ))
+            .border_color(chrome_border)
+            .child(
+                GridKvRow::new(label, GridInputBox::new(input))
+                    .label_width(96.0)
+                    .tone(GridTone::Chrome)
+                    .value_bg(input_bg),
+            )
     };
 
     let compact_chip_field = {
         let conflicts_ref = &conflicts;
         let on_action_chip = on_action.clone();
+        let mono = mono.clone();
         move |row_id: &'static str,
               label: &'static str,
               items: Vec<String>,
@@ -1678,30 +1689,30 @@ where
             div()
                 .w_full()
                 .border_1()
-                .border_color(graphite_border())
+                .border_color(chrome_border)
                 .flex()
                 .items_stretch()
                 .child(
                     div()
                         .w(px(96.0))
                         .flex_shrink_0()
-                        .bg(graphite_elevated())
+                        .bg(chrome_elevated)
                         .border_r_1()
-                        .border_color(graphite_border())
+                        .border_color(chrome_border)
                         .px_2p5()
                         .py_2()
                         .flex()
                         .items_start()
                         .text_size(TYPE_MICRO)
                         .font_weight(FontWeight::MEDIUM)
-                        .text_color(silver_muted())
+                        .text_color(chrome_muted)
                         .child(label),
                 )
                 .child(
                     div()
                         .flex_1()
                         .min_w_0()
-                        .bg(input_bg())
+                        .bg(input_bg)
                         .px_2p5()
                         .py_1p5()
                         .flex()
@@ -1715,24 +1726,20 @@ where
                             div()
                                 .h(px(22.0))
                                 .px_1p5()
-                                .bg(graphite_elevated())
+                                .bg(chrome_elevated)
                                 .border_1()
-                                .border_color(if is_conflicted {
-                                    selenium_amber()
-                                } else {
-                                    graphite_border()
-                                })
+                                .border_color(if is_conflicted { accent } else { chrome_border })
                                 .flex()
                                 .items_center()
                                 .gap_1()
                                 .child(
                                     div()
-                                        .font_family(MONO_FONT)
+                                        .font_family(mono.clone())
                                         .text_size(TYPE_MICRO)
                                         .text_color(if is_conflicted {
-                                            selenium_amber()
+                                            accent
                                         } else {
-                                            silver_text()
+                                            chrome_text
                                         })
                                         .child(token),
                                 )
@@ -1740,8 +1747,8 @@ where
                                     div()
                                         .id((row_id, idx))
                                         .cursor_pointer()
-                                        .text_color(silver_muted())
-                                        .hover(|s| s.text_color(errata_vermilion()))
+                                        .text_color(chrome_muted)
+                                        .hover(move |s| s.text_color(danger))
                                         .on_click(move |_, window, cx| {
                                             let action = if is_ext_field {
                                                 SettingsAction::RemoveCategoryExtension(
@@ -1759,14 +1766,12 @@ where
                         }))
                         .child(
                             div()
-                                .flex_1()
                                 .min_w(px(136.0))
                                 .h(px(22.0))
                                 .flex()
                                 .items_center()
-                                .font_family(MONO_FONT)
                                 .text_size(TYPE_MICRO)
-                                .child(Input::new(input).appearance(false)),
+                                .child(GridInputBox::new(input)),
                         )
                         .when(has_draft, |el| {
                             el.child(
@@ -1774,16 +1779,16 @@ where
                                     .id((row_id, 9999usize))
                                     .h(px(22.0))
                                     .px_2()
-                                    .bg(graphite_elevated())
+                                    .bg(chrome_elevated)
                                     .border_1()
-                                    .border_color(selenium_amber())
+                                    .border_color(accent)
                                     .cursor_pointer()
-                                    .hover(|s| s.bg(paper_hover()))
+                                    .hover(move |s| s.bg(surface_hover))
                                     .flex()
                                     .items_center()
-                                    .font_family(MONO_FONT)
+                                    .font_family(mono.clone())
                                     .text_size(px(10.0))
-                                    .text_color(selenium_amber())
+                                    .text_color(accent)
                                     .on_click(move |_, window, cx| {
                                         let action = if is_ext_field {
                                             SettingsAction::AddCategoryExtension
@@ -1820,28 +1825,31 @@ where
                             div()
                                 .flex_1()
                                 .min_w_0()
-                                .child(labeled_input("Default Save Folder", &state.dir_input)),
+                                .child(labeled_input("Default Save Folder", &state.dir_input, cx)),
                         )
                         .child(
                             div()
                                 .border_t_1()
                                 .border_b_1()
                                 .border_r_1()
-                                .border_color(graphite_border())
+                                .border_color(chrome_border)
                                 .flex()
                                 .items_stretch()
-                                .child(grid_cell_button(
-                                    "settings-browse-dir",
-                                    Some(IconName::FolderOpen),
-                                    Some("Browse"),
-                                    Some("Choose default download folder"),
-                                    GridTone::Graphite,
-                                    CellBorder::Left,
-                                    false,
-                                    move |_, window, cx| {
-                                        browse_action(SettingsAction::BrowseSaveFolder, window, cx)
-                                    },
-                                )),
+                                .child(
+                                    GridCellButton::new("settings-browse-dir")
+                                        .icon(IconName::FolderOpen)
+                                        .label("Browse")
+                                        .tooltip("Choose default download folder")
+                                        .tone(GridTone::Chrome)
+                                        .border(CellBorder::Left)
+                                        .on_click(move |_, window, cx| {
+                                            browse_action(
+                                                SettingsAction::BrowseSaveFolder,
+                                                window,
+                                                cx,
+                                            )
+                                        }),
+                                ),
                         ),
                 ),
                 toggle_row(
@@ -1850,6 +1858,7 @@ where
                     "Separate and lock the probed file extension so renaming cannot accidentally remove it.",
                     state.draft.ui_lock_file_extension,
                     SettingsAction::ToggleLockFileExtension,
+                    cx,
                     on_action.clone(),
                 ),
                 toggle_row(
@@ -1858,9 +1867,11 @@ where
                     "Include the Add Paused button alongside Download Now.",
                     state.draft.ui_show_add_paused,
                     SettingsAction::ToggleShowAddPaused,
+                    cx,
                     on_action.clone(),
                 ),
             ],
+            cx,
         ))
         .child(settings_section(
             "Categories, File Types & Folders",
@@ -1871,6 +1882,7 @@ where
                     "Route new downloads into category folders using file types and host/URL rules.",
                     state.draft.auto_categorize_folders,
                     SettingsAction::ToggleAutoCategorize,
+                    cx,
                     on_action.clone(),
                 ),
                 toggle_row(
@@ -1879,14 +1891,15 @@ where
                     "When enabled, matching URL or domain rules take precedence over file extension rules.",
                     state.draft.category_url_rule_precedence,
                     SettingsAction::ToggleCategoryUrlPrecedence,
+                    cx,
                     on_action.clone(),
                 ),
                 stacked_row(
                     div()
                         .w_full()
-                        .bg(graphite_bg())
+                        .bg(chrome_bg)
                         .border_1()
-                        .border_color(graphite_border())
+                        .border_color(chrome_border)
                         .flex()
                         .flex_col()
                         .overflow_hidden()
@@ -1895,9 +1908,9 @@ where
                             div()
                                 .h(px(36.0))
                                 .w_full()
-                                .bg(graphite_elevated())
+                                .bg(chrome_elevated)
                                 .border_b_1()
-                                .border_color(graphite_border())
+                                .border_color(chrome_border)
                                 .flex()
                                 .items_center()
                                 .child(
@@ -1907,7 +1920,7 @@ where
                                         .min_w_0()
                                         .h_full()
                                         .cursor_pointer()
-                                        .hover(|s| s.bg(paper_hover()))
+                                        .hover(move |s| s.bg(surface_hover))
                                         .flex()
                                         .items_center()
                                         .justify_between()
@@ -1927,37 +1940,23 @@ where
                                                 .items_center()
                                                 .gap_2()
                                                 .pr_2()
-                                                .child(
-                                                    div()
-                                                        .w(px(3.0))
-                                                        .h_full()
-                                                        .bg(selenium_amber()),
-                                                )
+                                                .child(GridSelectionBar::new(true))
                                                 .child(
                                                     Icon::new(IconName::Folder)
                                                         .size(px(13.0))
-                                                        .text_color(silver_muted()),
+                                                        .text_color(chrome_muted),
                                                 )
                                                 .child(
                                                     div()
                                                         .text_size(TYPE_BODY)
                                                         .font_weight(FontWeight::SEMIBOLD)
-                                                        .text_color(silver_text())
+                                                        .text_color(chrome_text)
                                                         .truncate()
                                                         .child(selected_cat.name.clone()),
                                                 )
                                                 .child(
-                                                    div()
-                                                        .flex_shrink_0()
-                                                        .px_1p5()
-                                                        .py_0p5()
-                                                        .bg(graphite_bg())
-                                                        .border_1()
-                                                        .border_color(graphite_border())
-                                                        .font_family(MONO_FONT)
-                                                        .text_size(px(10.0))
-                                                        .text_color(silver_muted())
-                                                        .child(cat_role_tag),
+                                                    GridBadge::new(cat_role_tag)
+                                                        .tone(BadgeTone::Muted),
                                                 ),
                                         )
                                         .child(
@@ -1969,12 +1968,12 @@ where
                                                 .gap_2()
                                                 .child(
                                                     div()
-                                                        .font_family(MONO_FONT)
+                                                        .font_family(mono.clone())
                                                         .text_size(px(10.0))
                                                         .text_color(if active_conflicts.is_empty() {
-                                                            silver_muted()
+                                                            chrome_muted
                                                         } else {
-                                                            selenium_amber()
+                                                            accent
                                                         })
                                                         .child(selector_summary),
                                                 )
@@ -1985,7 +1984,7 @@ where
                                                         IconName::ChevronDown
                                                     })
                                                     .size(px(13.0))
-                                                    .text_color(silver_muted()),
+                                                    .text_color(chrome_muted),
                                                 ),
                                         ),
                                 )
@@ -1995,56 +1994,55 @@ where
                                         .h_full()
                                         .flex()
                                         .items_center()
-                                        .child(grid_cell_button(
-                                            "settings-cat-new",
-                                            Some(IconName::Plus),
-                                            Some("New"),
-                                            Some("Create a new custom category"),
-                                            GridTone::Graphite,
-                                            CellBorder::Left,
-                                            true,
-                                            move |_, window, cx| {
-                                                new_cat_action(
-                                                    SettingsAction::NewCategory,
-                                                    window,
-                                                    cx,
-                                                );
-                                            },
-                                        ))
-                                        .when(!selected_cat.is_builtin, |el| {
-                                            el.child(grid_cell_button(
-                                                "settings-cat-del",
-                                                Some(IconName::Trash),
-                                                Some("Delete"),
-                                                Some("Delete selected custom category"),
-                                                GridTone::Danger,
-                                                CellBorder::Left,
-                                                true,
-                                                move |_, window, cx| {
-                                                    del_cat_action(
-                                                        SettingsAction::DeleteSelectedCategory,
+                                        .child(
+                                            GridCellButton::new("settings-cat-new")
+                                                .icon(IconName::Plus)
+                                                .label("New")
+                                                .tooltip("Create a new custom category")
+                                                .tone(GridTone::Chrome)
+                                                .border(CellBorder::Left)
+                                                .compact(true)
+                                                .on_click(move |_, window, cx| {
+                                                    new_cat_action(
+                                                        SettingsAction::NewCategory,
                                                         window,
                                                         cx,
                                                     );
-                                                },
-                                            ))
+                                                }),
+                                        )
+                                        .when(!selected_cat.is_builtin, |el| {
+                                            el.child(
+                                                GridCellButton::new("settings-cat-del")
+                                                    .icon(IconName::Trash)
+                                                    .label("Delete")
+                                                    .tooltip("Delete selected custom category")
+                                                    .tone(GridTone::Danger)
+                                                    .border(CellBorder::Left)
+                                                    .compact(true)
+                                                    .on_click(move |_, window, cx| {
+                                                        del_cat_action(
+                                                            SettingsAction::DeleteSelectedCategory,
+                                                            window,
+                                                            cx,
+                                                        );
+                                                    }),
+                                            )
                                         })
-                                        .child(grid_cell_button(
-                                            "settings-cat-reset",
-                                            Some(IconName::RotateCcw),
-                                            None,
-                                            Some("Restore default built-in categories"),
-                                            GridTone::Graphite,
-                                            CellBorder::Left,
-                                            true,
-                                            move |_, window, cx| {
-                                                reset_cat_action(
-                                                    SettingsAction::ResetDefaultCategories,
-                                                    window,
-                                                    cx,
-                                                );
-                                            },
-                                        )),
+                                        .child(
+                                            GridCellButton::new("settings-cat-reset")
+                                                .icon(IconName::RotateCcw)
+                                                .tooltip("Restore default built-in categories")
+                                                .tone(GridTone::Chrome)
+                                                .border(CellBorder::Left)
+                                                .compact(true)
+                                                .on_click(move |_, window, cx| {
+                                                    reset_cat_action(
+                                                        SettingsAction::ResetDefaultCategories,
+                                                        window,
+                                                        cx,
+                                                    );
+                                                }),
+                                        ),
                                 ),
                         )
                         // Expandable Searchable Picker Drawer: handles 10..200 categories at full width
@@ -2053,8 +2051,8 @@ where
                                 div()
                                     .w_full()
                                     .border_b_1()
-                                    .border_color(graphite_border())
-                                    .bg(graphite_elevated().opacity(0.45))
+                                    .border_color(chrome_border)
+                                    .bg(chrome_elevated.opacity(0.45))
                                     .flex()
                                     .flex_col()
                                     .child(
@@ -2062,34 +2060,32 @@ where
                                             .h(px(30.0))
                                             .w_full()
                                             .px_2p5()
-                                            .bg(input_bg())
+                                            .bg(input_bg)
                                             .border_b_1()
-                                            .border_color(graphite_border())
+                                            .border_color(chrome_border)
                                             .flex()
                                             .items_center()
                                             .gap_2()
                                             .child(
                                                 Icon::new(IconName::Search)
                                                     .size(px(12.0))
-                                                    .text_color(silver_muted()),
+                                                    .text_color(chrome_muted),
                                             )
                                             .child(
                                                 div()
                                                     .flex_1()
                                                     .min_w_0()
-                                                    .font_family(MONO_FONT)
                                                     .text_size(TYPE_MICRO)
-                                                    .child(
-                                                        Input::new(&state.cat_filter_input)
-                                                            .appearance(false),
-                                                    ),
+                                                    .child(GridInputBox::new(
+                                                        &state.cat_filter_input,
+                                                    )),
                                             )
                                             .child(
                                                 div()
                                                     .flex_shrink_0()
-                                                    .font_family(MONO_FONT)
+                                                    .font_family(mono.clone())
                                                     .text_size(px(10.0))
-                                                    .text_color(silver_muted())
+                                                    .text_color(chrome_muted)
                                                     .child(format!(
                                                         "{shown_cat_count}/{total_cat_count}"
                                                     )),
@@ -2108,9 +2104,9 @@ where
                                                     div()
                                                         .px_3()
                                                         .py_3()
-                                                        .font_family(MONO_FONT)
+                                                        .font_family(mono.clone())
                                                         .text_size(TYPE_MICRO)
-                                                        .text_color(silver_muted())
+                                                        .text_color(chrome_muted)
                                                         .child("No matching categories"),
                                                 )
                                             })
@@ -2165,13 +2161,13 @@ where
                                                         .w_full()
                                                         .flex_shrink_0()
                                                         .border_b_1()
-                                                        .border_color(graphite_border())
+                                                        .border_color(chrome_border)
                                                         .bg(if is_sel {
-                                                            paper_selected()
+                                                            surface_selected
                                                         } else {
                                                             Hsla::transparent_black()
                                                         })
-                                                        .hover(|s| s.bg(paper_hover()))
+                                                        .hover(move |s| s.bg(surface_hover))
                                                         .cursor_pointer()
                                                         .flex()
                                                         .items_center()
@@ -2194,17 +2190,7 @@ where
                                                                 .min_w_0()
                                                                 .h_full()
                                                                 .gap_3()
-                                                                .child(
-                                                                    div()
-                                                                        .w(px(3.0))
-                                                                        .h_full()
-                                                                        .flex_shrink_0()
-                                                                        .bg(if is_sel {
-                                                                            selenium_amber()
-                                                                        } else {
-                                                                            Hsla::transparent_black()
-                                                                        }),
-                                                                )
+                                                                .child(GridSelectionBar::new(is_sel))
                                                                 .child(
                                                                     div()
                                                                         .w(px(124.0))
@@ -2216,9 +2202,9 @@ where
                                                                             FontWeight::NORMAL
                                                                         })
                                                                         .text_color(if is_sel {
-                                                                            silver_text()
+                                                                            chrome_text
                                                                         } else {
-                                                                            silver_muted()
+                                                                            chrome_muted
                                                                         })
                                                                         .truncate()
                                                                         .child(cat.name),
@@ -2227,9 +2213,9 @@ where
                                                                     div()
                                                                         .flex_1()
                                                                         .min_w_0()
-                                                                        .font_family(MONO_FONT)
+                                                                        .font_family(mono.clone())
                                                                         .text_size(px(10.0))
-                                                                        .text_color(silver_muted())
+                                                                        .text_color(chrome_muted)
                                                                         .truncate()
                                                                         .child(rule_preview),
                                                                 ),
@@ -2244,22 +2230,20 @@ where
                                                                 .when(has_conflict, |el| {
                                                                     el.child(
                                                                         div()
-                                                                            .font_family(MONO_FONT)
+                                                                            .font_family(mono.clone())
                                                                             .text_size(px(10.0))
-                                                                            .text_color(
-                                                                                selenium_amber(),
-                                                                            )
+                                                                            .text_color(accent)
                                                                             .child("!"),
                                                                     )
                                                                 })
                                                                 .child(
                                                                     div()
-                                                                        .font_family(MONO_FONT)
+                                                                        .font_family(mono.clone())
                                                                         .text_size(px(10.0))
                                                                         .text_color(if is_sel {
-                                                                            silver_text()
+                                                                            chrome_text
                                                                         } else {
-                                                                            silver_muted()
+                                                                            chrome_muted
                                                                         })
                                                                         .child(role),
                                                                 ),
@@ -2303,12 +2287,12 @@ where
                                             .w_full()
                                             .px_3()
                                             .py_2()
-                                            .bg(graphite_elevated())
+                                            .bg(chrome_elevated)
                                             .border_1()
-                                            .border_color(graphite_border())
-                                            .font_family(MONO_FONT)
+                                            .border_color(chrome_border)
+                                            .font_family(mono.clone())
                                             .text_size(TYPE_MICRO)
-                                            .text_color(silver_muted())
+                                            .text_color(chrome_muted)
                                             .child("Catches any file types and URLs not listed in another category"),
                                     )
                                 })
@@ -2318,12 +2302,12 @@ where
                                             .w_full()
                                             .px_2p5()
                                             .py_1p5()
-                                            .bg(graphite_elevated())
+                                            .bg(chrome_elevated)
                                             .border_1()
-                                            .border_color(selenium_amber())
-                                            .font_family(MONO_FONT)
+                                            .border_color(accent)
+                                            .font_family(mono.clone())
                                             .text_size(TYPE_MICRO)
-                                            .text_color(selenium_amber())
+                                            .text_color(accent)
                                             .child(format!(
                                                 "Shared extension(s): {}",
                                                 active_conflicts.join(", ")
@@ -2346,25 +2330,24 @@ where
                                                 div()
                                                     .border_t_1()
                                                     .border_b_1()
-                                                    .border_color(graphite_border())
+                                                    .border_color(chrome_border)
                                                     .flex()
                                                     .items_stretch()
-                                                    .child(grid_cell_button(
-                                                        "settings-cat-clear-dir",
-                                                        Some(IconName::X),
-                                                        None,
-                                                        Some("Reset to dynamic subfolder"),
-                                                        GridTone::Graphite,
-                                                        CellBorder::Left,
-                                                        true,
-                                                        move |_, window, cx| {
-                                                            cat_clear_action(
-                                                                SettingsAction::ClearCategoryFolder,
-                                                                window,
-                                                                cx,
-                                                            );
-                                                        },
-                                                    )),
+                                                    .child(
+                                                        GridCellButton::new("settings-cat-clear-dir")
+                                                            .icon(IconName::X)
+                                                            .tooltip("Reset to dynamic subfolder")
+                                                            .tone(GridTone::Chrome)
+                                                            .border(CellBorder::Left)
+                                                            .compact(true)
+                                                            .on_click(move |_, window, cx| {
+                                                                cat_clear_action(
+                                                                    SettingsAction::ClearCategoryFolder,
+                                                                    window,
+                                                                    cx,
+                                                                );
+                                                            }),
+                                                    ),
                                             )
                                         })
                                         .child(
@@ -2372,40 +2355,40 @@ where
                                                 .border_t_1()
                                                 .border_b_1()
                                                 .border_r_1()
-                                                .border_color(graphite_border())
+                                                .border_color(chrome_border)
                                                 .flex()
                                                 .items_stretch()
-                                                .child(grid_cell_button(
-                                                    "settings-cat-browse-dir",
-                                                    Some(IconName::FolderOpen),
-                                                    Some("Browse"),
-                                                    Some("Choose directory for this category"),
-                                                    GridTone::Graphite,
-                                                    CellBorder::Left,
-                                                    true,
-                                                    move |_, window, cx| {
-                                                        cat_browse_action(
-                                                            SettingsAction::BrowseCategoryFolder,
-                                                            window,
-                                                            cx,
-                                                        );
-                                                    },
-                                                )),
+                                                .child(
+                                                    GridCellButton::new("settings-cat-browse-dir")
+                                                        .icon(IconName::FolderOpen)
+                                                        .label("Browse")
+                                                        .tooltip("Choose directory for this category")
+                                                        .tone(GridTone::Chrome)
+                                                        .border(CellBorder::Left)
+                                                        .compact(true)
+                                                        .on_click(move |_, window, cx| {
+                                                            cat_browse_action(
+                                                                SettingsAction::BrowseCategoryFolder,
+                                                                window,
+                                                                cx,
+                                                            );
+                                                        }),
+                                                ),
                                         ),
                                 )
                                 .child(
                                     div()
-                                        .font_family(MONO_FONT)
+                                        .font_family(mono.clone())
                                         .text_size(TYPE_MICRO)
-                                        .text_color(silver_muted())
+                                        .text_color(chrome_muted)
                                         .truncate()
                                         .child(format!("Resolved: {resolved_cat_dir}")),
                                 )
                                 .child(
                                     div()
                                         .border_1()
-                                        .border_color(graphite_border())
-                                        .bg(graphite_elevated().opacity(0.35))
+                                        .border_color(chrome_border)
+                                        .bg(chrome_elevated.opacity(0.35))
                                         .child(toggle_row_dyn(
                                             "settings-cat-remember-dir",
                                             remember_title,
@@ -2413,6 +2396,7 @@ where
                                                 .to_string(),
                                             selected_cat.remember_last_folder,
                                             SettingsAction::ToggleCategoryRememberFolder,
+                                            cx,
                                             on_action.clone(),
                                         )),
                                 ),
@@ -2424,15 +2408,15 @@ where
                         .flex()
                         .flex_col()
                         .gap_1p5()
-                        .child(labeled_input("Rule Tester", &state.cat_rule_test_input))
+                        .child(labeled_input("Rule Tester", &state.cat_rule_test_input, cx))
                         .child(
                             div()
-                                .font_family(MONO_FONT)
+                                .font_family(mono)
                                 .text_size(TYPE_MICRO)
                                 .text_color(if test_query.is_empty() {
-                                    silver_muted()
+                                    chrome_muted
                                 } else {
-                                    selenium_amber()
+                                    accent
                                 })
                                 .child(test_preview),
                         ),
@@ -2443,9 +2427,11 @@ where
                     "Apply the HTTP Last-Modified timestamp to completed files on disk.",
                     state.draft.set_file_time_from_server,
                     SettingsAction::ToggleSetFileTimeFromServer,
+                    cx,
                     on_action.clone(),
                 ),
             ],
+            cx,
         ))
         .child(settings_section(
             "Queue, Collisions & Safety",
@@ -2453,7 +2439,7 @@ where
                 setting_row(
                     "When File Exists",
                     "Action when the destination filename already exists on disk.",
-                    segmented_track()
+                    segmented_track(cx)
                         .child(choice_btn(
                             "coll-rename",
                             "Rename Copy",
@@ -2475,11 +2461,12 @@ where
                             SettingsAction::SetCollisionPolicy(CollisionPolicy::Ask),
                             on_action.clone(),
                         )),
+                    cx,
                 ),
                 setting_row(
                     "Remove Button Action",
                     "Default behavior for Trash / Delete key. Disk deletions use Recycle Bin (Shift+Delete deletes permanently).",
-                    segmented_track()
+                    segmented_track(cx)
                         .child(choice_btn(
                             "del-ask",
                             "Ask Each Time",
@@ -2501,11 +2488,13 @@ where
                             SettingsAction::SetDeleteDefault(DeleteDefaultAction::DeleteFile),
                             on_action.clone(),
                         )),
+                    cx,
                 ),
                 setting_row(
                     "Auto-Retry on Error",
                     "Automatic retry attempts (0–10) after a transient failure.",
-                    compact_input(&state.auto_retry_input, px(88.0), Some("retries")),
+                    compact_input(&state.auto_retry_input, px(88.0), Some("retries"), cx),
+                    cx,
                 ),
                 toggle_row(
                     "settings-sync",
@@ -2513,21 +2502,23 @@ where
                     "Call sync_all before finalizing each download to protect against power loss.",
                     state.draft.sync_on_complete,
                     SettingsAction::ToggleSyncOnComplete,
+                    cx,
                     on_action,
                 ),
             ],
+            cx,
         ))
         .into_any_element()
 }
 
-fn render_network_tab<F>(state: &SettingsModalState, on_action: F) -> AnyElement
+fn render_network_tab<F>(state: &SettingsModalState, cx: &App, on_action: F) -> AnyElement
 where
     F: Fn(SettingsAction, &mut Window, &mut App) + Clone + 'static,
 {
     let mut proxy_rows = vec![setting_row(
         "Proxy Mode",
         "How HTTP/HTTPS requests are routed.",
-        segmented_track()
+        segmented_track(cx)
             .child(choice_btn(
                 "proxy-sys",
                 "System",
@@ -2549,16 +2540,17 @@ where
                 SettingsAction::SetProxyMode(ProxyMode::Manual),
                 on_action.clone(),
             )),
+        cx,
     )];
     if state.draft.proxy_mode == ProxyMode::Manual {
-        proxy_rows.push(stacked_row(labeled_input("Proxy URL", &state.proxy_url_input)));
+        proxy_rows.push(stacked_row(labeled_input("Proxy URL", &state.proxy_url_input, cx)));
     }
 
     div()
         .flex()
         .flex_col()
         .gap_4()
-        .child(settings_section("Proxy Routing", proxy_rows))
+        .child(settings_section("Proxy Routing", proxy_rows, cx))
         .child(settings_section(
             "Bandwidth & Concurrency",
             vec![
@@ -2576,11 +2568,17 @@ where
                                 .child(setting_text(
                                     "Speed Limit",
                                     "Global bandwidth cap across active workers (0 = Unlimited).",
+                                    cx,
                                 ))
-                                .child(compact_input(&state.speed_limit_input, px(108.0), Some("KiB/s"))),
+                                .child(compact_input(
+                                    &state.speed_limit_input,
+                                    px(108.0),
+                                    Some("KiB/s"),
+                                    cx,
+                                )),
                         )
                         .child(
-                            segmented_track()
+                            segmented_track(cx)
                                 .child(preset_btn(
                                     "spd-unlim",
                                     "Unlimited",
@@ -2610,24 +2608,37 @@ where
                 setting_row(
                     "Workers per Download",
                     "Maximum concurrent byte-range segments per file (1–32).",
-                    compact_input(&state.workers_input, px(88.0), Some("workers")),
+                    compact_input(&state.workers_input, px(88.0), Some("workers"), cx),
+                    cx,
                 ),
                 setting_row(
                     "Parallel Downloads",
                     "Maximum active downloads running at the same time (1+).",
-                    compact_input(&state.concurrent_input, px(88.0), Some("slots")),
+                    compact_input(&state.concurrent_input, px(88.0), Some("slots"), cx),
+                    cx,
                 ),
             ],
+            cx,
         ))
         .into_any_element()
 }
 
-fn render_appearance_tab<F>(state: &SettingsModalState, on_action: F) -> AnyElement
+fn render_appearance_tab<F>(state: &SettingsModalState, cx: &App, on_action: F) -> AnyElement
 where
     F: Fn(SettingsAction, &mut Window, &mut App) + Clone + 'static,
 {
+    let palette = cx.chrono().palette;
+    let chrome_border = palette.chrome_border.hsla();
+    let chrome_text = palette.chrome_text.hsla();
+    let chrome_muted = palette.chrome_muted.hsla();
+    let surface_selected = palette.surface_selected.hsla();
+    let surface_hover = palette.surface_hover.hsla();
+    let accent = palette.accent.hsla();
+    let mono = Theme::global(cx).mono_font_family.clone();
+    let catalog = ThemeCatalog::new();
+
     let render_theme_card = |preset: &ThemePreset| {
-        let is_selected = find_theme_preset(&state.draft.ui_theme).id == preset.id;
+        let is_selected = catalog.find_theme_preset(&state.draft.ui_theme).id == preset.id;
         let theme_id = preset.id.to_string();
         let act = on_action.clone();
         let tone_label = match preset.badge {
@@ -2643,17 +2654,13 @@ where
             .py_2()
             .cursor_pointer()
             .bg(if is_selected {
-                paper_selected()
+                surface_selected
             } else {
                 Hsla::transparent_black()
             })
             .border_1()
-            .border_color(if is_selected {
-                selenium_amber()
-            } else {
-                graphite_border()
-            })
-            .hover(|s| s.bg(paper_hover()))
+            .border_color(if is_selected { accent } else { chrome_border })
+            .hover(move |s| s.bg(surface_hover))
             .on_click(move |_, window, cx| {
                 act(SettingsAction::SetTheme(theme_id.clone()), window, cx);
             })
@@ -2672,7 +2679,7 @@ where
                             .truncate()
                             .text_size(TYPE_BODY)
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(silver_text())
+                            .text_color(chrome_text)
                             .child(preset.name),
                     )
                     .child(
@@ -2681,15 +2688,15 @@ where
                             .flex()
                             .items_center()
                             .gap_1()
-                            .child(swatch_dot(preset.swatches[0]))
-                            .child(swatch_dot(preset.swatches[1]))
-                            .child(swatch_dot(preset.swatches[2]))
+                            .child(swatch_dot(preset.swatches[0], chrome_border))
+                            .child(swatch_dot(preset.swatches[1], chrome_border))
+                            .child(swatch_dot(preset.swatches[2], chrome_border))
                             .child(
                                 div()
                                     .ml_1()
-                                    .font_family(MONO_FONT)
+                                    .font_family(mono.clone())
                                     .text_size(TYPE_HEADER)
-                                    .text_color(silver_muted())
+                                    .text_color(chrome_muted)
                                     .child(tone_label),
                             ),
                     ),
@@ -2697,7 +2704,7 @@ where
             .child(
                 div()
                     .text_size(TYPE_MICRO)
-                    .text_color(silver_muted())
+                    .text_color(chrome_muted)
                     .truncate()
                     .child(preset.description),
             )
@@ -2727,14 +2734,14 @@ where
                         .child(
                             div()
                                 .text_size(TYPE_MICRO)
-                                .text_color(silver_muted())
+                                .text_color(chrome_muted)
                                 .child("Select a color theme (previews live across open windows; Cancel reverts)."),
                         )
                         .child(div().flex().flex_col().gap_2().children(theme_grid_rows))
                         .when_some(
                             mica_fallback_status_note(
                                 &state.draft.ui_theme,
-                                crate::platform_hooks::mica_availability(),
+                                mica_availability(),
                             ),
                             |el, note| {
                                 el.child(
@@ -2743,7 +2750,7 @@ where
                                         .pt_1()
                                         .text_size(TYPE_MICRO)
                                         .line_height(px(16.0))
-                                        .text_color(silver_muted())
+                                        .text_color(chrome_muted)
                                         .child(note),
                                 )
                             },
@@ -2758,7 +2765,7 @@ where
                             div()
                                 .text_size(TYPE_BODY)
                                 .font_weight(FontWeight::MEDIUM)
-                                .text_color(silver_text())
+                                .text_color(chrome_text)
                                 .child("Accent Color Override"),
                         )
                         .child(
@@ -2774,24 +2781,20 @@ where
                                         .h(px(28.0))
                                         .px_2p5()
                                         .border_1()
-                                        .border_color(if active {
-                                            selenium_amber()
-                                        } else {
-                                            graphite_border()
-                                        })
+                                        .border_color(if active { accent } else { chrome_border })
                                         .bg(if active {
-                                            paper_selected()
+                                            surface_selected
                                         } else {
                                             Hsla::transparent_black()
                                         })
-                                        .hover(|s| s.bg(paper_hover()))
+                                        .hover(move |s| s.bg(surface_hover))
                                         .cursor_pointer()
                                         .flex()
                                         .items_center()
-                                        .font_family(MONO_FONT)
+                                        .font_family(mono.clone())
                                         .text_size(TYPE_MICRO)
                                         .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(if active { silver_text() } else { silver_muted() })
+                                        .text_color(if active { chrome_text } else { chrome_muted })
                                         .on_click(move |_, window, cx| {
                                             act(SettingsAction::SetAccentOverride(None), window, cx);
                                         })
@@ -2809,22 +2812,22 @@ where
                                         .border_color(if active {
                                             rgb(preset.accent).into()
                                         } else {
-                                            graphite_border()
+                                            chrome_border
                                         })
                                         .bg(if active {
-                                            paper_selected()
+                                            surface_selected
                                         } else {
                                             Hsla::transparent_black()
                                         })
-                                        .hover(|s| s.bg(paper_hover()))
+                                        .hover(move |s| s.bg(surface_hover))
                                         .cursor_pointer()
                                         .flex()
                                         .items_center()
                                         .gap_1p5()
-                                        .font_family(MONO_FONT)
+                                        .font_family(mono.clone())
                                         .text_size(TYPE_MICRO)
                                         .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(if active { silver_text() } else { silver_muted() })
+                                        .text_color(if active { chrome_text } else { chrome_muted })
                                         .on_click(move |_, window, cx| {
                                             act(
                                                 SettingsAction::SetAccentOverride(Some(pid.clone())),
@@ -2832,12 +2835,13 @@ where
                                                 cx,
                                             );
                                         })
-                                        .child(swatch_dot(preset.accent))
+                                        .child(swatch_dot(preset.accent, chrome_border))
                                         .child(preset.name)
                                 })),
                         ),
                 ),
             ],
+            cx,
         ))
         .child(settings_section(
             "Table & Scale",
@@ -2845,7 +2849,7 @@ where
                 setting_row(
                     "Table Row Density",
                     "Control vertical row height across the virtualized Downloads table.",
-                    segmented_track()
+                    segmented_track(cx)
                         .child(choice_btn(
                             "density-compact",
                             "COMPACT",
@@ -2867,11 +2871,12 @@ where
                             SettingsAction::SetTableDensity(TableDensity::Comfortable),
                             on_action.clone(),
                         )),
+                    cx,
                 ),
                 setting_row(
                     "Visible Columns",
                     "Toggle optional telemetry columns (automatically hidden on narrow windows).",
-                    segmented_track()
+                    segmented_track(cx)
                         .child(choice_btn(
                             "col-speed",
                             "SPEED",
@@ -2893,11 +2898,12 @@ where
                             SettingsAction::ToggleSegsCol,
                             on_action.clone(),
                         )),
+                    cx,
                 ),
                 setting_row(
                     "Interface Scale",
                     "Adjust overall text and control sizing.",
-                    segmented_track()
+                    segmented_track(cx)
                         .child(choice_btn(
                             "zoom-90",
                             "90%",
@@ -2926,8 +2932,10 @@ where
                             SettingsAction::SetZoom(125),
                             on_action.clone(),
                         )),
+                    cx,
                 ),
             ],
+            cx,
         ))
         .child(settings_section(
             "Workspace Chrome",
@@ -2938,6 +2946,7 @@ where
                     "Automatically expand the bottom inspector when selecting a download row.",
                     state.draft.ui_click_row_opens_inspector,
                     SettingsAction::ToggleClickOpensInspector,
+                    cx,
                     on_action.clone(),
                 ),
                 toggle_row(
@@ -2946,6 +2955,7 @@ where
                     "Launch into the compact left icon rail instead of the expanded filter rail.",
                     state.draft.ui_start_sidebar_collapsed,
                     SettingsAction::ToggleStartSidebarCollapsed,
+                    cx,
                     on_action.clone(),
                 ),
                 toggle_row(
@@ -2954,6 +2964,7 @@ where
                     "Display active transfer slots, throughput, and queue count in the top bar.",
                     state.draft.ui_show_titlebar_telemetry,
                     SettingsAction::ToggleTitlebarTelemetry,
+                    cx,
                     on_action.clone(),
                 ),
                 toggle_row(
@@ -2962,6 +2973,7 @@ where
                     "Display text labels on top-bar action cells (uncheck for icon-only cells).",
                     state.draft.ui_show_toolbar_labels,
                     SettingsAction::ToggleToolbarLabels,
+                    cx,
                     on_action.clone(),
                 ),
                 toggle_row(
@@ -2970,17 +2982,25 @@ where
                     "Highlight Active and Failed row positions along the table scrollbar rail.",
                     state.draft.ui_show_scrollbar_minimap,
                     SettingsAction::ToggleScrollbarMinimap,
+                    cx,
                     on_action,
                 ),
             ],
+            cx,
         ))
         .into_any_element()
 }
 
-fn render_integrations_tab<F>(state: &SettingsModalState, on_action: F) -> AnyElement
+fn render_integrations_tab<F>(state: &SettingsModalState, cx: &App, on_action: F) -> AnyElement
 where
     F: Fn(SettingsAction, &mut Window, &mut App) + Clone + 'static,
 {
+    let palette = cx.chrono().palette;
+    let chrome_text = palette.chrome_text.hsla();
+    let chrome_muted = palette.chrome_muted.hsla();
+    let success = palette.success.hsla();
+    let mono = Theme::global(cx).mono_font_family.clone();
+
     let reg_act = on_action.clone();
     let refresh_act = on_action.clone();
     let defender_act = on_action.clone();
@@ -2993,44 +3013,42 @@ where
                 .gap_2p5()
                 .child(
                     div()
-                        .text_xs()
+                        .text_size(TYPE_BODY)
                         .line_height(px(18.0))
-                        .text_color(silver_muted())
+                        .text_color(chrome_muted)
                         .child("Load the bundled extension in chrome://extensions (or edge://extensions) and click REGISTER NATIVE HOST. The Extension ID below is pre-filled for unpacked installs (edit only if using a custom ID)."),
                 )
-                .child(labeled_input("Extension ID", &state.extension_id_input))
+                .child(labeled_input("Extension ID", &state.extension_id_input, cx))
                 .child(
                     div()
                         .flex()
                         .flex_wrap()
                         .gap_2()
-                        .child(grid_boxed_button(
-                            "settings-register-host",
-                            px(30.0),
-                            Some(IconName::Check),
-                            Some("REGISTER NATIVE HOST"),
-                            Some("Write host manifest and register HKCU keys for Chrome, Edge, and Brave"),
-                            GridTone::Primary,
-                            false,
-                            move |_, window, cx| {
-                                reg_act(SettingsAction::RegisterNativeHost, window, cx)
-                            },
-                        ))
-                        .child(grid_boxed_button(
-                            "settings-refresh-host",
-                            px(30.0),
-                            Some(IconName::RefreshCw),
-                            Some("REFRESH STATUS"),
-                            Some("Re-check HKCU Native Messaging registration"),
-                            GridTone::Graphite,
-                            false,
-                            move |_, window, cx| {
-                                refresh_act(SettingsAction::RefreshBrowserStatus, window, cx)
-                            },
-                        )),
+                        .child(
+                            GridBoxedButton::new("settings-register-host")
+                                .height(px(30.0))
+                                .icon(IconName::Check)
+                                .label("REGISTER NATIVE HOST")
+                                .tooltip("Write host manifest and register HKCU keys for Chrome, Edge, and Brave")
+                                .tone(GridTone::Primary)
+                                .on_click(move |_, window, cx| {
+                                    reg_act(SettingsAction::RegisterNativeHost, window, cx)
+                                }),
+                        )
+                        .child(
+                            GridBoxedButton::new("settings-refresh-host")
+                                .height(px(30.0))
+                                .icon(IconName::RefreshCw)
+                                .label("REFRESH STATUS")
+                                .tooltip("Re-check HKCU Native Messaging registration")
+                                .tone(GridTone::Chrome)
+                                .on_click(move |_, window, cx| {
+                                    refresh_act(SettingsAction::RefreshBrowserStatus, window, cx)
+                                }),
+                        ),
                 )
                 .when_some(state.integration_feedback.as_ref(), |el, feedback| {
-                    el.child(inline_feedback_banner(feedback))
+                    el.child(inline_feedback_banner(feedback, cx))
                 }),
         ),
     ];
@@ -3044,16 +3062,12 @@ where
                 .flex()
                 .items_center()
                 .justify_between()
-                .child(div().text_xs().text_color(silver_text()).child(*name))
+                .child(div().text_size(TYPE_BODY).text_color(chrome_text).child(*name))
                 .child(
                     div()
-                        .font_family(MONO_FONT)
+                        .font_family(mono.clone())
                         .text_size(TYPE_MICRO)
-                        .text_color(if *ok {
-                            halide_emerald()
-                        } else {
-                            silver_muted()
-                        })
+                        .text_color(if *ok { success } else { chrome_muted })
                         .child(if *ok { "REGISTERED" } else { "NOT REGISTERED" }),
                 )
                 .into_any_element(),
@@ -3067,23 +3081,22 @@ where
             "Run an antivirus scanner or script automatically after each completed download.",
             state.draft.completion_cmd_enabled,
             SettingsAction::ToggleCompletionCmd,
+            cx,
             on_action,
         ),
         setting_row(
             "Antivirus Preset",
             "Fill Program Path and Arguments (%path%) with Windows Defender scanner defaults.",
-            grid_boxed_button(
-                "settings-defender-preset",
-                px(28.0),
-                Some(IconName::ShieldCheck),
-                Some("USE WINDOWS DEFENDER"),
-                None,
-                GridTone::Graphite,
-                true,
-                move |_, window, cx| {
+            GridBoxedButton::new("settings-defender-preset")
+                .height(px(28.0))
+                .icon(IconName::ShieldCheck)
+                .label("USE WINDOWS DEFENDER")
+                .tone(GridTone::Chrome)
+                .compact(true)
+                .on_click(move |_, window, cx| {
                     defender_act(SettingsAction::ApplyDefenderPreset, window, cx);
-                },
-            ),
+                }),
+            cx,
         ),
     ];
     if state.draft.completion_cmd_enabled {
@@ -3092,10 +3105,11 @@ where
                 .flex()
                 .flex_col()
                 .gap_2p5()
-                .child(labeled_input("Program Path", &state.cmd_path_input))
+                .child(labeled_input("Program Path", &state.cmd_path_input, cx))
                 .child(labeled_input(
                     "Arguments (%path% = completed file)",
                     &state.cmd_args_input,
+                    cx,
                 )),
         ));
     }
@@ -3104,8 +3118,8 @@ where
         .flex()
         .flex_col()
         .gap_4()
-        .child(settings_section("Browser Capture", browser_rows))
-        .child(settings_section("Post-Download Command", hook_rows))
+        .child(settings_section("Browser Capture", browser_rows, cx))
+        .child(settings_section("Post-Download Command", hook_rows, cx))
         .into_any_element()
 }
 
@@ -3113,30 +3127,39 @@ fn render_system_tab<F>(
     state: &SettingsModalState,
     update_state: &UpdateState,
     is_portable: bool,
+    cx: &App,
     on_action: F,
 ) -> AnyElement
 where
     F: Fn(SettingsAction, &mut Window, &mut App) + Clone + 'static,
 {
+    let palette = cx.chrono().palette;
+    let chrome_border = palette.chrome_border.hsla();
+    let chrome_muted = palette.chrome_muted.hsla();
+    let accent = palette.accent.hsla();
+    let success = palette.success.hsla();
+    let danger = palette.danger.hsla();
+    let mono = Theme::global(cx).mono_font_family.clone();
+
     let install_mode = if is_portable { "PORTABLE" } else { "INSTALLED" };
     let (status_color, status_text, progress_pct) = match update_state {
         UpdateState::Idle => (
-            silver_muted(),
+            chrome_muted,
             "Click Check Now to check GitHub Releases for a newer version.".to_string(),
             None,
         ),
         UpdateState::Checking => (
-            selenium_amber(),
+            accent,
             "Checking GitHub Releases for updates...".to_string(),
             None,
         ),
         UpdateState::UpToDate => (
-            halide_emerald(),
+            success,
             format!("Posthaze v{} is up to date.", env!("CARGO_PKG_VERSION")),
             None,
         ),
         UpdateState::Available(info) => (
-            selenium_amber(),
+            accent,
             if is_portable {
                 format!(
                     "Posthaze v{} is available. Portable builds update manually from GitHub Releases.",
@@ -3151,16 +3174,16 @@ where
             None,
         ),
         UpdateState::Downloading { info, pct } => (
-            selenium_amber(),
+            accent,
             format!("Downloading & verifying Posthaze v{} ({pct}%)...", info.version),
             Some(*pct),
         ),
         UpdateState::Installing => (
-            halide_emerald(),
+            success,
             "Verified! Launching silent installer and restarting...".to_string(),
             Some(100),
         ),
-        UpdateState::Failed(err) => (errata_vermilion(), format!("Update error: {err}"), None),
+        UpdateState::Failed(err) => (danger, format!("Update error: {err}"), None),
     };
 
     let available = update_state.available_release().cloned();
@@ -3179,39 +3202,42 @@ where
             .flex()
             .flex_wrap()
             .gap_2()
-            .child(grid_boxed_button(
-                "settings-copy-json",
-                px(30.0),
-                Some(IconName::Copy),
-                Some("COPY CONFIG JSON"),
-                Some("Copy active settings as formatted JSON"),
-                GridTone::Graphite,
-                false,
-                move |_, window, cx| act_copy(SettingsAction::CopyConfigJson, window, cx),
-            ))
-            .child(grid_boxed_button(
-                "settings-open-logs",
-                px(30.0),
-                Some(IconName::FolderOpen),
-                Some("OPEN LOGS FOLDER"),
-                Some("Open the diagnostic logs directory in Windows Explorer"),
-                GridTone::Graphite,
-                false,
-                move |_, window, cx| act_logs(SettingsAction::OpenLogsFolder, window, cx),
-            ))
-            .child(grid_boxed_button(
-                "settings-clear-folders",
-                px(30.0),
-                Some(IconName::Trash),
-                Some("CLEAR RECENT FOLDERS"),
-                Some("Clear saved destination folder history used by Pre-Flight and Move To"),
-                GridTone::Graphite,
-                false,
-                move |_, window, cx| act_folders(SettingsAction::ClearRecentFolders, window, cx),
-            )),
+            .child(
+                GridBoxedButton::new("settings-copy-json")
+                    .height(px(30.0))
+                    .icon(IconName::Copy)
+                    .label("COPY CONFIG JSON")
+                    .tooltip("Copy active settings as formatted JSON")
+                    .tone(GridTone::Chrome)
+                    .on_click(move |_, window, cx| {
+                        act_copy(SettingsAction::CopyConfigJson, window, cx)
+                    }),
+            )
+            .child(
+                GridBoxedButton::new("settings-open-logs")
+                    .height(px(30.0))
+                    .icon(IconName::FolderOpen)
+                    .label("OPEN LOGS FOLDER")
+                    .tooltip("Open the diagnostic logs directory in Windows Explorer")
+                    .tone(GridTone::Chrome)
+                    .on_click(move |_, window, cx| {
+                        act_logs(SettingsAction::OpenLogsFolder, window, cx)
+                    }),
+            )
+            .child(
+                GridBoxedButton::new("settings-clear-folders")
+                    .height(px(30.0))
+                    .icon(IconName::Trash)
+                    .label("CLEAR RECENT FOLDERS")
+                    .tooltip("Clear saved destination folder history used by Pre-Flight and Move To")
+                    .tone(GridTone::Chrome)
+                    .on_click(move |_, window, cx| {
+                        act_folders(SettingsAction::ClearRecentFolders, window, cx)
+                    }),
+            ),
     )];
     if let Some(feedback) = state.system_feedback.as_ref() {
-        maintenance_rows.push(stacked_row(inline_feedback_banner(feedback)));
+        maintenance_rows.push(stacked_row(inline_feedback_banner(feedback, cx)));
     }
 
     div()
@@ -3224,16 +3250,8 @@ where
                 setting_row(
                     concat!("Posthaze v", env!("CARGO_PKG_VERSION")),
                     "Signed GitHub Releases update channel",
-                    div()
-                        .px_2()
-                        .py_1()
-                        .border_1()
-                        .border_color(graphite_border())
-                        .bg(graphite_elevated())
-                        .font_family(MONO_FONT)
-                        .text_size(TYPE_MICRO)
-                        .text_color(silver_muted())
-                        .child(install_mode),
+                    GridBadge::new(install_mode).tone(BadgeTone::Muted),
+                    cx,
                 ),
                 toggle_row(
                     "settings-auto-check-updates",
@@ -3241,6 +3259,7 @@ where
                     "Check GitHub Releases at startup and every 24 hours.",
                     state.draft.auto_check_updates,
                     SettingsAction::ToggleAutoCheckUpdates,
+                    cx,
                     on_action.clone(),
                 ),
                 stacked_row(
@@ -3250,24 +3269,21 @@ where
                         .gap_2p5()
                         .child(
                             div()
-                                .font_family(MONO_FONT)
+                                .font_family(mono)
                                 .text_size(TYPE_MICRO)
                                 .text_color(status_color)
                                 .child(status_text),
                         )
                         .when_some(progress_pct, |el, pct| {
                             el.child(
-                                div()
-                                    .h(px(6.0))
-                                    .w_full()
-                                    .bg(byte_track_bg())
-                                    .border_1()
-                                    .border_color(graphite_border())
+                                GridProgressTrack::new()
+                                    .height(px(6.0))
+                                    .border_color(chrome_border)
                                     .child(
                                         div()
                                             .h_full()
                                             .w(relative(f32::from(pct) / 100.0))
-                                            .bg(selenium_amber()),
+                                            .bg(accent),
                                     ),
                             )
                         })
@@ -3279,18 +3295,17 @@ where
                                 .gap_2()
                                 .when(!is_busy, |el| {
                                     let act = on_action.clone();
-                                    el.child(grid_boxed_button(
-                                        "settings-check-updates",
-                                        px(30.0),
-                                        Some(IconName::RefreshCw),
-                                        Some("CHECK NOW"),
-                                        Some("Check GitHub Releases for a newer version"),
-                                        GridTone::Graphite,
-                                        false,
-                                        move |_, window, cx| {
-                                            act(SettingsAction::CheckForUpdates, window, cx)
-                                        },
-                                    ))
+                                    el.child(
+                                        GridBoxedButton::new("settings-check-updates")
+                                            .height(px(30.0))
+                                            .icon(IconName::RefreshCw)
+                                            .label("CHECK NOW")
+                                            .tooltip("Check GitHub Releases for a newer version")
+                                            .tone(GridTone::Chrome)
+                                            .on_click(move |_, window, cx| {
+                                                act(SettingsAction::CheckForUpdates, window, cx)
+                                            }),
+                                    )
                                 })
                                 .when_some(
                                     available.as_ref().filter(|_| {
@@ -3302,28 +3317,21 @@ where
                                         let lbl =
                                             SharedString::from(format!("INSTALL v{}", info.version));
                                         el.child(
-                                            div()
-                                                .h(px(30.0))
-                                                .border_1()
-                                                .border_color(graphite_border())
-                                                .child(grid_cell_button_dyn(
-                                                    "settings-install-update",
-                                                    Some(IconName::Download),
-                                                    Some(lbl),
-                                                    Some(
-                                                        "Download, verify signature, and install silently",
-                                                    ),
-                                                    GridTone::Primary,
-                                                    CellBorder::None,
-                                                    false,
-                                                    move |_, window, cx| {
-                                                        act(
-                                                            SettingsAction::InstallUpdate,
-                                                            window,
-                                                            cx,
-                                                        )
-                                                    },
-                                                )),
+                                            GridBoxedButton::new("settings-install-update")
+                                                .height(px(30.0))
+                                                .icon(IconName::Download)
+                                                .label(lbl)
+                                                .tooltip(
+                                                    "Download, verify signature, and install silently",
+                                                )
+                                                .tone(GridTone::Primary)
+                                                .on_click(move |_, window, cx| {
+                                                    act(
+                                                        SettingsAction::InstallUpdate,
+                                                        window,
+                                                        cx,
+                                                    )
+                                                }),
                                         )
                                     },
                                 )
@@ -3335,49 +3343,48 @@ where
                                     } else {
                                         "RELEASE NOTES"
                                     };
-                                    el.child(grid_boxed_button(
-                                        "settings-release-notes",
-                                        px(30.0),
-                                        Some(IconName::Globe),
-                                        Some(label),
-                                        Some("Open release page in default browser"),
-                                        GridTone::Graphite,
-                                        false,
-                                        move |_, window, cx| {
-                                            act(
-                                                SettingsAction::OpenReleaseNotes(url.clone()),
-                                                window,
-                                                cx,
-                                            )
-                                        },
-                                    ))
+                                    el.child(
+                                        GridBoxedButton::new("settings-release-notes")
+                                            .height(px(30.0))
+                                            .icon(IconName::Globe)
+                                            .label(label)
+                                            .tooltip("Open release page in default browser")
+                                            .tone(GridTone::Chrome)
+                                            .on_click(move |_, window, cx| {
+                                                act(
+                                                    SettingsAction::OpenReleaseNotes(url.clone()),
+                                                    window,
+                                                    cx,
+                                                )
+                                            }),
+                                    )
                                 }),
                         ),
                 ),
             ],
+            cx,
         ))
         .child(settings_section(
             "Diagnostics & Storage",
             maintenance_rows,
+            cx,
         ))
         .child(settings_section(
             "Factory Reset",
             vec![setting_row(
                 "Restore Default Settings",
                 "Reset preferences, proxy, notifications, hooks, and appearance to defaults. Downloads in your queue remain untouched.",
-                grid_boxed_button(
-                    "settings-reset-defaults",
-                    px(30.0),
-                    Some(IconName::RotateCcw),
-                    Some("RESTORE DEFAULTS"),
-                    None,
-                    GridTone::Danger,
-                    false,
-                    move |_, window, cx| {
+                GridBoxedButton::new("settings-reset-defaults")
+                    .height(px(30.0))
+                    .icon(IconName::RotateCcw)
+                    .label("RESTORE DEFAULTS")
+                    .tone(GridTone::Danger)
+                    .on_click(move |_, window, cx| {
                         act_reset(SettingsAction::ResetToDefaults, window, cx);
-                    },
-                ),
+                    }),
+                cx,
             )],
+            cx,
         ))
         .into_any_element()
 }
@@ -3392,20 +3399,18 @@ fn merge_unique_tokens(existing: &mut Vec<String>, additions: Vec<String>) {
 
 fn mica_fallback_status_note(
     theme_id: &str,
-    availability: Result<(), crate::platform_hooks::MicaFallbackReason>,
+    availability: Result<(), MicaFallbackReason>,
 ) -> Option<&'static str> {
-    if !find_theme_preset(theme_id).is_mica {
+    if !ThemeCatalog::new().find_theme_preset(theme_id).is_mica {
         return None;
     }
-    availability
-        .err()
-        .map(crate::platform_hooks::MicaFallbackReason::status_note)
+    availability.err().map(MicaFallbackReason::status_note)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{SettingsDraft, mica_fallback_status_note};
-    use crate::platform_hooks::MicaFallbackReason;
+    use chronophoto_ui::platform::MicaFallbackReason;
     use posthaze_engine::{ProxyMode, Settings};
 
     #[test]

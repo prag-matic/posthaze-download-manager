@@ -1,8 +1,12 @@
-//! Chronophotographic telemetry interpolation and transient state-snap timings.
+//! Chronophotographic download telemetry interpolation and transient state-snap timings.
+//!
+//! Composes [`chronophoto_ui::motion`] primitives (`PanelMotion`, `DecayPulse`,
+//! `InterpolatedScalar`) with per-download byte telemetry.
 
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
+use chronophoto_ui::motion::{DecayPulse, InterpolatedScalar, PanelMotion};
 use posthaze_engine::{DownloadId, DownloadState, ProgressSnapshot};
 
 /// Duration of the amber bisection flash when dynamic work stealing splits a segment.
@@ -11,27 +15,39 @@ pub(crate) const SPLIT_FLASH_MS: f32 = 420.0;
 /// Duration of the emerald pulse when a download completes.
 pub(crate) const COMPLETION_FLASH_MS: f32 = 650.0;
 
-/// Duration of the cyanotype/amber sash detent flash.
-pub(crate) const DETENT_FLASH_MS: f32 = 240.0;
-
-/// Animated panel dimension state for smooth collapse/expand/reset transitions.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct PanelAnim {
-    pub current: f32,
-    pub target: f32,
-}
+const TELEMETRY_SMOOTHING_RATE: f64 = 14.0;
+const TELEMETRY_SNAP_EPSILON: f64 = 1.0;
 
 /// Per-download interpolated byte telemetry and transient visual pulses.
 #[derive(Debug, Clone)]
 pub(crate) struct AnimatedTelemetry {
-    pub display_downloaded: f64,
-    pub display_checkpointed: f64,
-    pub target_downloaded: f64,
-    pub target_checkpointed: f64,
+    pub downloaded: InterpolatedScalar,
+    pub checkpointed: InterpolatedScalar,
     pub last_segment_count: usize,
-    pub split_flash_at: Option<Instant>,
-    pub completed_flash_at: Option<Instant>,
+    pub split_flash: DecayPulse,
+    pub completed_flash: DecayPulse,
     pub terminal: bool,
+}
+
+impl AnimatedTelemetry {
+    fn new(downloaded: f64, checkpointed: f64, last_segment_count: usize) -> Self {
+        Self {
+            downloaded: InterpolatedScalar::new(
+                downloaded,
+                TELEMETRY_SMOOTHING_RATE,
+                TELEMETRY_SNAP_EPSILON,
+            ),
+            checkpointed: InterpolatedScalar::new(
+                checkpointed,
+                TELEMETRY_SMOOTHING_RATE,
+                TELEMETRY_SNAP_EPSILON,
+            ),
+            last_segment_count,
+            split_flash: DecayPulse::new(SPLIT_FLASH_MS),
+            completed_flash: DecayPulse::new(COMPLETION_FLASH_MS),
+            terminal: false,
+        }
+    }
 }
 
 /// Snapshot of visual telemetry ratios & pulse intensities for a single render frame.
@@ -47,109 +63,76 @@ pub(crate) struct RowMotionSample {
     pub completion_flash: f32,
 }
 
-/// Tracks frame-interpolated progress bars and transient chronophotographic flashes.
+/// Tracks frame-interpolated download progress bars, transient chronophotographic flashes,
+/// and domain-free panel/scroll animations via [`PanelMotion`].
 #[derive(Debug, Default)]
-pub(crate) struct MotionState {
+pub(crate) struct DownloadMotion {
     entries: HashMap<DownloadId, AnimatedTelemetry>,
     last_step_at: Option<Instant>,
-    sidebar_anim: Option<PanelAnim>,
-    inspector_anim: Option<PanelAnim>,
-    table_scroll_anim: Option<PanelAnim>,
-    table_scroll_pending_y: Option<f32>,
-    sash_detent_flash_at: Option<Instant>,
+    pub(crate) panels: PanelMotion,
 }
 
-impl MotionState {
+impl DownloadMotion {
     /// Starts or updates a smooth panel width transition for the left sidebar.
     pub(crate) fn animate_sidebar(&mut self, from: f32, to: f32) {
-        let current = self.sidebar_anim.map(|a| a.current).unwrap_or(from);
-        if (to - current).abs() <= 0.5 {
-            self.sidebar_anim = None;
-        } else {
-            self.sidebar_anim = Some(PanelAnim {
-                current,
-                target: to,
-            });
-        }
+        self.panels.animate_sidebar(from, to);
     }
 
     /// Starts or updates a smooth panel height transition for the bottom inspector.
     pub(crate) fn animate_inspector(&mut self, from: f32, to: f32) {
-        let current = self.inspector_anim.map(|a| a.current).unwrap_or(from);
-        if (to - current).abs() <= 0.5 {
-            self.inspector_anim = None;
-        } else {
-            self.inspector_anim = Some(PanelAnim {
-                current,
-                target: to,
-            });
-        }
+        self.panels.animate_inspector(from, to);
     }
 
     /// Clears any active sidebar animation during direct pointer drag (zero lag).
     pub(crate) fn set_sidebar_immediate(&mut self) {
-        self.sidebar_anim = None;
+        self.panels.set_sidebar_immediate();
     }
 
     /// Clears any active inspector animation during direct pointer drag (zero lag).
     pub(crate) fn set_inspector_immediate(&mut self) {
-        self.inspector_anim = None;
+        self.panels.set_inspector_immediate();
     }
 
     /// Starts or updates a smooth vertical scroll transition for the downloads table.
     pub(crate) fn animate_table_scroll(&mut self, from: f32, to: f32) {
-        let current = self.table_scroll_anim.map(|a| a.current).unwrap_or(from);
-        if (to - current).abs() <= 0.5 {
-            self.table_scroll_anim = None;
-            self.table_scroll_pending_y = Some(to);
-        } else {
-            self.table_scroll_anim = Some(PanelAnim {
-                current,
-                target: to,
-            });
-        }
+        self.panels.animate_table_scroll(from, to);
     }
 
     /// Returns the active animated table scroll offset, if any.
     pub(crate) fn current_table_scroll(&self) -> Option<f32> {
-        self.table_scroll_anim.map(|a| a.current)
+        self.panels.current_table_scroll()
     }
 
     /// Returns the next scroll offset to apply to the scroll handle, if one was stepped.
     pub(crate) fn take_table_scroll_y(&mut self) -> Option<f32> {
-        self.table_scroll_pending_y.take()
+        self.panels.take_table_scroll_y()
     }
 
     /// Cancels any active keyboard scroll animation when the user scrolls manually.
     pub(crate) fn clear_table_scroll(&mut self) {
-        self.table_scroll_anim = None;
-        self.table_scroll_pending_y = None;
+        self.panels.clear_table_scroll();
     }
 
     /// Returns the active animated sidebar width, or `fallback` when settled.
     pub(crate) fn current_sidebar_width(&self, fallback: f32) -> f32 {
-        self.sidebar_anim.map(|a| a.current).unwrap_or(fallback)
+        self.panels.current_sidebar_width(fallback)
     }
 
     /// Returns the active animated inspector height, or `fallback` when settled.
     pub(crate) fn current_inspector_height(&self, fallback: f32) -> f32 {
-        self.inspector_anim.map(|a| a.current).unwrap_or(fallback)
+        self.panels.current_inspector_height(fallback)
     }
 
     /// Triggers a brief tactile flash along the active resize sash on magnetic detent.
     pub(crate) fn trigger_sash_detent(&mut self, now: Instant) {
-        self.sash_detent_flash_at = Some(now);
+        self.panels.trigger_sash_detent(now);
     }
 
     /// Returns the current detent flash intensity (`0.0..=1.0`).
     pub(crate) fn sash_detent_flash(&self, now: Instant) -> f32 {
-        self.sash_detent_flash_at
-            .map(|started| {
-                let elapsed_ms = now.saturating_duration_since(started).as_secs_f32() * 1000.0;
-                decay_ease_out(elapsed_ms, DETENT_FLASH_MS)
-            })
-            .unwrap_or(0.0)
+        self.panels.sash_detent_flash(now)
     }
+
     /// Records a fresh live progress snapshot from the engine.
     ///
     /// Returns `true` if a new animation or interpolation is active and a frame should be scheduled.
@@ -176,27 +159,18 @@ impl MotionState {
 
         match self.entries.get_mut(id) {
             Some(entry) => {
-                entry.target_downloaded = target_dl;
-                entry.target_checkpointed = target_cp;
+                entry.downloaded.set_target(target_dl);
+                entry.checkpointed.set_target(target_cp);
                 entry.terminal = false;
                 if seg_count > entry.last_segment_count && entry.last_segment_count > 0 {
-                    entry.split_flash_at = Some(now);
+                    entry.split_flash.trigger(now);
                 }
                 entry.last_segment_count = seg_count;
             }
             None => {
                 self.entries.insert(
                     id.clone(),
-                    AnimatedTelemetry {
-                        display_downloaded: target_dl,
-                        display_checkpointed: target_cp,
-                        target_downloaded: target_dl,
-                        target_checkpointed: target_cp,
-                        last_segment_count: seg_count,
-                        split_flash_at: None,
-                        completed_flash_at: None,
-                        terminal: false,
-                    },
+                    AnimatedTelemetry::new(target_dl, target_cp, seg_count),
                 );
             }
         }
@@ -222,16 +196,7 @@ impl MotionState {
             let seg_count = snapshot.segments.len();
             self.entries.insert(
                 id.clone(),
-                AnimatedTelemetry {
-                    display_downloaded: target_dl,
-                    display_checkpointed: target_cp,
-                    target_downloaded: target_dl,
-                    target_checkpointed: target_cp,
-                    last_segment_count: seg_count,
-                    split_flash_at: None,
-                    completed_flash_at: None,
-                    terminal: false,
-                },
+                AnimatedTelemetry::new(target_dl, target_cp, seg_count),
             );
         }
         self.last_step_at = None;
@@ -260,23 +225,16 @@ impl MotionState {
             DownloadState::Completed => {
                 let entry = self.entries.entry(id.clone()).or_insert_with(|| {
                     let full = total_bytes.unwrap_or(0) as f64;
-                    AnimatedTelemetry {
-                        display_downloaded: full,
-                        display_checkpointed: full,
-                        target_downloaded: full,
-                        target_checkpointed: full,
-                        last_segment_count: 0,
-                        split_flash_at: None,
-                        completed_flash_at: Some(now),
-                        terminal: true,
-                    }
+                    let mut entry = AnimatedTelemetry::new(full, full, 0);
+                    entry.terminal = true;
+                    entry
                 });
                 if let Some(total) = total_bytes {
                     let full = total as f64;
-                    entry.target_downloaded = full;
-                    entry.target_checkpointed = full;
+                    entry.downloaded.set_target(full);
+                    entry.checkpointed.set_target(full);
                 }
-                entry.completed_flash_at = Some(now);
+                entry.completed_flash.trigger(now);
                 entry.terminal = true;
                 true
             }
@@ -287,9 +245,11 @@ impl MotionState {
             DownloadState::Paused | DownloadState::Failed => {
                 if let Some(entry) = self.entries.get_mut(id) {
                     entry.terminal = true;
-                    entry.display_downloaded = entry.target_downloaded;
-                    entry.display_checkpointed = entry.target_checkpointed;
-                    if entry.split_flash_at.is_none() && entry.completed_flash_at.is_none() {
+                    entry.downloaded.snap(entry.downloaded.target());
+                    entry.checkpointed.snap(entry.checkpointed.target());
+                    if entry.split_flash.intensity(now) == 0.0
+                        && entry.completed_flash.intensity(now) == 0.0
+                    {
                         self.entries.remove(id);
                     }
                 }
@@ -310,94 +270,34 @@ impl MotionState {
             .clamp(0.001, 0.1);
         self.last_step_at = Some(now);
 
-        let alpha = 1.0 - (-dt * 14.0).exp();
         let mut any_active = false;
 
         for entry in self.entries.values_mut() {
-            let dl_diff = entry.target_downloaded - entry.display_downloaded;
-            if dl_diff.abs() > 1.0 {
-                entry.display_downloaded += dl_diff * alpha;
+            if entry.downloaded.step(dt) {
                 any_active = true;
-            } else {
-                entry.display_downloaded = entry.target_downloaded;
             }
-
-            let cp_diff = entry.target_checkpointed - entry.display_checkpointed;
-            if cp_diff.abs() > 1.0 {
-                entry.display_checkpointed += cp_diff * alpha;
+            if entry.checkpointed.step(dt) {
                 any_active = true;
-            } else {
-                entry.display_checkpointed = entry.target_checkpointed;
             }
-
-            if let Some(started) = entry.split_flash_at {
-                let elapsed = now.saturating_duration_since(started).as_secs_f32() * 1000.0;
-                if elapsed < SPLIT_FLASH_MS {
-                    any_active = true;
-                } else {
-                    entry.split_flash_at = None;
-                }
+            if entry.split_flash.step(now) {
+                any_active = true;
             }
-
-            if let Some(started) = entry.completed_flash_at {
-                let elapsed = now.saturating_duration_since(started).as_secs_f32() * 1000.0;
-                if elapsed < COMPLETION_FLASH_MS {
-                    any_active = true;
-                } else {
-                    entry.completed_flash_at = None;
-                }
+            if entry.completed_flash.step(now) {
+                any_active = true;
             }
         }
 
         // Prune settled terminal entries once their flashes have finished.
         self.entries.retain(|_, entry| {
             !entry.terminal
-                || entry.split_flash_at.is_some()
-                || entry.completed_flash_at.is_some()
-                || (entry.target_downloaded - entry.display_downloaded).abs() > 1.0
-                || (entry.target_checkpointed - entry.display_checkpointed).abs() > 1.0
+                || entry.split_flash.intensity(now) > 0.0
+                || entry.completed_flash.intensity(now) > 0.0
+                || !entry.downloaded.is_settled()
+                || !entry.checkpointed.is_settled()
         });
 
-        let panel_alpha = (1.0 - (-dt * 18.0).exp()) as f32;
-        if let Some(mut anim) = self.sidebar_anim {
-            let diff = anim.target - anim.current;
-            if diff.abs() > 0.5 {
-                anim.current += diff * panel_alpha;
-                self.sidebar_anim = Some(anim);
-                any_active = true;
-            } else {
-                self.sidebar_anim = None;
-            }
-        }
-        if let Some(mut anim) = self.inspector_anim {
-            let diff = anim.target - anim.current;
-            if diff.abs() > 0.5 {
-                anim.current += diff * panel_alpha;
-                self.inspector_anim = Some(anim);
-                any_active = true;
-            } else {
-                self.inspector_anim = None;
-            }
-        }
-        if let Some(mut anim) = self.table_scroll_anim {
-            let diff = anim.target - anim.current;
-            if diff.abs() > 0.5 {
-                anim.current += diff * panel_alpha;
-                self.table_scroll_anim = Some(anim);
-                self.table_scroll_pending_y = Some(anim.current);
-                any_active = true;
-            } else {
-                self.table_scroll_anim = None;
-                self.table_scroll_pending_y = Some(anim.target);
-            }
-        }
-        if let Some(started) = self.sash_detent_flash_at {
-            let elapsed = now.saturating_duration_since(started).as_secs_f32() * 1000.0;
-            if elapsed < DETENT_FLASH_MS {
-                any_active = true;
-            } else {
-                self.sash_detent_flash_at = None;
-            }
+        if self.panels.step(now) {
+            any_active = true;
         }
 
         if !any_active {
@@ -421,48 +321,20 @@ impl MotionState {
             Some(total) if total > 0 => {
                 let total_f = total as f64;
                 (
-                    Some((entry.display_checkpointed / total_f).clamp(0.0, 1.0) as f32),
-                    Some((entry.display_downloaded / total_f).clamp(0.0, 1.0) as f32),
+                    Some((entry.checkpointed.current() / total_f).clamp(0.0, 1.0) as f32),
+                    Some((entry.downloaded.current() / total_f).clamp(0.0, 1.0) as f32),
                 )
             }
             _ => (None, None),
         };
 
-        let split_flash = entry
-            .split_flash_at
-            .map(|started| {
-                let elapsed_ms = now.saturating_duration_since(started).as_secs_f32() * 1000.0;
-                decay_ease_out(elapsed_ms, SPLIT_FLASH_MS)
-            })
-            .unwrap_or(0.0);
-
-        let completion_flash = entry
-            .completed_flash_at
-            .map(|started| {
-                let elapsed_ms = now.saturating_duration_since(started).as_secs_f32() * 1000.0;
-                decay_ease_out(elapsed_ms, COMPLETION_FLASH_MS)
-            })
-            .unwrap_or(0.0);
-
         RowMotionSample {
             checkpoint_ratio,
             downloaded_ratio,
-            split_flash,
-            completion_flash,
+            split_flash: entry.split_flash.intensity(now),
+            completion_flash: entry.completed_flash.intensity(now),
         }
     }
-}
-
-/// Computes an exponential ease-out decay from `1.0` at `0ms` to `0.0` at `duration_ms`.
-pub(crate) fn decay_ease_out(elapsed_ms: f32, duration_ms: f32) -> f32 {
-    if elapsed_ms <= 0.0 {
-        return 1.0;
-    }
-    if elapsed_ms >= duration_ms || duration_ms <= 0.0 {
-        return 0.0;
-    }
-    let t = (elapsed_ms / duration_ms).clamp(0.0, 1.0);
-    (1.0 - t).powi(3)
 }
 
 #[cfg(test)]
@@ -472,17 +344,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn decay_ease_out_is_monotonic_and_bounded() {
-        assert_eq!(decay_ease_out(0.0, 400.0), 1.0);
-        let mid = decay_ease_out(200.0, 400.0);
-        assert!(mid > 0.0 && mid < 0.2);
-        assert_eq!(decay_ease_out(400.0, 400.0), 0.0);
-        assert_eq!(decay_ease_out(500.0, 400.0), 0.0);
-    }
-
-    #[test]
     fn motion_state_interpolates_and_expires_flashes() {
-        let mut motion = MotionState::default();
+        let mut motion = DownloadMotion::default();
         let id = DownloadId::from("dl-1".to_string());
         let t0 = Instant::now();
 
@@ -506,7 +369,12 @@ mod tests {
         let dl_ratio = sample.downloaded_ratio.unwrap();
         assert!(dl_ratio > 0.1 && dl_ratio < 0.5);
 
-        motion.on_state_changed(&id, DownloadState::Completed, Some(1000), t0 + Duration::from_millis(100));
+        motion.on_state_changed(
+            &id,
+            DownloadState::Completed,
+            Some(1000),
+            t0 + Duration::from_millis(100),
+        );
         let flash_sample = motion.sample(&id, Some(1000), t0 + Duration::from_millis(120));
         assert!(flash_sample.completion_flash > 0.8);
 
@@ -517,27 +385,8 @@ mod tests {
     }
 
     #[test]
-    fn panel_animations_interpolate_and_yield_to_immediate_drag() {
-        let mut motion = MotionState::default();
-        let t0 = Instant::now();
-        motion.animate_sidebar(52.0, 220.0);
-        assert!(motion.step(t0 + Duration::from_millis(16)));
-        let mid = motion.current_sidebar_width(220.0);
-        assert!(mid > 52.0 && mid < 220.0);
-
-        // Pointer drag clears animation immediately with zero lag.
-        motion.set_sidebar_immediate();
-        assert_eq!(motion.current_sidebar_width(245.0), 245.0);
-
-        // Detent flash decays cleanly.
-        motion.trigger_sash_detent(t0);
-        assert!(motion.sash_detent_flash(t0 + Duration::from_millis(40)) > 0.5);
-        assert_eq!(motion.sash_detent_flash(t0 + Duration::from_millis(300)), 0.0);
-    }
-
-    #[test]
     fn snap_to_live_and_pruning_prevent_unbounded_motion_map_growth() {
-        let mut motion = MotionState::default();
+        let mut motion = DownloadMotion::default();
         let id1 = DownloadId::from("dl-1".to_string());
         let id2 = DownloadId::from("dl-2".to_string());
         let t0 = Instant::now();

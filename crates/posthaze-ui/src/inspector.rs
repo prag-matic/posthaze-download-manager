@@ -2,15 +2,19 @@
 
 use std::time::Duration;
 
+use chronophoto_ui::components::{
+    AlertBanner, AlertTone, BadgeTone, CellBorder, GridBadge, GridCellButton, GridProgressTrack,
+    GridSectionHeader, GridStatusDot, GridTone,
+};
+use chronophoto_ui::theme::ChronoAppExt;
+use chronophoto_ui::tokens::{TYPE_BODY, TYPE_HEADER, TYPE_MICRO};
 use gpui_kit::assets::IconName;
-use gpui_kit::component::Icon;
+use gpui_kit::component::Theme;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use posthaze_engine::{DownloadId, DownloadState, SegmentProgress};
 
-use crate::grid_cells::{CellBorder, GridTone, grid_cell_button, grid_section_header};
 use crate::motion::RowMotionSample;
-use crate::theme::*;
 use crate::view_model::{DownloadRowView, format_bytes, normalize_byte_map_segments};
 
 pub(crate) struct InspectorCallbacks<F1, F2, F3> {
@@ -25,6 +29,7 @@ pub(crate) fn render_inspector<F1, F2, F3>(
     height: Pixels,
     collapsed: bool,
     motion: RowMotionSample,
+    cx: &App,
     callbacks: InspectorCallbacks<F1, F2, F3>,
 ) -> AnyElement
 where
@@ -32,6 +37,18 @@ where
     F2: Fn(DownloadId, bool, &mut Window, &mut App) + 'static,
     F3: Fn(&mut Window, &mut App) + 'static,
 {
+    let palette = cx.chrono().palette;
+    let chrome_bg = palette.chrome_bg.hsla();
+    let chrome_elevated = palette.chrome_elevated.hsla();
+    let chrome_border = palette.chrome_border.hsla();
+    let chrome_text = palette.chrome_text.hsla();
+    let chrome_muted = palette.chrome_muted.hsla();
+    let accent = palette.accent.hsla();
+    let info = palette.info.hsla();
+    let success = palette.success.hsla();
+    let danger = palette.danger.hsla();
+    let mono = Theme::global(cx).mono_font_family.clone();
+
     let on_toggle_collapse = callbacks.on_toggle_collapse;
 
     if collapsed {
@@ -50,9 +67,9 @@ where
         return div()
             .h(px(28.0))
             .w_full()
-            .bg(graphite_bg())
+            .bg(chrome_bg)
             .border_t_1()
-            .border_color(graphite_border())
+            .border_color(chrome_border)
             .flex()
             .items_center()
             .justify_between()
@@ -67,38 +84,38 @@ where
                         div()
                             .h_full()
                             .px_3()
-                            .bg(graphite_elevated())
+                            .bg(chrome_elevated)
                             .border_r_1()
-                            .border_color(graphite_border())
+                            .border_color(chrome_border)
                             .flex()
                             .items_center()
-                            .font_family(MONO_FONT)
+                            .font_family(mono.clone())
                             .text_size(TYPE_HEADER)
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(silver_muted())
+                            .text_color(chrome_muted)
                             .child("Inspector"),
                     )
                     .child(
                         div()
                             .flex_1()
                             .px_3()
-                            .font_family(MONO_FONT)
+                            .font_family(mono)
                             .text_size(TYPE_MICRO)
-                            .text_color(silver_muted())
+                            .text_color(chrome_muted)
                             .truncate()
                             .child(summary),
                     ),
             )
-            .child(grid_cell_button(
-                "inspector-expand",
-                Some(IconName::PanelBottomOpen),
-                Some("Expand"),
-                Some("Expand Inspector"),
-                GridTone::Graphite,
-                CellBorder::Left,
-                true,
-                move |_, window, cx| on_toggle_collapse(window, cx),
-            ))
+            .child(
+                GridCellButton::new("inspector-expand")
+                    .icon(IconName::PanelBottomOpen)
+                    .label("Expand")
+                    .tooltip("Expand Inspector")
+                    .tone(GridTone::Chrome)
+                    .border(CellBorder::Left)
+                    .compact(true)
+                    .on_click(move |_, window, cx| on_toggle_collapse(window, cx)),
+            )
             .into_any_element();
     }
 
@@ -106,24 +123,23 @@ where
         return div()
             .h(height)
             .w_full()
-            .bg(graphite_bg())
+            .bg(chrome_bg)
             .border_t_1()
-            .border_color(graphite_border())
+            .border_color(chrome_border)
             .flex()
             .flex_col()
             .child(
-                grid_section_header("Byte-map inspector", GridTone::Graphite).child(
-                    grid_cell_button(
-                        "inspector-collapse-empty",
-                        Some(IconName::PanelBottomClose),
-                        None,
-                        Some("Collapse Inspector"),
-                        GridTone::Graphite,
-                        CellBorder::Left,
-                        true,
-                        move |_, window, cx| on_toggle_collapse(window, cx),
+                GridSectionHeader::new("Byte-map inspector")
+                    .tone(GridTone::Chrome)
+                    .trailing(
+                        GridCellButton::new("inspector-collapse-empty")
+                            .icon(IconName::PanelBottomClose)
+                            .tooltip("Collapse Inspector")
+                            .tone(GridTone::Chrome)
+                            .border(CellBorder::Left)
+                            .compact(true)
+                            .on_click(move |_, window, cx| on_toggle_collapse(window, cx)),
                     ),
-                ),
             )
             .child(
                 div()
@@ -133,11 +149,13 @@ where
                     .justify_center()
                     .child(
                         div()
-                            .font_family(MONO_FONT)
+                            .font_family(mono)
                             .text_size(TYPE_BODY)
                             .line_height(px(18.0))
-                            .text_color(silver_muted())
-                            .child("Select a download above to inspect its byte-map progress and segments"),
+                            .text_color(chrome_muted)
+                            .child(
+                                "Select a download above to inspect its byte-map progress and segments",
+                            ),
                     ),
             )
             .into_any_element();
@@ -149,9 +167,7 @@ where
         .map(format_bytes)
         .unwrap_or_else(|| "STREAM".to_string());
     let cp_ratio = (row.checkpoint_ratio() * 100.0).clamp(0.0, 100.0);
-    let inflight_delta = row
-        .bytes_downloaded
-        .saturating_sub(row.checkpointed_bytes);
+    let inflight_delta = row.bytes_downloaded.saturating_sub(row.checkpointed_bytes);
 
     let id_restart = row.id.clone();
     let id_delete = row.id.clone();
@@ -159,9 +175,9 @@ where
     div()
         .h(height)
         .w_full()
-        .bg(graphite_bg())
+        .bg(chrome_bg)
         .border_t_1()
-        .border_color(graphite_border())
+        .border_color(chrome_border)
         .px_4()
         .py_2p5()
         .flex()
@@ -177,7 +193,7 @@ where
                 .gap_3()
                 .pb_2()
                 .border_b_1()
-                .border_color(graphite_border())
+                .border_color(chrome_border)
                 .child(
                     div()
                         .flex_1()
@@ -186,33 +202,25 @@ where
                         .gap_2()
                         .overflow_hidden()
                         .child(
-                            div()
-                                .px_1p5()
-                                .py_0p5()
-                                .bg(graphite_elevated())
-                                .border_1()
-                                .border_color(graphite_border())
-                                .font_family(MONO_FONT)
-                                .text_size(TYPE_HEADER)
-                                .text_color(silver_muted())
-                                .child(row.id.as_str().chars().take(8).collect::<String>()),
+                            GridBadge::new(row.id.as_str().chars().take(8).collect::<String>())
+                                .tone(BadgeTone::Muted),
                         )
                         .child(
                             div()
                                 .text_size(TYPE_BODY)
                                 .line_height(px(18.0))
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(silver_text())
+                                .text_color(chrome_text)
                                 .truncate()
                                 .child(row.filename.clone()),
                         )
                         .child(
                             div()
                                 .flex_1()
-                                .font_family(MONO_FONT)
+                                .font_family(mono.clone())
                                 .text_size(TYPE_MICRO)
                                 .line_height(px(16.0))
-                                .text_color(silver_muted())
+                                .text_color(chrome_muted)
                                 .truncate()
                                 .child(row.final_url.as_deref().unwrap_or(&row.url).to_string()),
                         ),
@@ -222,40 +230,39 @@ where
                         .flex()
                         .items_center()
                         .gap_1p5()
-                        .child(validator_badge(
-                            if row.supports_ranges {
+                        .child(
+                            GridBadge::new(if row.supports_ranges {
                                 "206 MULTI-SEGMENT"
                             } else {
                                 "200 SINGLE-STREAM"
-                            },
-                            graphite_elevated(),
-                        ))
+                            })
+                            .tone(BadgeTone::Neutral),
+                        )
                         .when(row.sync_on_complete, |el| {
-                            el.child(validator_badge("SYNC-ON-COMPLETE", graphite_elevated()))
+                            el.child(GridBadge::new("SYNC-ON-COMPLETE").tone(BadgeTone::Neutral))
                         })
                         .when_some(row.etag.clone(), |el, etag| {
-                            el.child(validator_badge(
-                                format!("ETag {}", truncate_badge(&etag, 16)),
-                                graphite_elevated(),
-                            ))
+                            el.child(
+                                GridBadge::new(format!("ETag {}", truncate_badge(&etag, 16)))
+                                    .tone(BadgeTone::Neutral),
+                            )
                         })
                         .when_some(row.last_modified.clone(), |el, lm| {
-                            el.child(validator_badge(
-                                format!("LM {}", truncate_badge(&lm, 18)),
-                                graphite_elevated(),
-                            ))
+                            el.child(
+                                GridBadge::new(format!("LM {}", truncate_badge(&lm, 18)))
+                                    .tone(BadgeTone::Neutral),
+                            )
                         })
                         .child(
-                            div().h(px(26.0)).child(grid_cell_button(
-                                "inspector-collapse",
-                                Some(IconName::PanelBottomClose),
-                                None,
-                                Some("Collapse Inspector"),
-                                GridTone::Graphite,
-                                CellBorder::Both,
-                                true,
-                                move |_, window, cx| on_toggle_collapse(window, cx),
-                            )),
+                            div().h(px(26.0)).child(
+                                GridCellButton::new("inspector-collapse")
+                                    .icon(IconName::PanelBottomClose)
+                                    .tooltip("Collapse Inspector")
+                                    .tone(GridTone::Chrome)
+                                    .border(CellBorder::Both)
+                                    .compact(true)
+                                    .on_click(move |_, window, cx| on_toggle_collapse(window, cx)),
+                            ),
                         ),
                 ),
         )
@@ -271,84 +278,40 @@ where
                 None => msg.clone(),
             };
             el.child(
-                div()
-                    .h(px(32.0))
-                    .pl_3()
-                    .bg(errata_surface_bg())
-                    .border_1()
-                    .border_color(errata_vermilion())
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .child(
-                        div()
-                            .id("errata-diagnostic-text")
-                            .flex_1()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .min_w_0()
-                            .tooltip(move |window, cx| {
-                                gpui_kit::component::tooltip::Tooltip::new(tip_full.clone())
-                                    .build(window, cx)
-                            })
-                            .child(
-                                Icon::new(IconName::TriangleAlert)
-                                    .size(px(14.0))
-                                    .text_color(errata_vermilion()),
-                            )
-                            .child(
-                                div()
-                                    .font_family(MONO_FONT)
-                                    .text_size(TYPE_BODY)
-                                    .line_height(px(18.0))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(silver_text())
-                                    .truncate()
-                                    .child(msg),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .h_full()
-                            .flex()
-                            .items_center()
-                            .when(row.is_resource_changed, |actions| {
-                                actions.child(grid_cell_button(
-                                    "errata-restart-fresh",
-                                    Some(IconName::RotateCcw),
-                                    Some("Restart fresh"),
-                                    Some("Restart Fresh"),
-                                    GridTone::Primary,
-                                    CellBorder::Left,
-                                    true,
-                                    move |_, window, cx| {
-                                        (callbacks.on_restart_fresh)(
-                                            id_restart.clone(),
-                                            window,
-                                            cx,
-                                        );
-                                    },
-                                ))
-                            })
-                            .child(grid_cell_button(
-                                "errata-delete",
-                                Some(IconName::Trash),
-                                Some("Delete"),
-                                Some("Remove / Recycle (Shift+Click: Permanent)"),
-                                GridTone::Danger,
-                                CellBorder::Left,
-                                true,
-                                move |ev, window, cx| {
-                                    (callbacks.on_delete)(
-                                        id_delete.clone(),
-                                        ev.modifiers().shift,
-                                        window,
-                                        cx,
-                                    );
-                                },
-                            )),
+                AlertBanner::new(msg)
+                    .id("errata-diagnostic-text")
+                    .tone(AlertTone::Danger)
+                    .tooltip(tip_full)
+                    .when(row.is_resource_changed, |banner| {
+                        banner.action(
+                            GridCellButton::new("errata-restart-fresh")
+                                .icon(IconName::RotateCcw)
+                                .label("Restart fresh")
+                                .tooltip("Restart Fresh")
+                                .tone(GridTone::Primary)
+                                .border(CellBorder::Left)
+                                .compact(true)
+                                .on_click(move |_, window, cx| {
+                                    (callbacks.on_restart_fresh)(id_restart.clone(), window, cx);
+                                }),
+                        )
+                    })
+                    .action(
+                        GridCellButton::new("errata-delete")
+                            .icon(IconName::Trash)
+                            .label("Delete")
+                            .tooltip("Remove / Recycle (Shift+Click: Permanent)")
+                            .tone(GridTone::Danger)
+                            .border(CellBorder::Left)
+                            .compact(true)
+                            .on_click(move |ev, window, cx| {
+                                (callbacks.on_delete)(
+                                    id_delete.clone(),
+                                    ev.modifiers().shift,
+                                    window,
+                                    cx,
+                                );
+                            }),
                     ),
             )
         })
@@ -360,27 +323,29 @@ where
                 .gap_1()
                 .pb_2()
                 .border_b_1()
-                .border_color(graphite_border())
+                .border_color(chrome_border)
                 .child(
                     div()
                         .flex()
                         .items_end()
-                        .font_family(MONO_FONT)
+                        .font_family(mono.clone())
                         .text_size(TYPE_HEADER)
                         .line_height(px(14.0))
-                        .text_color(silver_muted())
-                        .child(ruler_quarter_tick("0% (0 B)", false))
+                        .text_color(chrome_muted)
+                        .child(ruler_quarter_tick("0% (0 B)", false, chrome_border))
                         .child(ruler_quarter_tick(
                             row.total_bytes
                                 .map(|t| format!("25% ({})", format_bytes(t / 4)))
                                 .unwrap_or_else(|| "25%".to_string()),
                             true,
+                            chrome_border,
                         ))
                         .child(ruler_quarter_tick(
                             row.total_bytes
                                 .map(|t| format!("50% ({})", format_bytes(t / 2)))
                                 .unwrap_or_else(|| "50%".to_string()),
                             true,
+                            chrome_border,
                         ))
                         .child(
                             div()
@@ -388,7 +353,7 @@ where
                                 .flex()
                                 .justify_between()
                                 .border_l_1()
-                                .border_color(graphite_border())
+                                .border_color(chrome_border)
                                 .pl_1()
                                 .child(
                                     row.total_bytes
@@ -399,34 +364,29 @@ where
                         ),
                 )
                 .child(
-                    div()
-                        .h(px(22.0))
-                        .w_full()
-                        .bg(byte_track_bg())
-                        .border_1()
+                    GridProgressTrack::new()
+                        .height(px(22.0))
                         .border_color(if motion.completion_flash > 0.05 {
-                            halide_emerald().opacity(0.35 + 0.65 * motion.completion_flash)
+                            success.opacity(0.35 + 0.65 * motion.completion_flash)
                         } else if motion.split_flash > 0.05 {
-                            selenium_amber().opacity(0.35 + 0.65 * motion.split_flash)
+                            accent.opacity(0.35 + 0.65 * motion.split_flash)
                         } else {
-                            graphite_border()
+                            chrome_border
                         })
-                        .flex()
-                        .overflow_hidden()
                         .children(normalized.into_iter().enumerate().map(|(idx, seg)| {
                             let is_active = row.state == DownloadState::Active;
                             let inflight_el = div()
                                 .h_full()
                                 .w(relative(seg.inflight_fill_ratio))
-                                .bg(selenium_amber());
+                                .bg(accent);
                             div()
                                 .h_full()
                                 .w(relative(seg.width_ratio))
                                 .when(idx > 0, |el| {
                                     el.border_l_1().border_color(if motion.split_flash > 0.05 {
-                                        selenium_amber().opacity(motion.split_flash)
+                                        accent.opacity(motion.split_flash)
                                     } else {
-                                        graphite_bg()
+                                        chrome_bg
                                     })
                                 })
                                 .flex()
@@ -436,11 +396,11 @@ where
                                         .h_full()
                                         .w(relative(seg.checkpoint_fill_ratio))
                                         .bg(if seg.completed && row.state == DownloadState::Completed {
-                                            halide_emerald()
+                                            success
                                         } else if row.state == DownloadState::Failed {
-                                            errata_vermilion()
+                                            danger
                                         } else {
-                                            cyanotype_blue()
+                                            info
                                         }),
                                 )
                                 .child(if is_active && seg.inflight_fill_ratio > 0.0 {
@@ -463,10 +423,10 @@ where
                         .flex()
                         .items_center()
                         .justify_between()
-                        .font_family(MONO_FONT)
+                        .font_family(mono.clone())
                         .text_size(TYPE_HEADER)
                         .line_height(px(14.0))
-                        .text_color(silver_muted())
+                        .text_color(chrome_muted)
                         .child(
                             div()
                                 .flex()
@@ -477,7 +437,7 @@ where
                                         .flex()
                                         .items_center()
                                         .gap_1p5()
-                                        .child(div().w(px(9.0)).h(px(9.0)).bg(cyanotype_blue()))
+                                        .child(GridStatusDot::new(info).size(9.0).round(false))
                                         .child("Disk Checkpoint (Writer-Ack)"),
                                 )
                                 .child(
@@ -485,12 +445,12 @@ where
                                         .flex()
                                         .items_center()
                                         .gap_1p5()
-                                        .child(div().w(px(9.0)).h(px(9.0)).bg(selenium_amber()))
+                                        .child(GridStatusDot::new(accent).size(9.0).round(false))
                                         .child("In-Flight Network Cursor"),
                                 ),
                         )
                         .child(
-                            div().text_color(silver_text()).child(format!(
+                            div().text_color(chrome_text).child(format!(
                                 "Checkpoint: {} ({cp_ratio:.1}%) · In-Flight: +{}",
                                 format_bytes(row.checkpointed_bytes),
                                 format_bytes(inflight_delta),
@@ -521,27 +481,27 @@ where
                             .min(100)
                     };
                     let (seg_status, seg_color) = if seg.completed {
-                        ("DONE", halide_emerald())
+                        ("DONE", success)
                     } else if seg.cursor > seg.start && row.state == DownloadState::Active {
-                        ("RECV", selenium_amber())
+                        ("RECV", accent)
                     } else {
-                        ("WAIT", silver_muted())
+                        ("WAIT", chrome_muted)
                     };
                     div()
                         .min_w(px(240.0))
                         .flex_1()
                         .px_2p5()
                         .py_1()
-                        .bg(graphite_elevated())
+                        .bg(chrome_elevated)
                         .border_1()
-                        .border_color(graphite_border())
+                        .border_color(chrome_border)
                         .flex()
                         .items_center()
                         .justify_between()
-                        .font_family(MONO_FONT)
+                        .font_family(mono.clone())
                         .text_size(TYPE_HEADER)
                         .line_height(px(15.0))
-                        .text_color(silver_muted())
+                        .text_color(chrome_muted)
                         .child(
                             div()
                                 .flex()
@@ -550,7 +510,7 @@ where
                                 .child(
                                     div()
                                         .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(silver_text())
+                                        .text_color(chrome_text)
                                         .child(format!("#{:02}", seg.id)),
                                 )
                                 .child(format!(
@@ -564,7 +524,7 @@ where
                                 .flex()
                                 .items_center()
                                 .gap_2()
-                                .child(div().text_color(silver_text()).child(format!("{cp_pct}%")))
+                                .child(div().text_color(chrome_text).child(format!("{cp_pct}%")))
                                 .child(if seg_status == "RECV" {
                                     div()
                                         .font_weight(FontWeight::SEMIBOLD)
@@ -591,27 +551,15 @@ where
         .into_any_element()
 }
 
-fn ruler_quarter_tick(label: impl Into<SharedString>, left_tick: bool) -> impl IntoElement {
+fn ruler_quarter_tick(
+    label: impl Into<SharedString>,
+    left_tick: bool,
+    border_col: Hsla,
+) -> impl IntoElement {
     div()
         .flex_1()
-        .when(left_tick, |el| el.border_l_1().border_color(graphite_border()))
+        .when(left_tick, |el| el.border_l_1().border_color(border_col))
         .pl_1()
-        .child(label.into())
-}
-
-fn validator_badge(label: impl Into<SharedString>, bg_color: Hsla) -> impl IntoElement {
-    div()
-        .px_2()
-        .py_0p5()
-        .rounded(px(3.0))
-        .bg(bg_color)
-        .border_1()
-        .border_color(graphite_border())
-        .font_family(MONO_FONT)
-        .text_size(TYPE_MICRO)
-        .line_height(px(15.0))
-        .font_weight(FontWeight::MEDIUM)
-        .text_color(silver_text())
         .child(label.into())
 }
 

@@ -113,6 +113,7 @@ Measured on Windows 11 Pro (Intel Core i5-11320H, 16 GiB RAM, NVMe SSD) using re
 | Crate | Purpose |
 |---|---|
 | `crates/posthaze-engine` | Decoupled HTTP/HTTPS multi-connection engine, adaptive work-stealing scheduler, positional disk writer, SQLite WAL persistence, BLAKE3 hashing |
+| `crates/chronophoto-ui` | Pure-Rust GPUI design system (`Chronophotographic Interval Plate` tokens, semantic palettes, `ChronoTheme`, Table-Grid Cell primitives, overlays, and motion) |
 | `crates/posthaze-ui` | Native Windows 10/11 GPUI + GPUI Kit desktop app, System Tray, Win32 DWM Mica themes, Ed25519 + SHA-256 auto-updater |
 | `crates/posthaze-cli` | Headless CLI (`download`, `list`, `resume`, `cancel`, `delete`, `bench`) and Chromium Native Messaging Host |
 | `crates/posthaze-keytool` | Internal release tool (`publish = false`) for Ed25519 signing and signature verification |
